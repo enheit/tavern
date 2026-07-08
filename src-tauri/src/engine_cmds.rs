@@ -128,9 +128,10 @@ pub fn engine_status(engine: State<'_, EngineHandle>) -> StatusDto {
     }
 }
 
-/// Bridge the engine's sinks onto the Tauri event bus (`engine://state {voice}`,
-/// `engine://levels [{userId, rms}]` @10 Hz). Called once from setup().
-pub fn bridge_events(engine: &Engine, app: &AppHandle) {
+/// Bridge the engine's sinks onto the Tauri event bus (`engine://state {voice, err?}`,
+/// `engine://levels [{userId, rms}]` @10 Hz, `engine://stats {json}` @1 Hz). Called once
+/// from setup().
+pub fn bridge_events(engine: &Arc<Engine>, app: &AppHandle) {
     let h = app.clone();
     engine.set_state_sink(Arc::new(move |voice: String| {
         let _ = h.emit("engine://state", serde_json::json!({ "voice": voice }));
@@ -142,5 +143,17 @@ pub fn bridge_events(engine: &Engine, app: &AppHandle) {
             .map(|l| serde_json::json!({ "userId": l.user_id, "rms": l.rms }))
             .collect();
         let _ = h.emit("engine://levels", payload);
+    }));
+    let h = app.clone();
+    engine.set_stats_sink(Arc::new(move |json| {
+        let _ = h.emit("engine://stats", json);
+    }));
+    let h = app.clone();
+    let eng = engine.clone();
+    engine.set_error_sink(Arc::new(move |code: String| {
+        let _ = h.emit(
+            "engine://state",
+            serde_json::json!({ "voice": eng.status().voice, "err": code }),
+        );
     }));
 }

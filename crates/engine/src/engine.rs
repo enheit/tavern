@@ -40,6 +40,10 @@ const AUDIO_HZ: u32 = SAMPLE_RATE as u32;
 type LevelsSink = Arc<dyn Fn(Vec<Level>) + Send + Sync>;
 /// Sink the Tauri layer registers to forward `engine://state`.
 type StateSink = Arc<dyn Fn(String) + Send + Sync>;
+/// Sink for the §1 `engine://stats {json}` @1 Hz feed (also the P6 rttMs source).
+type StatsSink = Arc<dyn Fn(serde_json::Value) + Send + Sync>;
+/// Sink for engine error events; codes prefixed `audio_` are device errors (P6 deviceErrors).
+type ErrorSink = Arc<dyn Fn(String) + Send + Sync>;
 
 /// Snapshot returned by `engine_status()`.
 #[derive(Debug, Clone)]
@@ -104,6 +108,8 @@ pub struct Engine {
         tokio::sync::Mutex<Option<mpsc::UnboundedReceiver<libwebrtc::audio_track::RtcAudioTrack>>>,
     on_levels: Mutex<Option<LevelsSink>>,
     on_state: Mutex<Option<StateSink>>,
+    on_stats: Mutex<Option<StatsSink>>,
+    on_error: Mutex<Option<ErrorSink>>,
 }
 
 impl Default for Engine {
@@ -127,6 +133,8 @@ impl Engine {
             track_rx: tokio::sync::Mutex::new(None),
             on_levels: Mutex::new(None),
             on_state: Mutex::new(None),
+            on_stats: Mutex::new(None),
+            on_error: Mutex::new(None),
         }
     }
 
@@ -143,6 +151,14 @@ impl Engine {
     /// Register the voice-state sink (Tauri bridges it to `engine://state`).
     pub fn set_state_sink(&self, cb: Arc<dyn Fn(String) + Send + Sync>) {
         *self.on_state.lock().unwrap() = Some(cb);
+    }
+    /// Register the §1 1 Hz stats sink (Tauri bridges it to `engine://stats`).
+    pub fn set_stats_sink(&self, cb: StatsSink) {
+        *self.on_stats.lock().unwrap() = Some(cb);
+    }
+    /// Register the error sink. Codes prefixed `audio_` are device errors (P6 deviceErrors).
+    pub fn set_error_sink(&self, cb: ErrorSink) {
+        *self.on_error.lock().unwrap() = Some(cb);
     }
 
     fn signaling(&self) -> Result<Signaling, EngineError> {
@@ -195,6 +211,9 @@ impl Engine {
             Ok(track_name) => {
                 self.sm.lock().unwrap().mark_connected();
                 self.emit_state("connected");
+                // Rosters may have arrived while idle/connecting (hello.ok precedes the join) —
+                // sync mic subscriptions against the remembered roster now that a session exists.
+                self.sync_subscriptions().await;
                 Ok(track_name)
             }
             Err(e) => {
@@ -281,7 +300,12 @@ impl Engine {
         // Start device I/O + the 10 ms driver.
         let stop = Arc::new(AtomicBool::new(false));
         let (capture, playout) = audio::device_rings();
-        let device_thread = spawn_device_thread(capture.clone(), playout.clone(), stop.clone());
+        let device_thread = spawn_device_thread(
+            capture.clone(),
+            playout.clone(),
+            stop.clone(),
+            self.on_error.lock().unwrap().clone(),
+        );
 
         let driver = Driver {
             capture,
@@ -295,6 +319,22 @@ impl Engine {
         let pipe = AudioPipeline::new(RealApm::new(), self.mic_state.clone());
         let mic_for_driver = mic_source.clone();
         tokio::spawn(async move { driver.run(pipe, mic_for_driver).await });
+
+        // §1 `engine://stats {json}` @1 Hz while the session lives (also the P6 rttMs source).
+        if let Some(stats_sink) = self.on_stats.lock().unwrap().clone() {
+            let pc_stats = pc.clone();
+            let stop_stats = stop.clone();
+            tokio::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                tick.tick().await; // skip the immediate first fire
+                while !stop_stats.load(Ordering::Relaxed) {
+                    tick.tick().await;
+                    if let Ok(stats) = pc_stats.get_stats().await {
+                        stats_sink(stats_json(&pc_stats, &stats));
+                    }
+                }
+            });
+        }
 
         *self.published.lock().unwrap() = vec![PublishedTrack {
             kind: "mic".into(),
@@ -328,20 +368,26 @@ impl Engine {
     /// `set_remote_tracks(tracks)` — store the full roster and, while in voice, auto-subscribe new
     /// remote mics + tear down vanished ones (video is never auto-subscribed).
     pub async fn set_remote_tracks(&self, tracks: Vec<TrackInfo>) -> Result<(), EngineError> {
-        *self.roster.lock().unwrap() = tracks.clone();
-        // Only act while connected; when idle, we just remember the roster.
-        let in_voice = matches!(
-            self.sm.lock().unwrap().state(),
-            VoiceState::Connected { .. } | VoiceState::Connecting { .. }
-        );
-        if !in_voice {
-            return Ok(());
-        }
-        let channel = match self.sm.lock().unwrap().state().channel_id() {
-            Some(c) => c.to_string(),
-            None => return Ok(()),
+        *self.roster.lock().unwrap() = tracks;
+        self.sync_subscriptions().await;
+        Ok(())
+    }
+
+    /// Diff the remembered roster against current mic subscriptions and converge. No-op when not
+    /// in voice; also invoked right after `voice_join` (rosters can predate the session).
+    async fn sync_subscriptions(&self) {
+        let channel = {
+            let sm = self.sm.lock().unwrap();
+            let in_voice = matches!(
+                sm.state(),
+                VoiceState::Connected { .. } | VoiceState::Connecting { .. }
+            );
+            match (in_voice, sm.state().channel_id()) {
+                (true, Some(c)) => c.to_string(),
+                _ => return, // idle: the roster is just remembered
+            }
         };
-        let sig = self.signaling()?;
+        let Ok(sig) = self.signaling() else { return };
 
         // Own published tracks are filtered out by trackName (no need to know our userId).
         let own: BTreeSet<String> = self
@@ -351,9 +397,13 @@ impl Engine {
             .iter()
             .map(|p| p.track_name.clone())
             .collect();
-        let visible: Vec<TrackInfo> = tracks
-            .into_iter()
+        let visible: Vec<TrackInfo> = self
+            .roster
+            .lock()
+            .unwrap()
+            .iter()
             .filter(|t| !own.contains(&t.track_name))
+            .cloned()
             .collect();
         let current = self.subs.lock().unwrap().clone();
         let diff = diff_mic(&current, &visible, "");
@@ -370,7 +420,6 @@ impl Engine {
             self.remote.remove(&tr.owner_id);
             self.subs.lock().unwrap().remove(&tr);
         }
-        Ok(())
     }
 
     /// Pull one remote mic into our PC (client answers the SFU offer) and pipe its decoded PCM
@@ -448,25 +497,72 @@ fn rtc_config() -> RtcConfiguration {
 }
 
 /// cpal `Stream`s are `!Send`, so they live on their own thread that parks until `stop`.
+/// Device-init failures are reported through the error sink with `audio_*` codes — the
+/// P6 `deviceErrors` definition counts exactly these.
 fn spawn_device_thread(
     capture: audio::Ring,
     playout: audio::Ring,
     stop: Arc<AtomicBool>,
+    on_error: Option<ErrorSink>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let _in = audio::start_capture(capture);
-        let _out = audio::start_playout(playout);
-        if _in.is_err() || _out.is_err() {
-            eprintln!(
-                "[engine] device init failed: in={:?} out={:?}",
-                _in.err(),
-                _out.err()
-            );
-        }
+        let report = |code: String| {
+            eprintln!("[engine] {code}");
+            if let Some(cb) = &on_error {
+                cb(code);
+            }
+        };
+        let _in =
+            audio::start_capture(capture).map_err(|e| report(format!("audio_capture_init: {e}")));
+        let _out =
+            audio::start_playout(playout).map_err(|e| report(format!("audio_playout_init: {e}")));
         while !stop.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         // Streams drop here, stopping cpal.
+    })
+}
+
+/// Build the §1 `engine://stats` JSON from one `get_stats` snapshot: aggregate RTP counters,
+/// the ICE state, and `rttMs` from the nominated/succeeded candidate pair (the P6 measure).
+fn stats_json(pc: &PeerConnection, stats: &[libwebrtc::stats::RtcStats]) -> serde_json::Value {
+    use libwebrtc::stats::{IceCandidatePairState, RtcStats};
+    let (mut bytes_sent, mut bytes_received) = (0u64, 0u64);
+    let (mut frames_encoded, mut frames_decoded, mut pli_count) = (0u32, 0u32, 0u32);
+    let mut rtt_ms: Option<f64> = None;
+    for s in stats {
+        match s {
+            RtcStats::OutboundRtp(o) => {
+                bytes_sent += o.sent.bytes_sent;
+                frames_encoded += o.outbound.frames_encoded;
+                pli_count += o.outbound.pli_count;
+            }
+            RtcStats::InboundRtp(i) => {
+                bytes_received += i.inbound.bytes_received;
+                frames_decoded += i.inbound.frames_decoded;
+                pli_count += i.inbound.pli_count;
+            }
+            RtcStats::CandidatePair(p) => {
+                let usable = p.candidate_pair.nominated
+                    || matches!(
+                        p.candidate_pair.state,
+                        Some(IceCandidatePairState::Succeeded)
+                    );
+                if usable && p.candidate_pair.current_round_trip_time > 0.0 {
+                    rtt_ms = Some(p.candidate_pair.current_round_trip_time * 1000.0);
+                }
+            }
+            _ => {}
+        }
+    }
+    serde_json::json!({
+        "bytesSent": bytes_sent,
+        "bytesReceived": bytes_received,
+        "framesEncoded": frames_encoded,
+        "framesDecoded": frames_decoded,
+        "pliCount": pli_count,
+        "iceState": format!("{:?}", pc.ice_connection_state()),
+        "rttMs": rtt_ms,
     })
 }
 

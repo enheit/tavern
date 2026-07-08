@@ -1,0 +1,19 @@
+{
+  "bytesReceived": 203356,
+  "bytesSent": 216321,
+  "deviceErrors": 0,
+  "durationS": 60,
+  "errors": [],
+  "gate": "P6",
+  "gates": {
+    "audioBothWays": true,
+    "deviceErrors_eq_0": true,
+    "rttMedian_le_250": true
+  },
+  "pass": true,
+  "rttMsMedian": 8.0,
+  "rttSamples": 60,
+  "step": "S4.3/e2e-voice",
+  "trackName": "mic-b0c4d5e4-0a4c-42ad-b57d-2e882f0262bc",
+  "user": "a"
+}
