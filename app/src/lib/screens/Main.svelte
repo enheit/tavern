@@ -7,8 +7,10 @@
   import ChatPane from '../components/ChatPane.svelte';
   import MemberList from '../components/MemberList.svelte';
   import VoicePanel from '../components/VoicePanel.svelte';
+  import SettingsModal from '../components/dialogs/SettingsModal.svelte';
 
   const currentServer = $derived(servers.list.find((s) => s.id === servers.currentServerId));
+  let settingsOpen = $state(false);
 </script>
 
 <div class="layout">
@@ -31,10 +33,15 @@
   </main>
 
   <aside class="members-pane">
-    <header class="members-head">{auth.profile?.nickname ?? ''}</header>
+    <header class="members-head">
+      <span>{auth.profile?.nickname ?? ''}</span>
+      <button class="gear" aria-label="Settings" onclick={() => (settingsOpen = true)}>⚙️</button>
+    </header>
     <MemberList roster={servers.roster} presence={servers.presence} />
   </aside>
 </div>
+
+{#if settingsOpen}<SettingsModal onclose={() => (settingsOpen = false)} />{/if}
 
 <style>
   .layout {
@@ -58,10 +65,18 @@
     border-bottom: 1px solid color-mix(in srgb, var(--muted) 25%, transparent);
   }
 
-  .chan-head {
+  .chan-head,
+  .members-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
+  }
+
+  .gear {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-size: 0.95rem;
   }
 
   .theme {

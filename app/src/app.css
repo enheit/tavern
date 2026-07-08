@@ -26,3 +26,56 @@ body {
     -apple-system,
     sans-serif;
 }
+
+/* Shared dialog form styling (used by every S3.4 dialog). */
+.dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.dialog-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.dialog-body input,
+.dialog-body select {
+  padding: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+}
+
+.dialog-body .err {
+  color: #e5534b;
+  font-size: 0.8rem;
+}
+
+.dialog-body .primary {
+  margin-top: 0.5rem;
+  padding: 0.55rem;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.dialog-body .primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.dialog-body .danger {
+  padding: 0.5rem;
+  border: 1px solid #e5534b;
+  border-radius: 6px;
+  background: transparent;
+  color: #e5534b;
+  cursor: pointer;
+}

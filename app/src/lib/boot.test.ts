@@ -10,10 +10,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function stubMe(status: number, body: unknown): void {
+function json(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+// URL-aware fetch stub: /api/me and /api/servers both hit during boot.
+function stubApi(meStatus: number, me: unknown, serverList: unknown = []): void {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })),
+    vi.fn(async (url: string) =>
+      String(url).endsWith('/api/servers') ? json(200, serverList) : json(meStatus, me),
+    ),
   );
 }
 
@@ -25,13 +32,11 @@ test('valid stored token → session active, servers loaded, engine configured',
     if (cmd === 'session_load') return { userId: 'u1', token: 't1' };
     return null;
   });
-  stubMe(200, {
-    userId: 'u1',
-    nickname: 'Alice',
-    color: '#8a8f98',
-    avatarKey: null,
-    servers: [{ id: 's1', name: 'Friends' }],
-  });
+  stubApi(
+    200,
+    { userId: 'u1', nickname: 'Alice', color: '#8a8f98', avatarKey: null, servers: [{ id: 's1', name: 'Friends' }] },
+    [{ id: 's1', name: 'Friends', role: 'owner' }],
+  );
 
   await restoreSession();
 
@@ -49,7 +54,7 @@ test('invalid stored token → keyring cleared, stays on onboarding', async () =
     if (cmd === 'session_clear') cleared = true;
     return null;
   });
-  stubMe(401, { code: 'unauthorized' });
+  stubApi(401, { code: 'unauthorized' });
 
   await restoreSession();
 

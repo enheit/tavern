@@ -77,5 +77,31 @@ export const api = {
     req<Session>('/api/register', { method: 'POST', body: { nickname, password, repeat } }),
   login: (nickname: string, password: string) =>
     req<Session>('/api/login', { method: 'POST', body: { nickname, password } }),
+  logout: (token: string) => req<void>('/api/logout', { method: 'POST', token }),
   me: (token: string) => req<Me>('/api/me', { token }),
+  patchMe: (token: string, patch: { nickname?: string; color?: string }) =>
+    req<Profile>('/api/me', { method: 'PATCH', token, body: patch }),
+
+  servers: (token: string) => req<ServerSummary[]>('/api/servers', { token }),
+  createServer: (token: string, name: string, password?: string) =>
+    req<{ id: string; name: string }>('/api/servers', { method: 'POST', token, body: { name, password } }),
+  joinServer: (token: string, serverId: string, password?: string) =>
+    req<{ id: string; name: string }>('/api/servers/join', { method: 'POST', token, body: { serverId, password } }),
+
+  channels: (token: string, serverId: string) =>
+    req<Channel[]>(`/api/servers/${serverId}/channels`, { token }),
+  createChannel: (token: string, serverId: string, name: string, kind: 'text' | 'voice', password?: string) =>
+    req<{ id: string }>(`/api/servers/${serverId}/channels`, { method: 'POST', token, body: { name, kind, password } }),
+  unlock: (token: string, channelId: string, password: string) =>
+    req<void>(`/api/channels/${channelId}/unlock`, { method: 'POST', token, body: { password } }),
+
+  async putAvatar(token: string, file: Blob): Promise<{ avatarKey: string }> {
+    const res = await fetch(API_BASE + '/api/me/avatar', {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${token}`, 'content-type': file.type },
+      body: file,
+    });
+    if (!res.ok) throw new ApiError(res.status, 'avatar');
+    return res.json() as Promise<{ avatarKey: string }>;
+  },
 };

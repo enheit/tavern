@@ -15,7 +15,9 @@ export async function activate(s: Session): Promise<boolean> {
       color: me.color,
       avatarKey: me.avatarKey,
     });
-    servers.setServers(me.servers.map((x) => ({ id: x.id, name: x.name })));
+    // GET /api/servers carries the role (owner/member) the shell needs for the
+    // owner-only channel `+`; /api/me only has {id,name}.
+    servers.setServers(await api.servers(s.token));
     await session.save(s);
     await session.configureEngine(API_BASE, s.token);
     return true;

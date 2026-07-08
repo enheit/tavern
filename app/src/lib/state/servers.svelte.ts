@@ -29,6 +29,19 @@ export class ServersStore {
     return this.channels.find((c) => c.id === this.currentChannelId) ?? null;
   }
 
+  get currentServer(): ServerSummary | null {
+    return this.list.find((s) => s.id === this.currentServerId) ?? null;
+  }
+
+  reset(): void {
+    this.list = [];
+    this.currentServerId = null;
+    this.currentChannelId = null;
+    this.channelsByServer = {};
+    this.rosterByServer = {};
+    this.presenceByServer = {};
+  }
+
   setServers(list: ServerSummary[]): void {
     this.list = list;
     if (!this.currentServerId && list.length) this.selectServer(list[0].id);
