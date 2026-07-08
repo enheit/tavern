@@ -25,6 +25,7 @@ use libwebrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
 use libwebrtc::peer_connection_factory::{
     ContinualGatheringPolicy, IceServer, IceTransportsType, PeerConnectionFactory, RtcConfiguration,
 };
+use libwebrtc::rtp_parameters::RtpEncodingParameters;
 use libwebrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
 use libwebrtc::session_description::{SdpType, SessionDescription};
 use libwebrtc::stats::RtcStats;
@@ -37,14 +38,27 @@ const BASE: &str = "https://rtc.live.cloudflare.com/v1";
 const AUDIO_HZ: u32 = 48_000; // libwebrtc native audio rate
 const AUDIO_CH: u32 = 1;
 const SAMPLES_10MS: usize = (AUDIO_HZ / 100) as usize; // 480 = exactly 10 ms
-const RUN_SECS: u64 = 60;
+
+struct Args {
+    width: u32,
+    height: u32,
+    fps: u64,
+    duration: u64, // stats-measurement window (s)
+    tail: u64,     // keep pumping this long past `duration` so a subscriber stays fed (s)
+    simulcast: bool,
+    out: String,
+}
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (width, height, fps) = parse_args();
+    let args = parse_args();
+    let (width, height, fps) = (args.width, args.height, args.fps);
     let app_id = std::env::var("CF_APP_ID").map_err(|_| "CF_APP_ID not set")?;
     let secret = std::env::var("CF_APP_SECRET").map_err(|_| "CF_APP_SECRET not set")?;
-    eprintln!("[cfg] {width}x{height}@{fps}, 440 Hz sine, {RUN_SECS}s → SFU app {}…", &app_id[..6]);
+    eprintln!(
+        "[cfg] {width}x{height}@{fps}, 440 Hz sine, {}s (+{}s tail), simulcast={} → SFU app {}…",
+        args.duration, args.tail, args.simulcast, &app_id[..6]
+    );
 
     let http = reqwest::Client::new();
 
@@ -87,13 +101,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let v_name = v_mst.id();
     let a_name = a_mst.id();
 
-    let sendonly = |kind: &str| RtpTransceiverInit {
-        direction: RtpTransceiverDirection::SendOnly,
-        stream_ids: vec![format!("tavern-{kind}")],
-        send_encodings: Vec::new(),
+    // Video is simulcast (2 encodings) when --simulcast: rid "h" = full res, rid "l" = /2.
+    // Asciibetical ordering ("h" < "l") matches the SFU's rid priority convention.
+    let video_encodings = if args.simulcast {
+        vec![
+            // Caps kept under the pull-side BWE (~1.7 Mbps seen on the single-encoding
+            // pull) so the SFU actually forwards the high layer for preferredRid:"h";
+            // a 2.5 Mbps high layer exceeded BWE and the SFU fell back to low for both.
+            RtpEncodingParameters {
+                rid: "h".into(),
+                scale_resolution_down_by: Some(1.0),
+                max_bitrate: Some(1_000_000),
+                ..Default::default()
+            },
+            RtpEncodingParameters {
+                rid: "l".into(),
+                scale_resolution_down_by: Some(2.0),
+                max_bitrate: Some(250_000),
+                ..Default::default()
+            },
+        ]
+    } else {
+        Vec::new()
     };
-    let v_tvr = pc.add_transceiver(v_mst, sendonly("video"))?;
-    let a_tvr = pc.add_transceiver(a_mst, sendonly("audio"))?;
+    let v_tvr = pc.add_transceiver(
+        v_mst,
+        RtpTransceiverInit {
+            direction: RtpTransceiverDirection::SendOnly,
+            stream_ids: vec!["tavern-video".into()],
+            send_encodings: video_encodings,
+        },
+    )?;
+    let a_tvr = pc.add_transceiver(
+        a_mst,
+        RtpTransceiverInit {
+            direction: RtpTransceiverDirection::SendOnly,
+            stream_ids: vec!["tavern-audio".into()],
+            send_encodings: Vec::new(),
+        },
+    )?;
 
     // Observers: capture first ICE-connected time + a non-trickle gather-complete signal.
     let connected_ms = std::sync::Arc::new(AtomicU64::new(0));
@@ -177,32 +223,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 5. Apply the SFU answer — ICE connects off the candidates embedded in it.
     pc.set_remote_description(SessionDescription::parse(&answer_sdp, SdpType::Answer)?).await?;
 
+    // Hand the (real) session id + track names to a subscriber via a gitignored file under
+    // target/. Written early so subscribe.rs can start within the 5 s concurrent-run window.
+    let handoff_path = concat!(env!("CARGO_MANIFEST_DIR"), "/target/handoff.json");
+    std::fs::write(
+        handoff_path,
+        serde_json::to_string(&json!({
+            "sessionId": session_id,
+            "videoTrackName": v_name,
+            "audioTrackName": a_name,
+            "simulcast": args.simulcast,
+        }))?,
+    )?;
+    eprintln!("[out] wrote handoff {handoff_path}");
+
     // 6. Start media pumps.
     spawn_video_pump(video_source.clone(), width, height, fps);
     spawn_audio_pump(audio_source.clone());
 
-    // 7. 60 s at 1 Hz getStats — track the outbound VIDEO counters (monotonic).
-    let (mut frames_encoded, mut bytes_sent, mut pli_count) = (0u32, 0u64, 0u32);
-    for sec in 1..=RUN_SECS {
+    // 7. Measure `duration` s at 1 Hz. Per-rid so simulcast layers are counted
+    // (layersNegotiated = distinct video rids the SFU actually accepted).
+    let mut layers: std::collections::HashMap<String, (u32, u64, u32)> =
+        std::collections::HashMap::new();
+    for sec in 1..=args.duration {
         tokio::time::sleep(Duration::from_secs(1)).await;
         match pc.get_stats().await {
             Ok(stats) => {
                 for s in stats {
                     if let RtcStats::OutboundRtp(o) = s {
                         if o.stream.kind == "video" {
-                            frames_encoded = o.outbound.frames_encoded;
-                            bytes_sent = o.sent.bytes_sent;
-                            pli_count = o.outbound.pli_count;
+                            layers.insert(
+                                o.outbound.rid.clone(),
+                                (o.outbound.frames_encoded, o.sent.bytes_sent, o.outbound.pli_count),
+                            );
                         }
                     }
                 }
+                let fe = layers.values().map(|v| v.0).max().unwrap_or(0);
+                let pli: u32 = layers.values().map(|v| v.2).sum();
                 eprintln!(
-                    "[{sec:02}s] framesEncoded={frames_encoded} bytesSent={bytes_sent} pliCount={pli_count} iceMs={}",
+                    "[{sec:02}s] layers={} framesEncoded(max)={fe} pliCount(sum)={pli} iceMs={}",
+                    layers.len(),
                     connected_ms.load(Ordering::SeqCst)
                 );
             }
             Err(e) => eprintln!("[{sec:02}s] get_stats error: {e:?}"),
         }
+    }
+    let layers_negotiated = layers.len() as u32;
+    let frames_encoded = layers.values().map(|v| v.0).max().unwrap_or(0);
+    let bytes_sent: u64 = layers.values().map(|v| v.1).sum();
+    let pli_count: u32 = layers.values().map(|v| v.2).sum();
+    let per_layer: serde_json::Map<String, Value> = layers
+        .iter()
+        .map(|(rid, (f, b, p))| {
+            let key = if rid.is_empty() { "(single)".to_string() } else { rid.clone() };
+            (key, json!({ "framesEncoded": f, "kbps": b * 8 / 1000 / args.duration.max(1), "pliCount": p }))
+        })
+        .collect();
+    eprintln!("[layers] {per_layer:?}");
+
+    // Tail: keep media flowing so a slightly-offset subscriber never sees zero frames.
+    if args.tail > 0 {
+        eprintln!("[tail] pumping {}s past the measurement window", args.tail);
+        tokio::time::sleep(Duration::from_secs(args.tail)).await;
     }
 
     // 8. Write publish.json (requestShapes: exact SFU bodies used; appId/sessionId redacted).
@@ -220,13 +304,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let pass = ice_ms > 0 && ice_ms <= 5000 && frames_encoded >= 1500 && pli_count <= 6;
     let out = json!({
-        "step": "S1.2",
+        "step": "S1.2/publisher",
         "gate": "P1",
-        "config": { "width": width, "height": height, "fps": fps, "durationS": RUN_SECS, "audioHz": 440 },
+        "config": { "width": width, "height": height, "fps": fps, "durationS": args.duration, "audioHz": 440, "simulcast": args.simulcast },
         "iceConnectedMs": ice_ms,
         "framesEncoded": frames_encoded,
         "bytesSent": bytes_sent,
         "pliCount": pli_count,
+        "layersNegotiated": layers_negotiated,
+        "perLayer": per_layer,
         "requiresImmediateRenegotiation": requires_reneg,
         "gates": gates,
         "pass": pass,
@@ -245,13 +331,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
-    let out_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/spike-results/publish.json");
+    let out_path = &args.out;
     std::fs::create_dir_all(Path::new(out_path).parent().unwrap())?;
     std::fs::write(out_path, serde_json::to_string_pretty(&out)?)?;
     eprintln!("[out] wrote {out_path}");
 
     println!(
-        "P1 {}: iceConnectedMs={ice_ms} framesEncoded={frames_encoded} bytesSent={bytes_sent} pliCount={pli_count}",
+        "P1 {}: iceConnectedMs={ice_ms} framesEncoded={frames_encoded} bytesSent={bytes_sent} pliCount={pli_count} layers={layers_negotiated}",
         if pass { "PASS" } else { "FAIL" }
     );
     if !pass {
@@ -260,20 +346,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_args() -> (u32, u32, u64) {
-    let (mut w, mut h, mut fps) = (640u32, 360u32, 30u64);
+fn parse_args() -> Args {
+    let mut args = Args {
+        width: 640,
+        height: 360,
+        fps: 30,
+        duration: 60,
+        tail: 12,
+        simulcast: false,
+        out: concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/spike-results/publish.json").to_string(),
+    };
     let a: Vec<String> = std::env::args().collect();
     let mut i = 1;
-    while i + 1 < a.len() {
+    while i < a.len() {
         match a[i].as_str() {
-            "--width" => w = a[i + 1].parse().unwrap_or(w),
-            "--height" => h = a[i + 1].parse().unwrap_or(h),
-            "--fps" => fps = a[i + 1].parse().unwrap_or(fps),
-            _ => {}
+            "--simulcast" => i += 1, // handled below via flag set
+            flag if i + 1 < a.len() => {
+                let v = &a[i + 1];
+                match flag {
+                    "--width" => args.width = v.parse().unwrap_or(args.width),
+                    "--height" => args.height = v.parse().unwrap_or(args.height),
+                    "--fps" => args.fps = v.parse().unwrap_or(args.fps),
+                    "--duration" => args.duration = v.parse().unwrap_or(args.duration),
+                    "--tail" => args.tail = v.parse().unwrap_or(args.tail),
+                    "--out" => args.out = v.clone(),
+                    _ => {}
+                }
+                i += 2;
+            }
+            _ => i += 1,
         }
-        i += 1;
     }
-    (w, h, fps)
+    args.simulcast = a.iter().any(|x| x == "--simulcast");
+    args
 }
 
 fn spawn_video_pump(src: NativeVideoSource, w: u32, h: u32, fps: u64) {
@@ -353,7 +458,15 @@ fn fill_bars(buf: &mut I420Buffer, w: usize, h: usize, phase: usize) {
     let n = BARS.len();
     for row in 0..h {
         for col in 0..w {
-            y[row * sy + col] = BARS[(((col + phase) % w) * n / w).min(n - 1)].0;
+            let bar = BARS[(((col + phase) % w) * n / w).min(n - 1)].0;
+            // High-frequency scrolling detail so encode cost scales with pixel count —
+            // flat bars compress equally at any resolution, collapsing the simulcast
+            // high/low bitrate ratio. This makes 720p genuinely cost ~4x 360p.
+            let detail =
+                (col.wrapping_mul(31).wrapping_add(row.wrapping_mul(17)).wrapping_add(phase)
+                    as u8)
+                    & 0x3F;
+            y[row * sy + col] = bar.wrapping_add(detail);
         }
     }
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));

@@ -1,0 +1,58 @@
+{
+  "bytesReceived": 3776983,
+  "durationS": 30,
+  "framesDecoded": 846,
+  "gate": "P2",
+  "iceConnectedMs": 550,
+  "kbps": 1012,
+  "pliCount": 1,
+  "requestShapes": {
+    "renegotiate": {
+      "method": "PUT",
+      "request": {
+        "sessionDescription": {
+          "sdp": "v=0\r\no=- 2918904151513509229 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0\r\na=extmap-allow-mixed\r\na=msid-semantic: WMS\r\nm=video 9 UDP/TLS/RTP/SAVPF 125 37 98 36 96 35 116 117 45 46\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:sfHG\r\na=ice-pwd:etW58HAqBLvoeI/cqks3z+zY\r\na=ice-options:trickle\r\na=fingerprint:sha-256 1B:ED:05:BA:FD:B0:ED:41:77:0D:D4:A5:EA:07:DC:46:76:7D:1F:82:A8:0B:3E:CD:2E:C3:99:2C:30:3A:86:D8\r\na=setup:active\r\na=mid:0\r\na=extmap:1 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:2 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:3 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=extmap:4 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtcp-rsize\r\na=rtpmap:125 H264/90000\r\na=rtcp-fb:125 goog-remb\r\na=rtcp-fb:125 transport-cc\r\na=rtcp-fb:125 ccm fir\r\na=rtcp-fb:125 nack\r\na=rtcp-fb:125 nack pli\r\na=fmtp:125 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:37 rtx/90000\r\na=fmtp:37 apt=125\r\na=rtpmap:98 VP9/90000\r\na=rtcp-fb:98 goog-remb\r\na=rtcp-fb:98 transport-cc\r\na=rtcp-fb:98 ccm fir\r\na=rtcp-fb:98 nack\r\na=rtcp-fb:98 nack pli\r\na=rtpmap:36 rtx/90000\r\na=fmtp:36 apt=98\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 goog-remb\r\na=rtcp-fb:96 transport-cc\r\na=rtcp-fb:96 ccm fir\r\na=rtcp-fb:96 nack\r\na=rtcp-fb:96 nack pli\r\na=rtpmap:35 rtx/90000\r\na=fmtp:35 apt=96\r\na=rtpmap:116 H265/90000\r\na=rtcp-fb:116 goog-remb\r\na=rtcp-fb:116 transport-cc\r\na=rtcp-fb:116 ccm fir\r\na=rtcp-fb:116 nack\r\na=rtcp-fb:116 nack pli\r\na=fmtp:116 level-id=93\r\na=rtpmap:117 rtx/90000\r\na=fmtp:117 apt=116\r\na=rtpmap:45 AV1/90000\r\na=rtcp-fb:45 goog-remb\r\na=rtcp-fb:45 transport-cc\r\na=rtcp-fb:45 ccm fir\r\na=rtcp-fb:45 nack\r\na=rtcp-fb:45 nack pli\r\na=rtpmap:46 rtx/90000\r\na=fmtp:46 apt=45\r\n",
+          "type": "answer"
+        }
+      },
+      "response": {},
+      "url": "https://rtc.live.cloudflare.com/v1/apps/{appId}/sessions/{localSessionId}/renegotiate"
+    },
+    "tracksNewRemote": {
+      "method": "POST",
+      "request": {
+        "tracks": [
+          {
+            "location": "remote",
+            "sessionId": "{publisherSessionId}",
+            "simulcast": {
+              "preferredRid": "h",
+              "priorityOrdering": "asciibetical",
+              "ridNotAvailable": "asciibetical"
+            },
+            "trackName": "tavern-video"
+          }
+        ]
+      },
+      "response": {
+        "requiresImmediateRenegotiation": true,
+        "sessionDescription": {
+          "sdp": "v=0\r\no=- 9015782740002853465 1783518982 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\na=msid-semantic:WMS*\r\na=fingerprint:sha-256 D1:0F:12:AB:86:DF:47:F1:3A:41:C5:E7:5B:18:A7:DF:E1:F1:29:D2:54:8B:51:F5:93:04:0D:BD:2C:46:9A:B0\r\na=ice-lite\r\na=extmap-allow-mixed\r\na=group:BUNDLE 0\r\nm=video 9 UDP/TLS/RTP/SAVPF 125 37 98 36 96 35 116 117 45 46\r\nc=IN IP4 0.0.0.0\r\na=setup:actpass\r\na=mid:0\r\na=ice-ufrag:3b0d3eb1c8dc17bec2e616e550ba32501ff6018d3a1d64db2f831d3d56b446ac\r\na=ice-pwd:ERVxhdDFHiwWUdnUQKUncoPRdMjrKZmm\r\na=rtcp-mux\r\na=rtcp-rsize\r\na=rtpmap:125 H264/90000\r\na=fmtp:125 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtcp-fb:125 goog-remb \r\na=rtcp-fb:125 ccm fir\r\na=rtcp-fb:125 nack \r\na=rtcp-fb:125 nack pli\r\na=rtcp-fb:125 transport-cc \r\na=rtpmap:37 rtx/90000\r\na=fmtp:37 apt=125\r\na=rtcp-fb:37 transport-cc \r\na=rtpmap:98 VP9/90000\r\na=fmtp:98 profile-id=0\r\na=rtcp-fb:98 goog-remb \r\na=rtcp-fb:98 ccm fir\r\na=rtcp-fb:98 nack \r\na=rtcp-fb:98 nack pli\r\na=rtcp-fb:98 transport-cc \r\na=rtpmap:36 rtx/90000\r\na=fmtp:36 apt=98\r\na=rtcp-fb:36 transport-cc \r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 goog-remb \r\na=rtcp-fb:96 ccm fir\r\na=rtcp-fb:96 nack \r\na=rtcp-fb:96 nack pli\r\na=rtcp-fb:96 transport-cc \r\na=rtpmap:35 rtx/90000\r\na=fmtp:35 apt=96\r\na=rtcp-fb:35 transport-cc \r\na=rtpmap:116 H265/90000\r\na=rtcp-fb:116 goog-remb \r\na=rtcp-fb:116 ccm fir\r\na=rtcp-fb:116 nack \r\na=rtcp-fb:116 nack pli\r\na=rtcp-fb:116 transport-cc \r\na=rtpmap:117 rtx/90000\r\na=fmtp:117 apt=116\r\na=rtcp-fb:117 transport-cc \r\na=rtpmap:45 AV1/90000\r\na=rtcp-fb:45 goog-remb \r\na=rtcp-fb:45 ccm fir\r\na=rtcp-fb:45 nack \r\na=rtcp-fb:45 nack pli\r\na=rtcp-fb:45 transport-cc \r\na=rtpmap:46 rtx/90000\r\na=fmtp:46 apt=45\r\na=rtcp-fb:46 transport-cc \r\na=extmap:2 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:3 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=extmap:4 urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id\r\na=extmap:1 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=ssrc-group:FID 283881801 4186339729\r\na=ssrc:283881801 cname:wQvAWuFE\r\na=ssrc:283881801 msid:wQvAWuFE vIVlGNJGrSIOeqoz\r\na=ssrc:283881801 mslabel:wQvAWuFE\r\na=ssrc:283881801 label:vIVlGNJGrSIOeqoz\r\na=ssrc:4186339729 cname:wQvAWuFE\r\na=ssrc:4186339729 msid:wQvAWuFE vIVlGNJGrSIOeqoz\r\na=ssrc:4186339729 mslabel:wQvAWuFE\r\na=ssrc:4186339729 label:vIVlGNJGrSIOeqoz\r\na=msid:wQvAWuFE vIVlGNJGrSIOeqoz\r\na=ssrc:4186339729 cname:wQvAWuFE\r\na=ssrc:4186339729 msid:wQvAWuFE vIVlGNJGrSIOeqoz\r\na=ssrc:4186339729 mslabel:wQvAWuFE\r\na=ssrc:4186339729 label:vIVlGNJGrSIOeqoz\r\na=sendonly\r\na=candidate:513273236 1 udp 2130706431 141.101.90.0 1473 typ host\r\na=candidate:513273236 2 udp 2130706431 141.101.90.0 1473 typ host\r\na=end-of-candidates\r\n",
+          "type": "offer"
+        },
+        "tracks": [
+          {
+            "mid": "0",
+            "sessionId": "b828fcecd30797cf6dcbbcd6bcf18df0c25369aa263e05d441a23062ca629247",
+            "trackName": "tavern-video"
+          }
+        ]
+      },
+      "url": "https://rtc.live.cloudflare.com/v1/apps/{appId}/sessions/{localSessionId}/tracks/new"
+    }
+  },
+  "rid": "h",
+  "step": "S1.3/subscriber",
+  "turnRequired": false,
+  "zeroFrameWindows": 0
+}
