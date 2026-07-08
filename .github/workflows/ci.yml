@@ -31,11 +31,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos pinned to macos-15 (not macos-latest): the bleeding-edge macos-latest image
-        # (Xcode 26.5 / clang 21) intermittently lacks clang_rt.osx at the path webrtc-sys probes
-        # via `cc --print-search-dirs`, so linking libwebrtc flaked (passed run 1, failed run 2 on
-        # identical code). A pinned image keeps the toolchain layout stable. See progress.md S4.1.
-        os: [ubuntu-latest, windows-latest, macos-15]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +46,23 @@ jobs:
         with:
           toolchain: 1.93.1
           components: rustfmt, clippy
+      - name: libwebrtc clang_rt link path (macOS)
+        if: runner.os == 'macOS'
+        # webrtc-sys links `clang_rt.osx` and bakes its -L dir (an absolute Xcode path from
+        # `cc --print-search-dirs`) into its cached build-script output. rust-cache restores
+        # that output across runners with a different Xcode, and cargo never re-runs the build
+        # script (its fingerprint tracks package files, not the toolchain) → stale path →
+        # `ld: library 'clang_rt.osx' not found` (S4.1 CI runs 2–3; run 3 searched an
+        # Xcode_26.5 path on a macos-15 image that doesn't have it). Inject a fresh -L for
+        # THIS runner's toolchain via env RUSTFLAGS — it also feeds cargo's fingerprints and
+        # rust-cache's key, so caches stop crossing toolchains. Env RUSTFLAGS replaces the
+        # config-file rustflags, so it must re-carry -ObjC (see .cargo/config.toml).
+        run: |
+          RT=$(find "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang" -name libclang_rt.osx.a -print -quit 2>/dev/null || true)
+          echo "clang_rt: ${RT:-<not found>}"
+          FLAGS="-C link-args=-ObjC"
+          if [ -n "$RT" ]; then FLAGS="$FLAGS -L $(dirname "$RT")"; fi
+          echo "RUSTFLAGS=$FLAGS" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
