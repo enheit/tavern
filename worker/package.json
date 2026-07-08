@@ -12,7 +12,8 @@
     "test:cov": "vitest run --coverage"
   },
   "dependencies": {
-    "hono": "4.12.28"
+    "hono": "4.12.28",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.18.2",
