@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tavern",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-08",
+  "observability": { "enabled": true },
+  // Account-wide egress budget caps (GB). See §1 Budget model.
+  "vars": {
+    "BUDGET_SOFT_GB": 800,
+    "BUDGET_HARD_GB": 950
+  },
+  // database_id is a placeholder for local dev; the real id is wired at S6.0.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tavern-db",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "AVATARS", "bucket_name": "tavern-avatars" },
+    { "binding": "UPDATES", "bucket_name": "tavern-updates" }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "SERVER_ROOM", "class_name": "ServerRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ServerRoom"] }]
+}

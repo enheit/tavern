@@ -1,0 +1,16 @@
+# Node / pnpm
+node_modules/
+dist/
+
+# Rust
+target/
+
+# Cloudflare / Wrangler
+.wrangler/
+.dev.vars
+
+# Secrets / keys
+*.key
+
+# macOS
+.DS_Store

@@ -1,0 +1,5 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+# src-tauri is added in S0.2; spikes/* in Milestone 1.
