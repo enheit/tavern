@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { Channel, invoke } from '@tauri-apps/api/core';
 import type { TrackInfo } from './protocol/TrackInfo';
 
 function inTauri(): boolean {
@@ -47,6 +47,22 @@ export const engine = {
   },
   async screenShareStop(): Promise<void> {
     if (inTauri()) await invoke('screen_share_stop');
+  },
+  // §1: the UI creates the Channel and passes it in the invoke; each message is one
+  // §1-framed chunk ({u32 len | u8 keyframe | u64 ptsMs | bytes}) as an ArrayBuffer.
+  async streamWatch(
+    ownerId: string,
+    trackName: string,
+    layer: 'l' | 'h',
+    onChunk: (buf: ArrayBuffer) => void,
+  ): Promise<void> {
+    if (!inTauri()) return;
+    const frames = new Channel<ArrayBuffer>();
+    frames.onmessage = onChunk;
+    await invoke('stream_watch', { ownerId, trackName, layer, frames });
+  },
+  async streamUnwatch(ownerId: string, trackName: string): Promise<void> {
+    if (inTauri()) await invoke('stream_unwatch', { ownerId, trackName });
   },
 };
 

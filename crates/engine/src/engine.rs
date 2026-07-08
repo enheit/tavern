@@ -40,6 +40,7 @@ use crate::remote::{diff_mic, TrackRef};
 use crate::signaling::{PublishTrack, Signaling};
 use crate::state::{EngineError, VoiceSm, VoiceState};
 use crate::video::{self, SharesSm, VideoKind};
+use crate::watch::{self, ChunkSink, WatchHandle};
 
 const AUDIO_HZ: u32 = SAMPLE_RATE as u32;
 
@@ -87,6 +88,14 @@ struct ActiveVideo {
     _source: NativeVideoSource,
 }
 
+/// A live video watch (S5.4): the str0m pull leg for one remote stream.
+struct WatchEntry {
+    owner_id: String,
+    track_name: String,
+    layer: String,
+    handle: WatchHandle,
+}
+
 /// Live handles for an active voice session. Dropping it tears the session down. The mic
 /// `NativeAudioSource` is kept alive by the driver task's clone, so it needn't be held here.
 struct Session {
@@ -123,6 +132,8 @@ pub struct Engine {
     shares: Mutex<SharesSm>,
     /// Live screen/webcam publishes (capture pump + video source).
     videos: Mutex<Vec<ActiveVideo>>,
+    /// Live video watches (str0m pull legs), shared with the 1 Hz stats task.
+    watches: Arc<Mutex<Vec<WatchEntry>>>,
     session: Mutex<Option<Session>>,
     /// Remote audio tracks the SFU adds to our PC, in arrival order (paired to subscribes). Held
     /// in an async mutex so the subscribe path can `recv().await` without blocking other locks.
@@ -153,6 +164,7 @@ impl Engine {
             published: Mutex::new(Vec::new()),
             shares: Mutex::new(SharesSm::default()),
             videos: Mutex::new(Vec::new()),
+            watches: Arc::new(Mutex::new(Vec::new())),
             session: Mutex::new(None),
             track_rx: tokio::sync::Mutex::new(None),
             on_levels: Mutex::new(None),
@@ -223,7 +235,17 @@ impl Engine {
         EngineStatus {
             voice: self.sm.lock().unwrap().state().label().to_string(),
             publishing: self.published.lock().unwrap().clone(),
-            watching: Vec::new(), // video watching is S5
+            watching: self
+                .watches
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|w| WatchingTrack {
+                    owner_id: w.owner_id.clone(),
+                    track_name: w.track_name.clone(),
+                    layer: w.layer.clone(),
+                })
+                .collect(),
             webcodecs_ok: false,
         }
     }
@@ -350,17 +372,36 @@ impl Engine {
         let mic_for_driver = mic_source.clone();
         tokio::spawn(async move { driver.run(pipe, mic_for_driver).await });
 
-        // §1 `engine://stats {json}` @1 Hz while the session lives (also the P6 rttMs source).
+        // §1 `engine://stats {json}` @1 Hz while the session lives (also the P6 rttMs and
+        // P5 droppedChunks source — per-stream counters ride along from the watch legs).
         if let Some(stats_sink) = self.on_stats.lock().unwrap().clone() {
             let pc_stats = pc.clone();
             let stop_stats = stop.clone();
+            let watches = self.watches.clone();
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(1));
                 tick.tick().await; // skip the immediate first fire
                 while !stop_stats.load(Ordering::Relaxed) {
                     tick.tick().await;
                     if let Ok(stats) = pc_stats.get_stats().await {
-                        stats_sink(stats_json(&pc_stats, &stats));
+                        let mut json = stats_json(&pc_stats, &stats);
+                        let streams: Vec<serde_json::Value> = watches
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .map(|w| {
+                                serde_json::json!({
+                                    "ownerId": w.owner_id,
+                                    "trackName": w.track_name,
+                                    "layer": w.layer,
+                                    "droppedChunks": w.handle.dropped_chunks(),
+                                    "bytesReceived": w.handle.bytes_received(),
+                                    "mediaBytes": w.handle.media_bytes(),
+                                })
+                            })
+                            .collect();
+                        json["streams"] = serde_json::Value::Array(streams);
+                        stats_sink(json);
                     }
                 }
             });
@@ -390,6 +431,7 @@ impl Engine {
         self.published.lock().unwrap().clear();
         self.shares.lock().unwrap().clear();
         self.videos.lock().unwrap().clear(); // Drop joins the capture pumps
+        self.watches.lock().unwrap().clear(); // Drop stops the str0m pull threads
         drop(session);
         if let (Some(channel), Ok(sig)) = (channel, self.signaling()) {
             let _ = sig.close(&channel).await;
@@ -720,6 +762,71 @@ impl Engine {
             _session: session,
             _source: source,
         })
+    }
+
+    /// `stream_watch({ownerId, trackName, layer, frames})` — pull one remote video stream
+    /// via the str0m watch leg (S1.4 branch) and feed §1-framed chunks into `sink`.
+    /// A live watch of the same stream is replaced (§1 layer change = unsubscribe+subscribe).
+    pub async fn stream_watch(
+        &self,
+        owner_id: &str,
+        track_name: &str,
+        layer: &str,
+        sink: ChunkSink,
+    ) -> Result<(), EngineError> {
+        let sig = self.signaling()?;
+        let channel = {
+            let sm = self.sm.lock().unwrap();
+            match sm.state() {
+                VoiceState::Connected { channel_id } => channel_id.clone(),
+                _ => return Err(EngineError::Media("not in voice".into())),
+            }
+        };
+        // Replace an existing watch of this stream (pin swap re-subscribes).
+        self.stream_unwatch(owner_id, track_name).await?;
+
+        let offer = sig.subscribe(&channel, owner_id, track_name, layer).await?;
+        let (answer_sdp, handle) = watch::start_watch(&offer.sdp, sink)?;
+        sig.renegotiate_watch(&channel, owner_id, track_name, &answer_sdp)
+            .await?;
+        self.watches.lock().unwrap().push(WatchEntry {
+            owner_id: owner_id.to_string(),
+            track_name: track_name.to_string(),
+            layer: layer.to_string(),
+            handle,
+        });
+        Ok(())
+    }
+
+    /// `stream_unwatch({ownerId, trackName})` — stop the pull leg and tell the server
+    /// (accrual stops; the SFU force-closes the pulled track). Idempotent.
+    pub async fn stream_unwatch(
+        &self,
+        owner_id: &str,
+        track_name: &str,
+    ) -> Result<(), EngineError> {
+        let entry = {
+            let mut watches = self.watches.lock().unwrap();
+            let pos = watches
+                .iter()
+                .position(|w| w.owner_id == owner_id && w.track_name == track_name);
+            pos.map(|i| watches.remove(i))
+        };
+        let Some(mut entry) = entry else {
+            return Ok(());
+        };
+        entry.handle.stop();
+        let channel = self
+            .sm
+            .lock()
+            .unwrap()
+            .state()
+            .channel_id()
+            .map(str::to_string);
+        if let (Some(channel), Ok(sig)) = (channel, self.signaling()) {
+            let _ = sig.unsubscribe(&channel, owner_id, track_name).await;
+        }
+        Ok(())
     }
 
     async fn stop_video(&self, kind: VideoKind) -> Result<(), EngineError> {

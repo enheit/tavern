@@ -508,7 +508,23 @@ export class ServerRoom {
     if (isVideo && (await this.budgetLevel()) === 'hard') {
       return Response.json({ code: 'budget_exceeded' }, { status: 403 });
     }
-    const subSessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    // Mic pulls ride the subscriber's PC session; video pulls ride a DEDICATED watch
+    // session per (subscriber, owner, trackName) — the engine's str0m watch leg (S1.4
+    // FALLBACK a) is a separate ICE/DTLS endpoint from its libwebrtc PC.
+    let subSessionId: string | undefined;
+    if (isVideo) {
+      const wkey = `wsess:${b.userId}:${b.ownerId}:${b.trackName}`;
+      subSessionId = await this.ctx.storage.get<string>(wkey);
+      if (!subSessionId) {
+        const sres = await this.sfu('/sessions/new', 'POST');
+        const sj = await sres.json<any>();
+        if (!sres.ok || !sj?.sessionId) return Response.json({ sfu: sj }, { status: sres.status });
+        subSessionId = sj.sessionId as string;
+        await this.ctx.storage.put(wkey, subSessionId);
+      }
+    } else {
+      subSessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    }
     if (!subSessionId) return Response.json({ code: 'no_session' }, { status: 400 });
 
     const layer: 'l' | 'h' = b.layer === 'l' ? 'l' : 'h';
@@ -536,7 +552,10 @@ export class ServerRoom {
 
   private async rtcUnsubscribe(b: any): Promise<Response> {
     await this.finalizeAccrual(`acc:${b.userId}:${b.ownerId}:${b.trackName}`);
-    const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    const wkey = `wsess:${b.userId}:${b.ownerId}:${b.trackName}`;
+    const watchSessionId = await this.ctx.storage.get<string>(wkey);
+    if (watchSessionId) await this.ctx.storage.delete(wkey);
+    const sessionId = watchSessionId ?? (await this.ctx.storage.get<string>(`sess:${b.userId}`));
     // CloseTracksRequest closes by mid; force=true stops the data flow without a
     // renegotiation round-trip (the client tears down its own side independently).
     const midKey = `pullmid:${b.userId}:${b.ownerId}:${b.trackName}`;
@@ -551,7 +570,11 @@ export class ServerRoom {
 
   private async rtcRenegotiate(b: any): Promise<Response> {
     if (!this.authorizedVoice(b.userId, b.channelId)) return Response.json({ code: 'not_in_voice' }, { status: 403 });
-    const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    const key =
+      b.ownerId && b.trackName
+        ? `wsess:${b.userId}:${b.ownerId}:${b.trackName}` // video watch leg (S5.4)
+        : `sess:${b.userId}`; // the PC session
+    const sessionId = await this.ctx.storage.get<string>(key);
     if (!sessionId) return Response.json({ code: 'no_session' }, { status: 400 });
     const res = await this.sfu(`/sessions/${sessionId}/renegotiate`, 'PUT', b.sfu);
     return Response.json({ sfu: await res.json<any>() }, { status: res.status });
@@ -639,7 +662,7 @@ export class ServerRoom {
 
   private async clearUserMedia(userId: string): Promise<void> {
     await this.finalizeSubscriber(userId);
-    for (const prefix of [`track:${userId}:`, `pubmid:${userId}:`, `pullmid:${userId}:`]) {
+    for (const prefix of [`track:${userId}:`, `pubmid:${userId}:`, `pullmid:${userId}:`, `wsess:${userId}:`]) {
       const keys = await this.ctx.storage.list({ prefix });
       for (const key of keys.keys()) await this.ctx.storage.delete(key);
     }

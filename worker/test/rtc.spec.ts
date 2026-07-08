@@ -258,6 +258,46 @@ describe('rtc: subscribe', () => {
     const pull = sfuCalls.find((c) => c.url.endsWith('/tracks/new'))!;
     expect(pull.body.tracks[0].simulcast).toBeUndefined();
   });
+
+  // S5.4: the engine's str0m watch leg is its own ICE/DTLS endpoint, so a video pull
+  // rides a DEDICATED SFU watch session; renegotiate {ownerId,trackName} and unsubscribe
+  // route to it; mic pulls stay on the PC session.
+  it('video subscribe rides a dedicated watch session; renegotiate + unsubscribe route to it', async () => {
+    const { owner, sub, voice } = await ownerWithTrack({ trackName: 'scr', kind: 'screen', width: 1280, height: 720, fps: 30, simulcast: true });
+    sfuCalls = [];
+    const res = await rtc('subscribe', { channelId: voice, ownerId: owner.userId, trackName: 'scr', layer: 'l' }, sub.token);
+    expect(res.status).toBe(200);
+    // A fresh watch session was created and the pull went to IT (not the sub's PC session).
+    expect(sfuCalls.some((c) => c.url.endsWith('/sessions/new'))).toBe(true);
+    const pull = sfuCalls.find((c) => c.url.endsWith('/tracks/new'))!;
+    const watchId = pull.url.match(/sessions\/([^/]+)\/tracks\/new/)![1];
+    expect(watchId).not.toBe(pull.body.tracks[0].sessionId); // ≠ owner's session
+
+    // The answer leg (renegotiate with ownerId/trackName) targets the watch session.
+    sfuCalls = [];
+    const reneg = await rtc(
+      'renegotiate',
+      { channelId: voice, ownerId: owner.userId, trackName: 'scr', sfu: { sessionDescription: { type: 'answer', sdp: 'v=0 a' } } },
+      sub.token,
+    );
+    expect(reneg.status).toBe(200);
+    expect(sfuCalls.find((c) => c.url.includes('/renegotiate'))!.url).toContain(watchId);
+
+    // Unsubscribe force-closes the pulled mid on the watch session (P5 egress-stop).
+    sfuCalls = [];
+    await rtc('unsubscribe', { channelId: voice, ownerId: owner.userId, trackName: 'scr' }, sub.token);
+    const close = sfuCalls.find((c) => c.url.endsWith('/tracks/close'))!;
+    expect(close.url).toContain(watchId);
+    expect(close.body).toEqual({ tracks: [{ mid: '0' }], force: true });
+  });
+
+  it('mic subscribe stays on the PC session (no extra sessions/new)', async () => {
+    const { owner, sub, voice } = await ownerWithTrack({ trackName: 'mic-x', kind: 'mic', simulcast: false });
+    sfuCalls = [];
+    const res = await rtc('subscribe', { channelId: voice, ownerId: owner.userId, trackName: 'mic-x', layer: 'h' }, sub.token);
+    expect(res.status).toBe(200);
+    expect(sfuCalls.some((c) => c.url.endsWith('/sessions/new'))).toBe(false);
+  });
 });
 
 describe('rtc: budget', () => {

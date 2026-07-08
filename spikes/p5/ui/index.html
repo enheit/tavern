@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>P5 probe</title>
+    <style>
+      body { font: 13px system-ui; background: #111; color: #ddd; margin: 0; padding: 8px; }
+      #grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+      .tile { border: 1px solid #333; border-radius: 6px; padding: 4px; }
+      canvas { width: 100%; background: #000; display: block; }
+      .cap { font-size: 11px; color: #9a9; }
+      #log { white-space: pre-wrap; font-family: monospace; font-size: 11px; color: #aaa; }
+    </style>
+  </head>
+  <body>
+    <div id="log">P5 probe starting…</div>
+    <div id="grid"></div>
+    <script>
+      // S5.4 P5: watch every published stream through the REAL engine pipeline
+      // (str0m pull → §1 chunk over binary Channel IPC → WebCodecs vp8 → canvas),
+      // measure per-tile decode fps over 60 s + Σ droppedChunks, then run the
+      // egress-stop proof. Chunk framing per §1: {u32 len | u8 keyframe | u64 ptsMs | bytes}.
+      const { invoke, Channel } = window.__TAURI__.core;
+      const log = (m) => { document.getElementById('log').textContent = m; };
+
+      const WARMUP_MS = 5000;
+      const MEASURE_MS = 60000;
+
+      async function main() {
+        const init = await invoke('p5_init');
+        const tracks = init.tracks;
+        log(`joined; ${tracks.length} track(s) — watching…`);
+
+        const grid = document.getElementById('grid');
+        const tiles = [];
+        for (const t of tracks) {
+          const div = document.createElement('div');
+          div.className = 'tile';
+          const canvas = document.createElement('canvas');
+          const cap = document.createElement('div');
+          cap.className = 'cap';
+          cap.textContent = t.trackName.slice(0, 18);
+          div.append(canvas, cap);
+          grid.append(div);
+          const ctx = canvas.getContext('2d');
+
+          const tile = { t, cap, frames: 0, measured: 0, measuring: false, firstFrameAt: 0 };
+          const decoder = new VideoDecoder({
+            output: (frame) => {
+              canvas.width = frame.displayWidth;
+              canvas.height = frame.displayHeight;
+              ctx.drawImage(frame, 0, 0);
+              frame.close();
+              tile.frames += 1;
+              if (!tile.firstFrameAt) tile.firstFrameAt = performance.now();
+              if (tile.measuring) tile.measured += 1;
+            },
+            error: (e) => console.error('decoder', t.trackName, e),
+          });
+          decoder.configure({ codec: 'vp8' }); // §1 codec decision (S1.5), no description
+
+          const frames = new Channel();
+          frames.onmessage = (buf) => {
+            if (decoder.state !== 'configured') return;
+            const view = new DataView(buf);
+            const len = view.getUint32(0, true);
+            const keyframe = view.getUint8(4) === 1;
+            const ptsMs = Number(view.getBigUint64(5, true));
+            decoder.decode(new EncodedVideoChunk({
+              type: keyframe ? 'key' : 'delta',
+              timestamp: ptsMs * 1000,
+              data: new Uint8Array(buf, 13, len),
+            }));
+          };
+          await invoke('stream_watch', {
+            ownerId: t.ownerId, trackName: t.trackName, layer: 'l', frames,
+          });
+          tiles.push(tile);
+          // Stay under the §1 rtc rate limit (10 calls/s/user): 2 calls per watch.
+          await new Promise((r) => setTimeout(r, 300));
+        }
+
+        // Warm up, then measure exactly MEASURE_MS.
+        await new Promise((r) => setTimeout(r, WARMUP_MS));
+        for (const tile of tiles) { tile.measuring = true; tile.measured = 0; }
+        const t0 = performance.now();
+        const ticker = setInterval(() => {
+          const el = ((performance.now() - t0) / 1000).toFixed(0);
+          log(`measuring… ${el}s / ${MEASURE_MS / 1000}s`);
+          for (const tile of tiles) {
+            tile.cap.textContent =
+              `${tile.t.trackName.slice(0, 14)} ${(tile.measured / ((performance.now() - t0) / 1000)).toFixed(1)} fps`;
+          }
+        }, 1000);
+        await new Promise((r) => setTimeout(r, MEASURE_MS));
+        clearInterval(ticker);
+        const elapsedS = (performance.now() - t0) / 1000;
+
+        const stats = await invoke('p5_stats');
+        const droppedByKey = {};
+        for (const s of stats.streams ?? []) droppedByKey[`${s.ownerId}/${s.trackName}`] = s.droppedChunks;
+
+        const tileResults = tiles.map((tile) => ({
+          ownerId: tile.t.ownerId,
+          trackName: tile.t.trackName,
+          framesDecoded: tile.measured,
+          seconds: Math.round(elapsedS * 100) / 100,
+          fps: Math.round((tile.measured / elapsedS) * 100) / 100,
+          droppedChunks: droppedByKey[`${tile.t.ownerId}/${tile.t.trackName}`] ?? 0,
+          fpsOk: tile.measured / elapsedS >= 25,
+        }));
+        const droppedTotal = tileResults.reduce((a, r) => a + r.droppedChunks, 0);
+
+        // Tear down all watches (spaced for the rate limit), then the egress proof
+        // re-watches one stream under Rust control.
+        log('unwatching…');
+        for (const tile of tiles) {
+          await invoke('stream_unwatch', { ownerId: tile.t.ownerId, trackName: tile.t.trackName });
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        log('egress-stop proof (18s)…');
+        const egress = await invoke('p5_egress', {
+          ownerId: tracks[0].ownerId, trackName: tracks[0].trackName,
+        });
+
+        const pass =
+          tileResults.length >= 10 &&
+          tileResults.every((r) => r.fpsOk) &&
+          droppedTotal === 0 &&
+          egress.pass;
+        const report = {
+          step: 'S5.4/P5',
+          gate: 'sum droppedChunks == 0; each tile decode >= 25 fps; egress-stop delta < 5KB',
+          tiles: tileResults,
+          droppedChunksTotal: droppedTotal,
+          egressStop: egress,
+          pass,
+        };
+        await invoke('p5_report', { json: JSON.stringify(report, null, 2) });
+        log(`P5 ${pass ? 'PASS' : 'FAIL'} — report written`);
+        await new Promise((r) => setTimeout(r, 1500));
+        await invoke('exit_app', { code: pass ? 0 : 1 });
+      }
+
+      main().catch(async (e) => {
+        log(`ERROR: ${e}`);
+        console.error(e);
+        await new Promise((r) => setTimeout(r, 3000));
+        await invoke('exit_app', { code: 2 });
+      });
+    </script>
+  </body>
+</html>

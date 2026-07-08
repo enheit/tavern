@@ -44,8 +44,12 @@ export class VoiceStore {
   deafened = $state(false);
   error = $state<string | null>(null);
   micTrackName = $state<string | null>(null);
-  /// Our live screen share, if any ("You are sharing").
+  // Our live screen share, if any ("You are sharing").
   sharing = $state<{ trackName: string } | null>(null);
+  // Streams we joined (§0: manual join per stream): tileKey → watched layer.
+  watched = $state<Record<string, 'l' | 'h'>>({});
+  // Exactly one pinnable tile → layer "h"; all others watch "l" (§1). Holds a tileKey.
+  pinned = $state<string | null>(null);
   speaking = $state<Record<string, boolean>>({});
   // Full track roster per server (ownerId → their tracks), fed by hello.ok + `tracks`
   // frames; flattened and forwarded to the engine while in voice (§1).
@@ -147,6 +151,74 @@ export class VoiceStore {
     return this.screenTrackCount >= SHARE_CAP;
   }
 
+  // ---- watching streams (S5.4) -------------------------------------------------
+
+  static tileKey(t: { ownerId: string; trackName: string }): string {
+    return `${t.ownerId}/${t.trackName}`;
+  }
+
+  // Video tiles: screen/webcam tracks of OTHER users in our voice channel (owner
+  // presence joined, same rule as screenTrackCount).
+  get videoTiles(): TrackInfo[] {
+    if (!this.serverId || !this.channelId) return [];
+    const pres = servers.presenceByServer[this.serverId] ?? {};
+    const byOwner = this.tracksByServer[this.serverId] ?? {};
+    const tiles: TrackInfo[] = [];
+    for (const [ownerId, tracks] of Object.entries(byOwner)) {
+      if (ownerId === auth.userId) continue;
+      const p = pres[ownerId];
+      if (!p || p.state !== 'voice' || p.channelId !== this.channelId) continue;
+      tiles.push(...tracks.filter((t) => t.kind === 'screen' || t.kind === 'webcam'));
+    }
+    return tiles;
+  }
+
+  layerFor(key: string): 'l' | 'h' {
+    return this.pinned === key ? 'h' : 'l';
+  }
+
+  joinStream(t: TrackInfo): void {
+    const key = VoiceStore.tileKey(t);
+    this.watched = { ...this.watched, [key]: this.layerFor(key) };
+  }
+
+  leaveStream(t: TrackInfo): void {
+    const key = VoiceStore.tileKey(t);
+    const next = { ...this.watched };
+    delete next[key];
+    this.watched = next;
+    if (this.pinned === key) this.pinned = null;
+  }
+
+  // Pin swap: layers flip and each affected tile re-subscribes (unwatch+watch, §1).
+  // Non-simulcast tiles cannot be pinned (single encoding — the UI disables the control).
+  togglePin(t: TrackInfo): void {
+    if (!t.simulcast) return;
+    const key = VoiceStore.tileKey(t);
+    this.pinned = this.pinned === key ? null : key;
+    // Refresh watched layers so tile effects re-run with the new layer.
+    const next: Record<string, 'l' | 'h'> = {};
+    for (const k of Object.keys(this.watched)) next[k] = this.layerFor(k);
+    this.watched = next;
+  }
+
+  // Tile-effect plumbing: the tile owns the Channel + decoder; the store owns the invokes.
+  async startStream(t: TrackInfo, layer: 'l' | 'h', onChunk: (buf: ArrayBuffer) => void): Promise<void> {
+    try {
+      await engine.streamWatch(t.ownerId, t.trackName, layer, onChunk);
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async stopStream(t: TrackInfo): Promise<void> {
+    try {
+      await engine.streamUnwatch(t.ownerId, t.trackName);
+    } catch {
+      // best-effort; the server sweeps on ws-close/leave
+    }
+  }
+
   async shareStart(sourceId: string, width: number, height: number, fps: number): Promise<void> {
     if (!this.inVoice || this.sharing) return;
     try {
@@ -218,6 +290,7 @@ export class VoiceStore {
     else delete cur[ownerId];
     this.tracksByServer = { ...this.tracksByServer, [serverId]: cur };
     if (this.inVoice && serverId === this.serverId) void this.forwardTracks();
+    this.pruneWatched();
   }
 
   // hello.ok: the full current roster in one flat list.
@@ -226,6 +299,16 @@ export class VoiceStore {
     for (const t of tracks) (grouped[t.ownerId] ??= []).push(t);
     this.tracksByServer = { ...this.tracksByServer, [serverId]: grouped };
     if (this.inVoice && serverId === this.serverId) void this.forwardTracks();
+    this.pruneWatched();
+  }
+
+  // §1: a watched/pinned track vanishing from the roster resets its state (pin → none).
+  private pruneWatched(): void {
+    const live = new Set(this.videoTiles.map((t) => VoiceStore.tileKey(t)));
+    const next: Record<string, 'l' | 'h'> = {};
+    for (const [k, v] of Object.entries(this.watched)) if (live.has(k)) next[k] = v;
+    if (Object.keys(next).length !== Object.keys(this.watched).length) this.watched = next;
+    if (this.pinned && !live.has(this.pinned)) this.pinned = null;
   }
 
   reset(): void {
@@ -262,6 +345,8 @@ export class VoiceStore {
     this.channelId = null;
     this.micTrackName = null;
     this.sharing = null;
+    this.watched = {};
+    this.pinned = null;
     this.speaking = {};
     this.aboveSince.clear();
   }

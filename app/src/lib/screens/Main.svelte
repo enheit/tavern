@@ -5,6 +5,7 @@
   import ServerRail from '../components/ServerRail.svelte';
   import ChannelList from '../components/ChannelList.svelte';
   import ChatPane from '../components/ChatPane.svelte';
+  import StreamGrid from '../components/StreamGrid.svelte';
   import MemberList from '../components/MemberList.svelte';
   import VoicePanel from '../components/VoicePanel.svelte';
   import SettingsModal from '../components/dialogs/SettingsModal.svelte';
@@ -29,6 +30,7 @@
         {theme.mode === 'system' ? '🖥️' : theme.mode === 'light' ? '☀️' : '🌙'}
       </button>
     </header>
+    <StreamGrid />
     <ChatPane />
   </main>
 

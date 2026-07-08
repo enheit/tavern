@@ -185,6 +185,24 @@ impl Signaling {
         self.post("renegotiate", body).await.map(|_| ())
     }
 
+    /// Answer a VIDEO pull offer on its dedicated watch session (S5.4): `{ownerId, trackName}`
+    /// route the answer to the per-watch SFU session the worker created at subscribe.
+    pub async fn renegotiate_watch(
+        &self,
+        channel_id: &str,
+        owner_id: &str,
+        track_name: &str,
+        answer_sdp: &str,
+    ) -> Result<(), SignalError> {
+        let body = json!({
+            "channelId": channel_id,
+            "ownerId": owner_id,
+            "trackName": track_name,
+            "sfu": { "sessionDescription": { "sdp": answer_sdp, "type": "answer" } },
+        });
+        self.post("renegotiate", body).await.map(|_| ())
+    }
+
     /// Stop pulling a remote track (SFU tracks/close + DO stops accrual).
     pub async fn unsubscribe(
         &self,

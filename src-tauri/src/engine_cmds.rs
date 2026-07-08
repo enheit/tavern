@@ -169,6 +169,42 @@ pub async fn webcam_stop(engine: State<'_, EngineHandle>) -> Result<(), String> 
     engine.0.webcam_stop().await.map_err(|e| e.to_string())
 }
 
+/// `stream_watch({ownerId, trackName, layer, frames})` — the UI creates the Channel and
+/// passes it in the invoke (§1); each message is one §1-framed chunk as raw bytes
+/// (ArrayBuffer JS-side, the S1.5 binary-IPC pattern).
+#[tauri::command]
+pub async fn stream_watch(
+    engine: State<'_, EngineHandle>,
+    owner_id: String,
+    track_name: String,
+    layer: String,
+    frames: tauri::ipc::Channel<tauri::ipc::InvokeResponseBody>,
+) -> Result<(), String> {
+    let sink: tavern_engine::watch::ChunkSink = Box::new(move |bytes| {
+        frames
+            .send(tauri::ipc::InvokeResponseBody::Raw(bytes))
+            .is_ok()
+    });
+    engine
+        .0
+        .stream_watch(&owner_id, &track_name, &layer, sink)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn stream_unwatch(
+    engine: State<'_, EngineHandle>,
+    owner_id: String,
+    track_name: String,
+) -> Result<(), String> {
+    engine
+        .0
+        .stream_unwatch(&owner_id, &track_name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn voice_leave(engine: State<'_, EngineHandle>) -> Result<(), String> {
     engine.0.voice_leave().await.map_err(|e| e.to_string())

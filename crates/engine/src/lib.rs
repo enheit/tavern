@@ -14,6 +14,7 @@ pub mod remote;
 pub mod signaling;
 pub mod state;
 pub mod video;
+pub mod watch;
 
 pub use engine::{Engine, EngineStatus};
 pub use state::{EngineError, VoiceState};

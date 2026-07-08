@@ -18,6 +18,10 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 tavern-protocol = { path = "../protocol" }
 tavern-capture = { path = "../capture" }
+# Video watch leg (S5.4): str0m answers the SFU's pull offer and emits DEPACKETIZED encoded
+# VP8 frames — the S1.4 FALLBACK(a) branch (the libwebrtc binding exposes no receive-side
+# encoded-frame tap). rust-crypto backend = pure Rust, no C build deps.
+str0m = { version = "=0.21.0", default-features = false, features = ["rust-crypto"] }
 
 [dev-dependencies]
 # Local mock HTTP server for the signaling DoD test (real reqwest over a socket). Test-only.
