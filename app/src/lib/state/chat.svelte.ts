@@ -10,13 +10,25 @@ export class ChatStore {
     return this.byChannel[channelId] ?? [];
   }
 
-  // Append a newer message, dedup by id, keeping only the most recent CHAT_CAP.
   add(msg: ChatMsg): void {
-    const cur = this.byChannel[msg.channelId] ?? [];
-    if (cur.some((m) => m.id === msg.id)) return;
-    let next = [...cur, msg];
+    this.merge(msg.channelId, [msg]);
+  }
+
+  // Merge messages (live or a history page) into a channel, kept ascending by id.
+  // Dedup by id; also dedup by nonce so an optimistic own-send is replaced by the
+  // server's authoritative row when it echoes (§1). Keeps the newest CHAT_CAP.
+  // ponytail: full re-sort per merge — n ≤ 200, so O(n log n) is irrelevant.
+  merge(channelId: string, msgs: ChatMsg[]): void {
+    const byId = new Map((this.byChannel[channelId] ?? []).map((m) => [m.id, m]));
+    for (const m of msgs) {
+      if (m.nonce) {
+        for (const [id, ex] of byId) if (ex.nonce === m.nonce && id !== m.id) byId.delete(id);
+      }
+      byId.set(m.id, m);
+    }
+    let next = [...byId.values()].sort((a, b) => a.id - b.id);
     if (next.length > CHAT_CAP) next = next.slice(next.length - CHAT_CAP);
-    this.byChannel = { ...this.byChannel, [msg.channelId]: next };
+    this.byChannel = { ...this.byChannel, [channelId]: next };
   }
 
   reset(): void {

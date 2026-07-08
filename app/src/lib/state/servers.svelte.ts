@@ -54,6 +54,21 @@ export class ServersStore {
     this.rosterByServer = { ...this.rosterByServer, [serverId]: roster };
   }
 
+  applyProfile(serverId: string, p: Member): void {
+    const roster = this.rosterByServer[serverId] ?? [];
+    this.setRoster(
+      serverId,
+      roster.map((m) => (m.userId === p.userId ? p : m)),
+    );
+  }
+
+  // Replace the whole presence map for a server (hello.ok carries the full set).
+  setPresence(serverId: string, list: Presence[]): void {
+    const map: Record<string, Presence> = {};
+    for (const p of list) if (p.state !== 'offline') map[p.userId] = p;
+    this.presenceByServer = { ...this.presenceByServer, [serverId]: map };
+  }
+
   applyPresence(serverId: string, p: Presence): void {
     const cur = { ...(this.presenceByServer[serverId] ?? {}) };
     if (p.state === 'offline') delete cur[p.userId];

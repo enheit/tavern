@@ -24,3 +24,19 @@ test('dedups by id and isolates channels', () => {
   expect(chat.messages('c2').length).toBe(1);
   expect(chat.messages('missing')).toEqual([]);
 });
+
+test('merge keeps ascending id order for out-of-order history pages', () => {
+  const chat = new ChatStore();
+  chat.add(msg(3));
+  chat.merge('c1', [msg(1), msg(2)]); // older page arrives after a live msg
+  expect(chat.messages('c1').map((m) => m.id)).toEqual([1, 2, 3]);
+});
+
+test('merge dedups an optimistic own-send by nonce when the server row arrives', () => {
+  const chat = new ChatStore();
+  const optimistic = { id: -1, channelId: 'c1', userId: 'u', content: 'hi', nonce: 'n1', createdAt: 1 };
+  const serverRow = { id: 7, channelId: 'c1', userId: 'u', content: 'hi', nonce: 'n1', createdAt: 2 };
+  chat.merge('c1', [optimistic]);
+  chat.merge('c1', [serverRow]);
+  expect(chat.messages('c1').map((m) => m.id)).toEqual([7]);
+});
