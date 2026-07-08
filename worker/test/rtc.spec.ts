@@ -184,6 +184,46 @@ describe('rtc: publish + registry + share cap', () => {
     await c.waitFor((m) => m.t === 'tracks' && m.tracks.length === 1);
     expect((await rtc('unpublish', { channelId: voice, trackName: 'cam' }, owner.token)).status).toBe(200);
     await c.waitFor((m) => m.t === 'tracks' && m.ownerId === owner.userId && m.tracks.length === 0);
+    // The SFU CloseTracksRequest closes by transceiver mid with force (no renegotiation) —
+    // the {trackName} shape 400s against the real SFU (found live at S5.2).
+    const close = sfuCalls.find((x) => x.url.endsWith('/tracks/close'));
+    expect(close?.method).toBe('PUT');
+    expect(close?.body).toEqual({ tracks: [{ mid: '0' }], force: true });
+  });
+
+  // §1: on voice.leave / WS close (and the stale sweep, same helper) the user's track
+  // registry is cleared and an empty `tracks` roster is broadcast. Found live at S5.2:
+  // a crashed sharer left its stale tracks in the next hello.ok.
+  it('voice.leave clears the track registry and broadcasts empty tracks', async () => {
+    const owner = await newUser();
+    const watcher = await newUser();
+    const serverId = await makeServer(owner.token);
+    await jpost('/api/servers/join', { serverId }, watcher.token);
+    const voice = await makeVoice(owner.token, serverId);
+    const c = await joinVoice(serverId, voice, owner);
+    const w = await connect(serverId, watcher.token);
+    await publish(owner.token, voice, { trackName: 'scr', kind: 'screen', width: 1280, height: 720, fps: 30 });
+    await w.waitFor((m) => m.t === 'tracks' && m.ownerId === owner.userId && m.tracks.length === 1);
+    c.send({ t: 'voice.leave' });
+    await w.waitFor((m) => m.t === 'tracks' && m.ownerId === owner.userId && m.tracks.length === 0);
+  });
+
+  it('WS close clears the track registry and broadcasts empty tracks', async () => {
+    const owner = await newUser();
+    const watcher = await newUser();
+    const serverId = await makeServer(owner.token);
+    await jpost('/api/servers/join', { serverId }, watcher.token);
+    const voice = await makeVoice(owner.token, serverId);
+    const c = await joinVoice(serverId, voice, owner);
+    const w = await connect(serverId, watcher.token);
+    await publish(owner.token, voice, { trackName: 'scr', kind: 'screen', width: 1280, height: 720, fps: 30 });
+    await w.waitFor((m) => m.t === 'tracks' && m.ownerId === owner.userId && m.tracks.length === 1);
+    c.close();
+    await w.waitFor((m) => m.t === 'tracks' && m.ownerId === owner.userId && m.tracks.length === 0);
+    // A reconnecting client must not see the stale track in hello.ok.
+    const again = await connect(serverId, watcher.token);
+    const hello = await again.waitFor((m) => m.t === 'hello.ok');
+    expect(hello.tracks).toEqual([]);
   });
 });
 
@@ -286,6 +326,8 @@ describe('rtc: budget', () => {
     expect(b).toBeGreaterThan(a); // grew
 
     await rtc('unsubscribe', { channelId: voice, ownerId: owner.userId, trackName: 'mic' }, sub.token);
+    const close = sfuCalls.find((x) => x.url.endsWith('/tracks/close'));
+    expect(close?.body).toEqual({ tracks: [{ mid: '0' }], force: true });
     await setClock(t0 + 90_000);
     await runDurableObjectAlarm(stub);
     const c = await readEst(serverId, month);
@@ -345,6 +387,8 @@ describe('rtc: renegotiate + close + hello tracks', () => {
     await publish(owner.token, voice, { trackName: 'scr', kind: 'screen', width: 1280, height: 720, fps: 30 });
     await c.waitFor((m) => m.t === 'tracks' && m.tracks.length === 1);
     expect((await rtc('close', { channelId: voice }, owner.token)).status).toBe(200);
+    // No session-close endpoint exists on the SFU (OpenAPI 2024-05-21) — must not be called.
+    expect(sfuCalls.some((x) => x.url.includes('/close') && !x.url.includes('/tracks/close'))).toBe(false);
     await c.waitFor((m) => m.t === 'tracks' && m.ownerId === owner.userId && m.tracks.length === 0);
   });
 

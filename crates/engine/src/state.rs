@@ -7,12 +7,16 @@
 pub enum EngineError {
     /// `voice_join` called while already joining/joined (double-join rejected, §1).
     AlreadyInVoice,
+    /// A screen/webcam start while a share of that kind is already live (§1: one per kind).
+    AlreadySharing,
     /// A voice/media op was attempted before `engine_configure`.
     NotConfigured,
     /// Signaling (`/api/rtc/*`) failure.
     Signaling(crate::signaling::SignalError),
     /// Audio-processing failure.
     Apm(crate::apm::ApmError),
+    /// Screen/webcam capture failure (typed: permission / portal / source / device).
+    Capture(tavern_capture::CaptureError),
     /// Capture / playout / PeerConnection failure.
     Media(String),
 }
@@ -21,9 +25,11 @@ impl std::fmt::Display for EngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EngineError::AlreadyInVoice => write!(f, "already in voice"),
+            EngineError::AlreadySharing => write!(f, "already sharing"),
             EngineError::NotConfigured => write!(f, "engine not configured"),
             EngineError::Signaling(e) => write!(f, "{e}"),
             EngineError::Apm(e) => write!(f, "{e}"),
+            EngineError::Capture(e) => write!(f, "capture: {e}"),
             EngineError::Media(e) => write!(f, "media: {e}"),
         }
     }
@@ -38,6 +44,11 @@ impl From<crate::signaling::SignalError> for EngineError {
 impl From<crate::apm::ApmError> for EngineError {
     fn from(e: crate::apm::ApmError) -> Self {
         EngineError::Apm(e)
+    }
+}
+impl From<tavern_capture::CaptureError> for EngineError {
+    fn from(e: tavern_capture::CaptureError) -> Self {
+        EngineError::Capture(e)
     }
 }
 

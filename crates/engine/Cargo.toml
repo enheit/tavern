@@ -17,6 +17,7 @@ serde_json = "1"
 futures-util = "0.3"
 uuid = { version = "1", features = ["v4"] }
 tavern-protocol = { path = "../protocol" }
+tavern-capture = { path = "../capture" }
 
 [dev-dependencies]
 # Local mock HTTP server for the signaling DoD test (real reqwest over a socket). Test-only.

@@ -24,6 +24,12 @@ use libwebrtc::peer_connection_factory::{
 };
 use libwebrtc::rtp_transceiver::{RtpTransceiverDirection, RtpTransceiverInit};
 use libwebrtc::session_description::{SdpType, SessionDescription};
+use libwebrtc::video_source::native::NativeVideoSource;
+use libwebrtc::video_source::VideoResolution;
+use tavern_capture::{
+    config, CaptureBackend, CaptureConfig, CaptureSession, FrameSink, NativeBackend, SourceInfo,
+    WebcamInfo,
+};
 use tavern_protocol::TrackInfo;
 use tokio::sync::mpsc;
 
@@ -33,6 +39,7 @@ use crate::pipeline::{AudioPipeline, MicState, SAMPLE_RATE};
 use crate::remote::{diff_mic, TrackRef};
 use crate::signaling::{PublishTrack, Signaling};
 use crate::state::{EngineError, VoiceSm, VoiceState};
+use crate::video::{self, SharesSm, VideoKind};
 
 const AUDIO_HZ: u32 = SAMPLE_RATE as u32;
 
@@ -69,6 +76,17 @@ pub struct WatchingTrack {
     pub layer: String,
 }
 
+/// A live screen/webcam publish: the capture pump + the video source it feeds. Dropping it
+/// stops the capture thread (PumpSession::drop); the transceiver stays on the PC but goes
+/// silent. // ponytail: transceivers aren't removed on stop — a re-share adds a new one
+/// (bounded by user actions per session); reuse them if mid exhaustion ever matters.
+struct ActiveVideo {
+    kind: VideoKind,
+    track_name: String,
+    _session: Box<dyn CaptureSession>,
+    _source: NativeVideoSource,
+}
+
 /// Live handles for an active voice session. Dropping it tears the session down. The mic
 /// `NativeAudioSource` is kept alive by the driver task's clone, so it needn't be held here.
 struct Session {
@@ -101,6 +119,10 @@ pub struct Engine {
     roster: Mutex<Vec<TrackInfo>>,
     /// trackNames we published (to skip our own tracks in the mic diff + report status).
     published: Mutex<Vec<PublishedTrack>>,
+    /// One-share-per-kind guard (screen/webcam), pure SM in [`crate::video`].
+    shares: Mutex<SharesSm>,
+    /// Live screen/webcam publishes (capture pump + video source).
+    videos: Mutex<Vec<ActiveVideo>>,
     session: Mutex<Option<Session>>,
     /// Remote audio tracks the SFU adds to our PC, in arrival order (paired to subscribes). Held
     /// in an async mutex so the subscribe path can `recv().await` without blocking other locks.
@@ -129,6 +151,8 @@ impl Engine {
             subs: Mutex::new(BTreeSet::new()),
             roster: Mutex::new(Vec::new()),
             published: Mutex::new(Vec::new()),
+            shares: Mutex::new(SharesSm::default()),
+            videos: Mutex::new(Vec::new()),
             session: Mutex::new(None),
             track_rx: tokio::sync::Mutex::new(None),
             on_levels: Mutex::new(None),
@@ -172,6 +196,12 @@ impl Engine {
     fn emit_state(&self, label: &str) {
         if let Some(cb) = self.on_state.lock().unwrap().clone() {
             cb(label.to_string());
+        }
+    }
+
+    fn emit_error(&self, code: &str) {
+        if let Some(cb) = self.on_error.lock().unwrap().clone() {
+            cb(code.to_string());
         }
     }
 
@@ -349,7 +379,8 @@ impl Engine {
         Ok(mic_track_name)
     }
 
-    /// `voice_leave()` — close the SFU session and tear down capture/playout. Idempotent.
+    /// `voice_leave()` — close the SFU session and tear down capture/playout + any live
+    /// screen/webcam shares (rtc/close clears them server-side). Idempotent.
     pub async fn voice_leave(&self) -> Result<(), EngineError> {
         let channel = self.sm.lock().unwrap().leave();
         let session = self.session.lock().unwrap().take(); // Drop stops the device thread
@@ -357,6 +388,8 @@ impl Engine {
         self.subs.lock().unwrap().clear();
         self.remote.clear();
         self.published.lock().unwrap().clear();
+        self.shares.lock().unwrap().clear();
+        self.videos.lock().unwrap().clear(); // Drop joins the capture pumps
         drop(session);
         if let (Some(channel), Ok(sig)) = (channel, self.signaling()) {
             let _ = sig.close(&channel).await;
@@ -482,6 +515,255 @@ impl Engine {
         });
         Ok(())
     }
+
+    // ---- screen share / webcam (S5.2) ------------------------------------------------------
+
+    /// `screen_sources()` — shareable screens + windows (§1 command).
+    pub fn screen_sources(&self) -> Result<Vec<SourceInfo>, EngineError> {
+        Ok(NativeBackend.list_screen_sources()?)
+    }
+
+    /// `webcam_list()` (§1 command).
+    pub fn webcam_list(&self) -> Result<Vec<WebcamInfo>, EngineError> {
+        Ok(NativeBackend.list_webcams()?)
+    }
+
+    /// `screen_share_start({sourceId,width,height,fps})` → the screen trackName.
+    /// `width=0,height=0` = native (§1). Requires an active voice session.
+    pub async fn screen_share_start(
+        &self,
+        source_id: &str,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> Result<String, EngineError> {
+        self.start_video(
+            VideoKind::Screen,
+            source_id,
+            CaptureConfig { width, height, fps },
+        )
+        .await
+    }
+
+    /// `screen_share_stop()` — `/api/rtc/unpublish` + capture teardown. Idempotent.
+    pub async fn screen_share_stop(&self) -> Result<(), EngineError> {
+        self.stop_video(VideoKind::Screen).await
+    }
+
+    /// `webcam_start({deviceId,width,height,fps})` → the webcam trackName.
+    pub async fn webcam_start(
+        &self,
+        device_id: &str,
+        width: u32,
+        height: u32,
+        fps: u32,
+    ) -> Result<String, EngineError> {
+        self.start_video(
+            VideoKind::Webcam,
+            device_id,
+            CaptureConfig { width, height, fps },
+        )
+        .await
+    }
+
+    /// `webcam_stop()` — `/api/rtc/unpublish` + capture teardown. Idempotent.
+    pub async fn webcam_stop(&self) -> Result<(), EngineError> {
+        self.stop_video(VideoKind::Webcam).await
+    }
+
+    async fn start_video(
+        &self,
+        kind: VideoKind,
+        source_id: &str,
+        cfg: CaptureConfig,
+    ) -> Result<String, EngineError> {
+        let sig = self.signaling()?;
+        let (channel, pc) = {
+            let sm = self.sm.lock().unwrap();
+            let channel = match sm.state() {
+                VoiceState::Connected { channel_id } => channel_id.clone(),
+                _ => return Err(EngineError::Media("not in voice".into())),
+            };
+            let pc = self
+                .session
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|s| s.pc.clone())
+                .ok_or_else(|| EngineError::Media("no session".into()))?;
+            (channel, pc)
+        };
+        self.shares.lock().unwrap().begin(kind)?;
+
+        match self
+            .publish_video(kind, source_id, cfg, &sig, &channel, pc)
+            .await
+        {
+            Ok(active) => {
+                let name = active.track_name.clone();
+                self.shares.lock().unwrap().mark_active(kind, &name);
+                self.published.lock().unwrap().push(PublishedTrack {
+                    kind: kind.as_str().into(),
+                    track_name: name.clone(),
+                });
+                self.videos.lock().unwrap().push(active);
+                Ok(name)
+            }
+            Err(e) => {
+                self.shares.lock().unwrap().abort(kind);
+                // DoD: the share-cap 409 surfaces as a typed engine event.
+                if let Some(code) = video::error_event_code(&e) {
+                    self.emit_error(code);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Capture → NativeVideoSource (`is_screencast` on screens) → offer → `/api/rtc/publish`
+    /// with the §1 layers/bitrates → SFU answer. Frames drop until the publish succeeds
+    /// (the sink's source cell stays empty), then flow on the capture thread.
+    async fn publish_video(
+        &self,
+        kind: VideoKind,
+        source_id: &str,
+        cfg: CaptureConfig,
+        sig: &Signaling,
+        channel: &str,
+        pc: Arc<PeerConnection>,
+    ) -> Result<ActiveVideo, EngineError> {
+        let fps = if cfg.fps == 0 { 30 } else { cfg.fps };
+
+        let target: Arc<Mutex<Option<NativeVideoSource>>> = Arc::new(Mutex::new(None));
+        let sink: FrameSink = {
+            let target = target.clone();
+            Box::new(move |frame| {
+                if let Some(source) = target.lock().unwrap().as_ref() {
+                    source.capture_frame(&frame);
+                }
+            })
+        };
+        let session = match kind {
+            VideoKind::Screen => NativeBackend.open_screen(source_id, cfg, sink)?,
+            VideoKind::Webcam => NativeBackend.open_webcam(source_id, cfg, sink)?,
+        };
+
+        // The §1 plan: webcams are planned from the requested cfg; screens need the real
+        // source dims (native sizing + bucketing), known after the first frame.
+        let plan = match kind {
+            VideoKind::Webcam => config::plan_webcam(cfg.width, cfg.height, fps),
+            VideoKind::Screen => {
+                let (sw, sh) = wait_source_size(session.as_ref()).await?;
+                config::plan_screen(cfg.height, fps, sw, sh)
+            }
+        };
+
+        let source = NativeVideoSource::new(
+            VideoResolution {
+                width: plan.h.width,
+                height: plan.h.height,
+            },
+            matches!(kind, VideoKind::Screen), // is_screencast=true on screen tracks (§1)
+        );
+        let track_name = format!("{}-{}", kind.as_str(), uuid::Uuid::new_v4());
+        let track = self.factory.create_video_track(&track_name, source.clone());
+        let mst: MediaStreamTrack = track.into();
+        let tvr = pc
+            .add_transceiver(
+                mst,
+                RtpTransceiverInit {
+                    direction: RtpTransceiverDirection::SendOnly,
+                    stream_ids: vec!["tavern-video".into()],
+                    send_encodings: video::encodings_for(&plan),
+                },
+            )
+            .map_err(|e| EngineError::Media(format!("add_transceiver(video): {e:?}")))?;
+
+        let offer = pc
+            .create_offer(OfferOptions {
+                ice_restart: false,
+                offer_to_receive_audio: false,
+                offer_to_receive_video: false,
+            })
+            .await
+            .map_err(|e| EngineError::Media(format!("create_offer(video): {e:?}")))?;
+        let offer_sdp = offer.to_string();
+        pc.set_local_description(offer)
+            .await
+            .map_err(|e| EngineError::Media(format!("set_local(video): {e:?}")))?;
+        let mid = tvr
+            .mid()
+            .ok_or_else(|| EngineError::Media("no video mid".into()))?;
+
+        let publish_track = PublishTrack {
+            track_name: track_name.clone(),
+            kind: kind.as_str().into(),
+            mid,
+            width: plan.h.width,
+            height: plan.h.height,
+            fps: plan.h.fps,
+            simulcast: plan.simulcast(),
+        };
+        let answer = sig.publish(channel, &publish_track, &offer_sdp).await?;
+        pc.set_remote_description(
+            SessionDescription::parse(&answer.sdp, SdpType::Answer)
+                .map_err(|e| EngineError::Media(format!("parse video answer: {e:?}")))?,
+        )
+        .await
+        .map_err(|e| EngineError::Media(format!("set_remote(video): {e:?}")))?;
+
+        // Arm the sink — frames start reaching the encoder.
+        *target.lock().unwrap() = Some(source.clone());
+        Ok(ActiveVideo {
+            kind,
+            track_name,
+            _session: session,
+            _source: source,
+        })
+    }
+
+    async fn stop_video(&self, kind: VideoKind) -> Result<(), EngineError> {
+        // Idempotent: nothing active (or a start still in flight) → no-op.
+        let Some(track_name) = self.shares.lock().unwrap().stop(kind) else {
+            return Ok(());
+        };
+        // Local teardown first (dropping ActiveVideo joins the capture pump)...
+        let removed: Vec<ActiveVideo> = {
+            let mut videos = self.videos.lock().unwrap();
+            let (gone, keep): (Vec<ActiveVideo>, Vec<ActiveVideo>) =
+                videos.drain(..).partition(|v| v.kind == kind);
+            *videos = keep;
+            gone
+        };
+        drop(removed);
+        self.published
+            .lock()
+            .unwrap()
+            .retain(|p| p.track_name != track_name);
+        // ...then tell the server (skipped when already out of voice — rtc/close covers it).
+        let channel = self
+            .sm
+            .lock()
+            .unwrap()
+            .state()
+            .channel_id()
+            .map(str::to_string);
+        if let (Some(channel), Ok(sig)) = (channel, self.signaling()) {
+            sig.unpublish(&channel, &track_name).await?;
+        }
+        Ok(())
+    }
+}
+
+/// Poll a capture session until its first frame reveals the raw source dims (≤5 s).
+async fn wait_source_size(session: &dyn CaptureSession) -> Result<(u32, u32), EngineError> {
+    for _ in 0..100 {
+        if let Some(wh) = session.source_size() {
+            return Ok(wh);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    Err(EngineError::Media("no capture frames within 5s".into()))
 }
 
 fn rtc_config() -> RtcConfiguration {

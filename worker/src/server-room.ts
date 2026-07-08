@@ -152,7 +152,8 @@ export class ServerRoom {
     // A superseded socket (connId mismatch) is ignored (§1).
     if (row && row.conn_id === att.connId) {
       this.sql.exec('DELETE FROM presence WHERE user_id = ?', att.userId);
-      await this.finalizeSubscriber(att.userId); // stop accrual on subscriber disconnect (§1)
+      // §1: on WS close — clear the track registry, broadcast tracks [], finalize accruals.
+      await this.clearUserMedia(att.userId);
       this.broadcast({ t: 'presence', userId: att.userId, state: 'offline', channelId: null });
     }
   }
@@ -253,14 +254,15 @@ export class ServerRoom {
     this.broadcast({ t: 'presence', userId: att.userId, state: 'voice', channelId });
   }
 
-  private onVoiceLeave(att: Attachment): void {
+  private async onVoiceLeave(att: Attachment): Promise<void> {
     this.sql.exec(
       `UPDATE presence SET state = 'online', channel_id = NULL, last_seen = ? WHERE user_id = ?`,
       this.nowMs(),
       att.userId,
     );
     this.broadcast({ t: 'presence', userId: att.userId, state: 'online', channelId: null });
-    // Track registry / accrual teardown lands in S2.6.
+    // §1: on voice.leave — clear the track registry, broadcast tracks [], finalize accruals.
+    await this.clearUserMedia(att.userId);
   }
 
   // ---- alarm (stale-presence sweep; budget flush lands in S2.6) -------------
@@ -275,7 +277,8 @@ export class ServerRoom {
     ];
     for (const { user_id } of stale) {
       this.sql.exec('DELETE FROM presence WHERE user_id = ?', user_id);
-      await this.finalizeSubscriber(user_id); // finalize reaped users' accrual (§1)
+      // §1: on stale sweep — clear the track registry, broadcast tracks [], finalize accruals.
+      await this.clearUserMedia(user_id);
       this.broadcast({ t: 'presence', userId: user_id, state: 'offline', channelId: null });
     }
     await this.flushBudget(); // §1 alarm job 2: budget flush + level re-eval
@@ -475,6 +478,11 @@ export class ServerRoom {
     const res = await this.sfu(`/sessions/${sessionId}/tracks/new`, 'POST', b.sfu);
     const sfu = await res.json<any>();
     if (res.ok) {
+      // The SFU closes tracks by transceiver mid (CloseTracksRequest); remember the
+      // publisher's mid (from its request) for rtcUnpublish. Kept out of the track
+      // registry record so `tracks` broadcasts stay exactly TrackInfo-shaped.
+      const mid = b.sfu?.tracks?.[0]?.mid;
+      if (mid) await this.ctx.storage.put(`pubmid:${b.userId}:${b.trackName}`, mid);
       await this.ctx.storage.put(`track:${b.userId}:${b.trackName}`, {
         ownerId: b.userId,
         trackName: b.trackName,
@@ -515,6 +523,8 @@ export class ServerRoom {
     const res = await this.sfu(`/sessions/${subSessionId}/tracks/new`, 'POST', sfuReq);
     const sfu = await res.json<any>();
     if (res.ok) {
+      const mid = sfu?.tracks?.[0]?.mid;
+      if (mid) await this.ctx.storage.put(`pullmid:${b.userId}:${b.ownerId}:${b.trackName}`, mid);
       const bitrateKbps = pulledBitrateKbps(track as TrackShape, layer);
       await this.ctx.storage.put(`acc:${b.userId}:${b.ownerId}:${b.trackName}`, {
         bitrateKbps,
@@ -527,9 +537,15 @@ export class ServerRoom {
   private async rtcUnsubscribe(b: any): Promise<Response> {
     await this.finalizeAccrual(`acc:${b.userId}:${b.ownerId}:${b.trackName}`);
     const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
-    const res = sessionId
-      ? await this.sfu(`/sessions/${sessionId}/tracks/close`, 'PUT', { tracks: [{ trackName: b.trackName }] })
-      : null;
+    // CloseTracksRequest closes by mid; force=true stops the data flow without a
+    // renegotiation round-trip (the client tears down its own side independently).
+    const midKey = `pullmid:${b.userId}:${b.ownerId}:${b.trackName}`;
+    const mid = await this.ctx.storage.get<string>(midKey);
+    await this.ctx.storage.delete(midKey);
+    const res =
+      sessionId && mid
+        ? await this.sfu(`/sessions/${sessionId}/tracks/close`, 'PUT', { tracks: [{ mid }], force: true })
+        : null;
     return Response.json({ sfu: res ? await res.json<any>() : null }, { status: res?.status ?? 200 });
   }
 
@@ -543,19 +559,23 @@ export class ServerRoom {
 
   private async rtcUnpublish(b: any): Promise<Response> {
     const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
-    const res = sessionId
-      ? await this.sfu(`/sessions/${sessionId}/tracks/close`, 'PUT', { tracks: [{ trackName: b.trackName }] })
-      : null;
+    const midKey = `pubmid:${b.userId}:${b.trackName}`;
+    const mid = await this.ctx.storage.get<string>(midKey);
+    await this.ctx.storage.delete(midKey);
+    const res =
+      sessionId && mid
+        ? await this.sfu(`/sessions/${sessionId}/tracks/close`, 'PUT', { tracks: [{ mid }], force: true })
+        : null;
     await this.ctx.storage.delete(`track:${b.userId}:${b.trackName}`);
     await this.broadcastTracks(b.userId);
     return Response.json({ sfu: res ? await res.json<any>() : null }, { status: res?.status ?? 200 });
   }
 
   private async rtcClose(b: any): Promise<Response> {
-    const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
-    const res = sessionId ? await this.sfu(`/sessions/${sessionId}/close`, 'PUT', {}) : null;
+    // The SFU has no session-close endpoint (OpenAPI 2024-05-21): sessions end when the
+    // client's PeerConnection goes away. Settle accruals + clear the registry here.
     await this.clearUserMedia(b.userId);
-    return Response.json({ sfu: res ? await res.json<any>() : null }, { status: res?.status ?? 200 });
+    return Response.json({ sfu: null }, { status: 200 });
   }
 
   // ---- track registry + accrual --------------------------------------------
@@ -619,8 +639,10 @@ export class ServerRoom {
 
   private async clearUserMedia(userId: string): Promise<void> {
     await this.finalizeSubscriber(userId);
-    const tracks = await this.ctx.storage.list({ prefix: `track:${userId}:` });
-    for (const key of tracks.keys()) await this.ctx.storage.delete(key);
+    for (const prefix of [`track:${userId}:`, `pubmid:${userId}:`, `pullmid:${userId}:`]) {
+      const keys = await this.ctx.storage.list({ prefix });
+      for (const key of keys.keys()) await this.ctx.storage.delete(key);
+    }
     await this.ctx.storage.delete(`sess:${userId}`);
     this.broadcast({ t: 'tracks', ownerId: userId, tracks: [] });
   }

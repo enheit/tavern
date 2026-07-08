@@ -34,7 +34,7 @@ async fn main() {
         "run" => run(&args).await,
         "check" => check(&args),
         _ => {
-            eprintln!("usage: e2e-voice seed | run --user a|b [--secs N] [--out F] | check --a F --b F");
+            eprintln!("usage: e2e-voice seed | run --user a|b [--secs N] [--share HxF] [--out F] | check --a F --b F");
             2
         }
     };
@@ -120,7 +120,19 @@ async fn seed(api: &str) -> i32 {
 async fn run(args: &[String]) -> i32 {
     let user = flag(args, "--user").unwrap_or_default();
     let secs: u64 = flag(args, "--secs").and_then(|s| s.parse().ok()).unwrap_or(60);
-    let out = flag(args, "--out").unwrap_or_else(|| format!("{DEFAULT_OUT_DIR}/p6-{user}.json"));
+    // S5.2 mode: --share HxF (e.g. 720x30) publishes the primary screen after voice_join and
+    // gates on framesEncoded ≥ 0.8×F×secs instead of the P6 audio gates.
+    let share: Option<(u32, u32)> = flag(args, "--share").and_then(|s| {
+        let (h, f) = s.split_once('x')?;
+        Some((h.parse().ok()?, f.parse().ok()?))
+    });
+    let out = flag(args, "--out").unwrap_or_else(|| {
+        if share.is_some() {
+            format!("{DEFAULT_OUT_DIR}/s5.2-share.json")
+        } else {
+            format!("{DEFAULT_OUT_DIR}/p6-{user}.json")
+        }
+    });
 
     let handoff: Value = serde_json::from_str(&std::fs::read_to_string(HANDOFF).expect("handoff (run seed first)")).unwrap();
     let api = handoff["apiBase"].as_str().unwrap().to_string();
@@ -138,9 +150,15 @@ async fn run(args: &[String]) -> i32 {
     engine.configure(&api, &token);
     let rtt_samples: Arc<Mutex<Vec<f64>>> = Arc::new(Mutex::new(Vec::new()));
     let last_bytes: Arc<Mutex<(u64, u64)>> = Arc::new(Mutex::new((0, 0)));
+    let frames_encoded: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
     let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     {
-        let (rtt, bytes, user) = (rtt_samples.clone(), last_bytes.clone(), user.clone());
+        let (rtt, bytes, frames, user) = (
+            rtt_samples.clone(),
+            last_bytes.clone(),
+            frames_encoded.clone(),
+            user.clone(),
+        );
         engine.set_stats_sink(Arc::new(move |s: Value| {
             if let Some(ms) = s["rttMs"].as_f64() {
                 rtt.lock().unwrap().push(ms);
@@ -149,6 +167,7 @@ async fn run(args: &[String]) -> i32 {
                 s["bytesSent"].as_u64().unwrap_or(0),
                 s["bytesReceived"].as_u64().unwrap_or(0),
             );
+            *frames.lock().unwrap() = s["framesEncoded"].as_u64().unwrap_or(0);
             eprintln!("[{user}] stats {s}");
         }));
         let errs = errors.clone();
@@ -229,6 +248,17 @@ async fn run(args: &[String]) -> i32 {
     let track_name = engine.voice_join(&channel_id).await.expect("engine voice_join");
     eprintln!("[{user}] publishing mic {track_name}");
 
+    // S5.2: publish the primary screen through the real engine path (capture → I420 →
+    // NativeVideoSource(is_screencast) → §1 encodings → /api/rtc/publish).
+    let mut share_track = String::new();
+    if let Some((h, f)) = share {
+        share_track = engine
+            .screen_share_start("screen:primary", 0, h, f)
+            .await
+            .expect("screen_share_start");
+        eprintln!("[{user}] publishing screen {share_track} ({h}p{f})");
+    }
+
     // Heartbeats keep the DO's stale sweep away while we measure.
     let hb = tokio::spawn(async move {
         let mut t = tokio::time::interval(Duration::from_secs(20));
@@ -246,6 +276,38 @@ async fn run(args: &[String]) -> i32 {
     });
 
     tokio::time::sleep(Duration::from_secs(secs)).await;
+
+    // S5.2 report path: framesEncoded gate, then clean stop (unpublish) + leave.
+    if let Some((h, f)) = share {
+        let frames = *frames_encoded.lock().unwrap();
+        engine.screen_share_stop().await.expect("screen_share_stop");
+        engine.voice_leave().await.ok();
+        hb.abort();
+        reader.abort();
+
+        let expected = f as u64 * secs;
+        let gate = (expected as f64 * 0.8) as u64;
+        let pass = frames >= gate;
+        let report = json!({
+            "step": "S5.2/publish-screen",
+            "gate": "framesEncoded >= 0.8 x expected",
+            "user": user,
+            "durationS": secs,
+            "share": format!("{h}p{f}"),
+            "trackName": share_track,
+            "framesEncoded": frames,
+            "expected": expected,
+            "gateFloor": gate,
+            "pass": pass,
+        });
+        std::fs::create_dir_all(std::path::Path::new(&out).parent().unwrap()).unwrap();
+        std::fs::write(&out, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+        println!(
+            "[{user}] S5.2 {}: framesEncoded={frames} (>= {gate} of expected {expected})",
+            if pass { "PASS" } else { "FAIL" }
+        );
+        return if pass { 0 } else { 1 };
+    }
 
     engine.voice_leave().await.ok();
     hb.abort();
