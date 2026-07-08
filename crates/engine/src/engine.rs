@@ -470,15 +470,15 @@ fn spawn_device_thread(
     })
 }
 
-#[cfg(test)]
+// Both tests build a `PeerConnectionFactory` (real libwebrtc), so the whole module is macOS-only
+// (hard gate per §1); on Linux/Windows the engine still compiles and the device-free module tests
+// run. The live orchestration in this file is validated end-to-end at S4.3 (P6).
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
     /// The non-I/O public API works without a network/device: configure, status, mute/deafen,
     /// gain, and idle set_remote_tracks (which just remembers the roster, no subscribe).
-    /// `Engine::new()` builds a `PeerConnectionFactory`, so this is macOS-only (hard gate per §1);
-    /// the live orchestration in this file is validated end-to-end at S4.3 (P6).
-    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn non_io_api_surface() {
         let eng = Engine::new();
@@ -514,7 +514,6 @@ mod tests {
         assert_eq!(eng.status().voice, "idle");
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn state_sink_fires_on_configure_changes() {
         use std::sync::atomic::AtomicUsize;
