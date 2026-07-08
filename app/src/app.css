@@ -1,0 +1,28 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1a1d21;
+  --muted: #8a8f98;
+  --accent: #5b6bff;
+}
+
+:root[data-theme='dark'] {
+  --bg: #1a1d21;
+  --fg: #e8eaed;
+  --muted: #8a8f98;
+  --accent: #8a97ff;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    system-ui,
+    -apple-system,
+    sans-serif;
+}

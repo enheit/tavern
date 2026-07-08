@@ -11,6 +11,10 @@
     "lint": "pnpm -r lint",
     "test": "pnpm -r test",
     "dev:worker": "pnpm --filter tavern-worker dev",
-    "dev:app": "pnpm --filter tavern-app dev"
+    "dev:app": "pnpm --filter tavern-app dev",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
   }
 }

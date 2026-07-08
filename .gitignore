@@ -9,8 +9,14 @@ target/
 .wrangler/
 .dev.vars
 
+# Tauri generated schemas/bindings
+src-tauri/gen/
+
 # Secrets / keys
 *.key
 
 # macOS
 .DS_Store
+
+# Playwright MCP scratch output
+.playwright-mcp/
