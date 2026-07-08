@@ -10,3 +10,11 @@ rustflags = ["-C", "link-args=-ObjC"]
 
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "link-args=-ObjC"]
+
+# The prebuilt libwebrtc for Windows is compiled against the STATIC CRT (/MT). Rust defaults to
+# the dynamic CRT (/MD), so linking the engine's test/bin against it fails with LNK2038
+# (RuntimeLibrary MT_StaticRelease vs MD_DynamicRelease). Build the whole Windows workspace with
+# the static CRT to match — the documented livekit/rust-sdks requirement. Bonus for a shipped
+# desktop app: the binary no longer needs the VC++ redistributable on end-user machines.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

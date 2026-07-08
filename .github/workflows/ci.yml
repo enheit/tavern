@@ -31,7 +31,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macos pinned to macos-15 (not macos-latest): the bleeding-edge macos-latest image
+        # (Xcode 26.5 / clang 21) intermittently lacks clang_rt.osx at the path webrtc-sys probes
+        # via `cc --print-search-dirs`, so linking libwebrtc flaked (passed run 1, failed run 2 on
+        # identical code). A pinned image keeps the toolchain layout stable. See progress.md S4.1.
+        os: [ubuntu-latest, windows-latest, macos-15]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
