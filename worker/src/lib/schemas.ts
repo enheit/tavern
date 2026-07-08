@@ -27,6 +27,12 @@ export const entityName = z
   .transform((s) => s.trim())
   .refine((s) => codePoints(s) >= 1 && codePoints(s) <= 48, 'name must be 1–48 characters');
 
+export const color = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'color must be #RRGGBB');
+
+export const patchMeSchema = z
+  .object({ nickname: nickname.optional(), color: color.optional() })
+  .refine((d) => d.nickname !== undefined || d.color !== undefined, 'nothing to update');
+
 export const channelKind = z.enum(['text', 'voice']);
 
 export const createServerSchema = z.object({ name: entityName, password: password.optional() });

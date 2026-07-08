@@ -53,6 +53,11 @@ export class ServerRoom {
       const { userId, channelId } = await req.json<{ userId: string; channelId: string }>();
       return Response.json({ allowed: await this.consumeUnlockAttempt(userId, channelId) });
     }
+    if (req.method === 'POST' && url.pathname === '/internal/profile') {
+      const p = await req.json<{ userId: string; nickname: string; color: string; avatarKey: string | null }>();
+      this.broadcast({ t: 'profile', ...p });
+      return new Response(null, { status: 204 });
+    }
     if (req.headers.get('Upgrade') === 'websocket') return this.handleUpgrade(req);
     return new Response('server-room', { status: 200 });
   }
