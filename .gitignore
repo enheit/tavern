@@ -3,6 +3,10 @@ node_modules/
 dist/
 coverage/
 
+# Vitest browser-mode artifacts (failure screenshots / attachments)
+.vitest-attachments/
+__screenshots__/
+
 # Rust
 target/
 

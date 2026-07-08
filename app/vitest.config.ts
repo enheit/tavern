@@ -15,9 +15,12 @@ export default defineConfig({
     coverage: {
       provider: 'istanbul',
       include: ['src/**/*.{ts,svelte}'],
+      // Boot glue (mounts to the DOM) and generated type-only protocol files have
+      // no meaningfully testable logic — excluded like the worker's src/protocol.
+      exclude: ['src/main.ts', 'src/lib/protocol/**'],
       reporter: ['text', 'json'],
-      // Gate (app lines >=70%) enforcement flips on at S3.1, when app code +
-      // component tests land (S2.1 is worker-only; app has no testable code yet).
+      // App coverage gate flips ON at S3.1 (§1 Coverage row: app lines >=70%).
+      thresholds: { lines: 70 },
     },
   },
 });
