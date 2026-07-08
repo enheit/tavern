@@ -12,6 +12,7 @@ target/
 
 # Tauri generated schemas/bindings
 src-tauri/gen/
+spikes/webcodecs/gen/
 
 # Secrets / keys
 *.key
