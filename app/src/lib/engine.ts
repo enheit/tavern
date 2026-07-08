@@ -64,7 +64,28 @@ export const engine = {
   async streamUnwatch(ownerId: string, trackName: string): Promise<void> {
     if (inTauri()) await invoke('stream_unwatch', { ownerId, trackName });
   },
+  async webcamList(): Promise<WebcamDevice[]> {
+    if (!inTauri()) return [];
+    return await invoke<WebcamDevice[]>('webcam_list');
+  },
+  async webcamStart(
+    deviceId: string,
+    width: number,
+    height: number,
+    fps: number,
+  ): Promise<{ trackName: string } | null> {
+    if (!inTauri()) return null;
+    return await invoke<{ trackName: string }>('webcam_start', { deviceId, width, height, fps });
+  },
+  async webcamStop(): Promise<void> {
+    if (inTauri()) await invoke('webcam_stop');
+  },
 };
+
+export interface WebcamDevice {
+  id: string;
+  name: string;
+}
 
 export interface ScreenSource {
   id: string;

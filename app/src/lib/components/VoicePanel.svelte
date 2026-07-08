@@ -2,8 +2,10 @@
   import { voice, SHARE_CAP } from '../state/voice.svelte';
   import { servers } from '../state/servers.svelte';
   import ShareDialog from './dialogs/ShareDialog.svelte';
+  import WebcamDialog from './dialogs/WebcamDialog.svelte';
 
   let sharePickerOpen = $state(false);
+  let camPickerOpen = $state(false);
 
   // Roster/channel names come from the VOICE server (which can differ from the
   // server currently being viewed).
@@ -69,11 +71,20 @@
           Share screen
         </button>
       {/if}
+      {#if voice.camera}
+        <span class="status in" data-testid="camera-indicator">📷 Webcam on</span>
+        <button class="ctl" onclick={() => void voice.camStop()}>Turn off webcam</button>
+      {:else}
+        <button class="ctl" onclick={() => (camPickerOpen = true)}>Webcam</button>
+      {/if}
     </div>
   {/if}
 
   {#if sharePickerOpen}
     <ShareDialog onclose={() => (sharePickerOpen = false)} />
+  {/if}
+  {#if camPickerOpen}
+    <WebcamDialog onclose={() => (camPickerOpen = false)} />
   {/if}
 
   {#if voice.inVoice && voice.participants.length}
