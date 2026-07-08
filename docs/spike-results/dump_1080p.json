@@ -1,0 +1,12 @@
+{
+  "branch": "FALLBACK(a): str0m subscriber leg — primary libwebrtc frame-transformer/cryptor hook not exposed by the 0.3.38 binding",
+  "codec": "Vp8",
+  "container": "IVF",
+  "framesWritten": 300,
+  "iceConnectedMs": 301,
+  "keyframes": 1,
+  "out": "dump_1080p.ivf",
+  "resolution": "1920x1080",
+  "step": "S1.4/encoded-frame-tap",
+  "str0m": "0.21.0 (rust-crypto backend)"
+}

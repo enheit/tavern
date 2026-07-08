@@ -21,3 +21,9 @@ src-tauri/gen/
 
 # Playwright MCP scratch output
 .playwright-mcp/
+
+# S1.4 encoded-frame dumps: large (~2 MB) VP8 binaries, regenerable via
+# spikes/sfu/run_tap.sh; kept on disk as S1.5 decode-probe input. Sidecar
+# dump_*.json (branch + frame counts) IS committed as the DoD evidence.
+docs/spike-results/*.ivf
+docs/spike-results/publish-tap-*.json

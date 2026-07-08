@@ -12,7 +12,12 @@ libwebrtc = "=0.3.38"
 # Pin the exact lockstep version. See progress.md S1.2.
 webrtc-sys = "=0.3.35"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "blocking", "rustls-tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures-util = "0.3" # StreamExt::next() for NativeVideoStream (subscribe.rs)
+# S1.4 encoded-frame tap FALLBACK(a): the pinned libwebrtc 0.3.38 binding exposes no
+# encoded-frame receive hook (FrameCryptor/PacketTrailer run in C++, return only metadata),
+# so a str0m subscriber answers the SFU offer and emits depacketized encoded frames.
+# rust-crypto backend = pure Rust (no cmake/aws-lc C build) for a throwaway spike.
+str0m = { version = "=0.21.0", default-features = false, features = ["rust-crypto"] }
