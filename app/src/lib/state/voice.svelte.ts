@@ -30,6 +30,13 @@ export const SHARE_RES: Record<string, { width: number; height: number }> = {
   '1440': { width: 2560, height: 1440 },
 };
 export const SHARE_FPS = [15, 30, 60, 120];
+// §0 webcam choices: 360/480/720 at 15/30 fps (480 is the common 4:3 camera mode).
+export const CAM_RES: Record<string, { width: number; height: number }> = {
+  '360': { width: 640, height: 360 },
+  '480': { width: 640, height: 480 },
+  '720': { width: 1280, height: 720 },
+};
+export const CAM_FPS = [15, 30];
 
 interface Level {
   userId: string;
@@ -46,6 +53,8 @@ export class VoiceStore {
   micTrackName = $state<string | null>(null);
   // Our live screen share, if any ("You are sharing").
   sharing = $state<{ trackName: string } | null>(null);
+  // Our live webcam publish, if any.
+  camera = $state<{ trackName: string } | null>(null);
   // Streams we joined (§0: manual join per stream): tileKey → watched layer.
   watched = $state<Record<string, 'l' | 'h'>>({});
   // Exactly one pinnable tile → layer "h"; all others watch "l" (§1). Holds a tileKey.
@@ -239,6 +248,28 @@ export class VoiceStore {
     this.sharing = null;
   }
 
+  // ---- webcam (S5.5) -----------------------------------------------------------
+
+  async camStart(deviceId: string, width: number, height: number, fps: number): Promise<void> {
+    if (!this.inVoice || this.camera) return;
+    try {
+      const r = await engine.webcamStart(deviceId, width, height, fps);
+      if (r) this.camera = { trackName: r.trackName };
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async camStop(): Promise<void> {
+    if (!this.camera) return;
+    try {
+      await engine.webcamStop();
+    } catch {
+      // local indicator clears regardless
+    }
+    this.camera = null;
+  }
+
   toggleMute(): void {
     this.muted = !this.muted;
     void engine.setMicMuted(this.muted);
@@ -345,6 +376,7 @@ export class VoiceStore {
     this.channelId = null;
     this.micTrackName = null;
     this.sharing = null;
+    this.camera = null;
     this.watched = {};
     this.pinned = null;
     this.speaking = {};
@@ -358,7 +390,8 @@ export class VoiceStore {
 
   private forwardTracks(): Promise<void> {
     const all = this.serverId ? Object.values(this.tracksByServer[this.serverId] ?? {}).flat() : [];
-    return engine.setRemoteTracks(all);
+    // Fire-and-forget at every call site; the engine converges on the next roster anyway.
+    return engine.setRemoteTracks(all).catch(() => {});
   }
 
   private onLevels(levels: Level[]): void {

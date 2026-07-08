@@ -64,11 +64,13 @@ beforeEach(() => {
   localStorage.clear();
   auth.setSession('me', 'tok', { userId: 'me', nickname: 'Me', color: '#8a8f98', avatarKey: null });
   voice.sendFrame = () => {};
-  seed();
   mockIPC((cmd, args) => {
     invokes.push({ cmd, args: (args ?? {}) as Record<string, unknown> });
     return null;
   });
+  seed(); // after mockIPC — seeding tracks while "in voice" forwards them to the engine
+  invokes = []; // only assert invokes made by the test body
+
 });
 afterEach(() => {
   clearMocks();
