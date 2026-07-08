@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import authRoutes from './routes/auth';
 import serverRoutes from './routes/servers';
+import wsRoutes from './routes/ws';
 
 export interface Env {
   DB: D1Database;
@@ -15,47 +16,12 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.get('/', (c) => c.text('ok'));
 app.route('/api', authRoutes);
+// WS route MUST be mounted before serverRoutes: serverRoutes has a `use('*',
+// bearerAuth)` that would otherwise 401 the header-less WS upgrade (token is in
+// ?token=). First-match wins in Hono, so ws wins for /servers/:id/ws.
+app.route('/api', wsRoutes);
 app.route('/api', serverRoutes);
 
 export default app;
 
-const UNLOCK_WINDOW_MS = 60_000; // §1: fixed 60 s window from first attempt.
-const UNLOCK_MAX_ATTEMPTS = 5; // 6th attempt in window → 429.
-
-/**
- * Per-server coordination Durable Object (WS, presence, chat, RTC, budget).
- * S2.3 wires only the unlock rate-limit counter; WS/presence/chat land in S2.4.
- */
-export class ServerRoom {
-  // Injectable clock (§1 Time): tests override via runInDurableObject.
-  nowMs: () => number = () => Date.now();
-
-  constructor(
-    private ctx: DurableObjectState,
-    private env: Env,
-  ) {}
-
-  async fetch(req: Request): Promise<Response> {
-    const url = new URL(req.url);
-    if (req.method === 'POST' && url.pathname === '/internal/unlock-rate') {
-      const { userId, channelId } = await req.json<{ userId: string; channelId: string }>();
-      return Response.json({ allowed: await this.consumeUnlockAttempt(userId, channelId) });
-    }
-    return new Response('server-room', { status: 200 });
-  }
-
-  // Fixed-window counter keyed per (user, channel). Returns false on the 6th
-  // attempt within the window; the window resets 60 s after the first attempt.
-  private async consumeUnlockAttempt(userId: string, channelId: string): Promise<boolean> {
-    const key = `unlock:${userId}:${channelId}`;
-    const now = this.nowMs();
-    const cur = await this.ctx.storage.get<{ count: number; windowStart: number }>(key);
-    if (!cur || now - cur.windowStart >= UNLOCK_WINDOW_MS) {
-      await this.ctx.storage.put(key, { count: 1, windowStart: now });
-      return true;
-    }
-    const next = { count: cur.count + 1, windowStart: cur.windowStart };
-    await this.ctx.storage.put(key, next);
-    return next.count <= UNLOCK_MAX_ATTEMPTS;
-  }
-}
+export { ServerRoom } from './server-room';
