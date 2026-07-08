@@ -3,4 +3,21 @@ name = "tavern-engine"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
+[dependencies]
+# Media core. libwebrtc 0.3.38 declares webrtc-sys ^0.3.35 but the resolver otherwise pulls
+# 0.3.36, whose FrameMetadata FFI added a `user_data` field 0.3.38 doesn't set (E0063). Pin
+# the exact lockstep version as a direct dep (see progress.md S1.2). No webrtc-sys 0.3.38 exists.
+libwebrtc = "=0.3.38"
+webrtc-sys = "=0.3.35"
+cpal = "0.18"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
+tavern-protocol = { path = "../protocol" }
+
+[dev-dependencies]
+# Local mock HTTP server for the signaling DoD test (real reqwest over a socket). Test-only.
+wiremock = "0.6"

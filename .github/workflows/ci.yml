@@ -37,8 +37,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Linux system deps
         if: runner.os == 'Linux'
+        # libglib2.0-dev: webrtc-sys needs glib/gobject/gio headers to build libwebrtc.
+        # libasound2-dev: cpal's ALSA backend. Both are required now that the libwebrtc-backed
+        # tavern-engine is a workspace member (S4.1 — cargo test/clippy/llvm-cov build it here).
         run: |
-          sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev libasound2-dev clang lld
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.93.1
@@ -59,11 +62,15 @@ jobs:
       - name: Coverage (ubuntu only)
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@cargo-llvm-cov
-      - name: cargo llvm-cov (crates lines >=70%, src-tauri shell excluded)
+      - name: cargo llvm-cov (crates lines >=70%, device/GUI glue excluded)
         if: runner.os == 'Linux'
-        # Enforced from S2.1 (PLAN §1 Coverage: Rust crates >=70%). The src-tauri
-        # GUI shell is 0%-covered boilerplate and is excluded (see S0.2 note).
-        run: cargo llvm-cov --workspace --summary-only --ignore-filename-regex 'src-tauri' --fail-under-lines 70
+        # Enforced from S2.1 (PLAN §1 Coverage: Rust crates >=70%). Excluded, all
+        # 0%-covered non-unit-testable glue validated elsewhere: the src-tauri GUI
+        # shell (S0.2), and the engine's device/PeerConnection/live-SFU orchestration
+        # (engine.rs, audio.rs) — exercised end-to-end at S4.3 (P6), not by unit tests.
+        # The engine's testable core (apm/mixer/pipeline/remote/signaling/state) is
+        # covered here and locally on macOS (S4.1: 95% lines on the core).
+        run: cargo llvm-cov --workspace --summary-only --ignore-filename-regex 'src-tauri|crates/engine/src/(engine|audio)\.rs' --fail-under-lines 70
 
   bundle:
     name: bundle (${{ matrix.os }})

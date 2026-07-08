@@ -1,18 +1,18 @@
-//! Tavern media engine (libwebrtc + APM + capture/playout).
+//! Tavern media engine (S4.1 voice core): native libwebrtc + APM + cpal capture/playout,
+//! signaling against the Worker's `/api/rtc/*`. The webview is pure UI; all media lives here.
 //!
-//! Placeholder for Milestone 0; the real engine lands in Milestone 4+.
+//! Layering: the pure, unit-tested cores — [`mixer`], [`pipeline`], [`state`], [`remote`],
+//! [`signaling`] — carry the decision logic; [`engine::Engine`] + [`audio`] are the live
+//! orchestration/device glue, first exercised end-to-end at S4.3 (P6).
 
-/// Stable identifier for the engine crate.
-pub fn engine_name() -> &'static str {
-    "tavern-engine"
-}
+pub mod apm;
+pub mod audio;
+pub mod engine;
+pub mod mixer;
+pub mod pipeline;
+pub mod remote;
+pub mod signaling;
+pub mod state;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn name_is_stable() {
-        assert_eq!(engine_name(), "tavern-engine");
-    }
-}
+pub use engine::{Engine, EngineStatus};
+pub use state::{EngineError, VoiceState};

@@ -1,0 +1,12 @@
+# libwebrtc's prebuilt static lib uses ObjC categories (VideoToolbox codec info). Binaries
+# that link libwebrtc must pass `-ObjC` or they link clean but crash at runtime with
+# `-[RTCVideoCodecInfo nativeSdpVideoFormat]: unrecognized selector`. webrtc-sys emits this
+# flag for its own artifacts, but the final downstream binary link (engine tests, and the
+# Tauri app once it depends on the engine) needs it too. Proven in the M1 spikes (progress
+# S1.2). Applies to all macOS Rust builds in the workspace — a harmless no-op for crates
+# with no ObjC symbols (protocol, worker-side is JS and unaffected).
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-args=-ObjC"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-args=-ObjC"]
