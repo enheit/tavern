@@ -20,3 +20,20 @@ export const registerSchema = z
 // Login does not re-validate format — a badly-shaped nickname/password simply
 // fails the lookup/verify and returns 401 (no user enumeration via 400 vs 401).
 export const loginSchema = z.object({ nickname: z.string(), password: z.string() });
+
+// Server / channel name: trimmed, 1–48 code points after trim (§1).
+export const entityName = z
+  .string()
+  .transform((s) => s.trim())
+  .refine((s) => codePoints(s) >= 1 && codePoints(s) <= 48, 'name must be 1–48 characters');
+
+export const channelKind = z.enum(['text', 'voice']);
+
+export const createServerSchema = z.object({ name: entityName, password: password.optional() });
+export const joinServerSchema = z.object({ serverId: z.string(), password: z.string().optional() });
+export const createChannelSchema = z.object({
+  name: entityName,
+  kind: channelKind,
+  password: password.optional(),
+});
+export const unlockSchema = z.object({ password: z.string() });
