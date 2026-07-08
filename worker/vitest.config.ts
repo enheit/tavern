@@ -25,7 +25,8 @@ export default defineConfig(async () => {
         provider: 'istanbul',
         include: ['src/**/*.ts'],
         reporter: ['text', 'json'],
-        // Gate (worker lines >=85%) enforcement flips on at S2.1.
+        // Enforced from S2.1 (PLAN §1 Coverage: worker lines >=85%).
+        thresholds: { lines: 85 },
       },
     },
   };

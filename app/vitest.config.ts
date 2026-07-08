@@ -16,7 +16,8 @@ export default defineConfig({
       provider: 'istanbul',
       include: ['src/**/*.{ts,svelte}'],
       reporter: ['text', 'json'],
-      // Gate (app lines >=70%) enforcement flips on at S2.1.
+      // Gate (app lines >=70%) enforcement flips on at S3.1, when app code +
+      // component tests land (S2.1 is worker-only; app has no testable code yet).
     },
   },
 });

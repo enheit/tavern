@@ -21,8 +21,10 @@ jobs:
       - run: pnpm -r build
       # Chromium for the app project's vitest browser-mode tests.
       - run: pnpm --filter tavern-app exec playwright install --with-deps chromium
-      # Test + coverage gates (worker lines >=85%, app lines >=70%) enforced from S2.1.
-      - run: pnpm -r test
+      # Test + coverage gates enforced from S2.1: worker lines >=85% (worker
+      # vitest.config threshold). App lines >=70% flips on at S3.1 when app code
+      # + component tests land (app coverage is ~12% now; no threshold yet).
+      - run: pnpm -r test:cov
 
   rust-test:
     name: rust-test (${{ matrix.os }})
@@ -48,12 +50,11 @@ jobs:
       - name: Coverage (ubuntu only)
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@cargo-llvm-cov
-      - name: cargo llvm-cov (measure only until S2.1)
+      - name: cargo llvm-cov (crates lines >=70%, src-tauri shell excluded)
         if: runner.os == 'Linux'
-        # Coverage enforcement flips on at S2.1 (see PLAN §1 + S0.3). Until then this
-        # step only measures; the ≥70% Rust gate (with src-tauri shell excluded) is
-        # added at S2.1.
-        run: cargo llvm-cov --workspace --summary-only
+        # Enforced from S2.1 (PLAN §1 Coverage: Rust crates >=70%). The src-tauri
+        # GUI shell is 0%-covered boilerplate and is excluded (see S0.2 note).
+        run: cargo llvm-cov --workspace --summary-only --ignore-filename-regex 'src-tauri' --fail-under-lines 70
 
   bundle:
     name: bundle (${{ matrix.os }})
