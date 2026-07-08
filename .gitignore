@@ -28,3 +28,6 @@ spikes/webcodecs/gen/
 # dump_*.json (branch + frame counts) IS committed as the DoD evidence.
 docs/spike-results/*.ivf
 docs/spike-results/publish-tap-*.json
+# S1.6 screen-capture PNGs: downscaled shots of the actual desktop (privacy) + regenerable
+# via spikes/capture/screen. The screen-*.json (achieved fps) IS committed as the P4 evidence.
+docs/spike-results/screen-*.png

@@ -1,0 +1,18 @@
+# Throwaway M1 spike crate (S1.6 capture + audio, P4). Not shipped. Own workspace/Cargo.lock;
+# macOS-runtime, local/manual only. Excluded from the root workspace (spikes/*).
+[package]
+name = "tavern-spike-capture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+libwebrtc = "=0.3.38"
+# lockstep pin (libwebrtc 0.3.38 declares webrtc-sys ^0.3.35; 0.3.36 breaks the build) — see spikes/sfu.
+webrtc-sys = "=0.3.35"
+cpal = "0.18"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures-util = "0.3"

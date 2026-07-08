@@ -1,0 +1,11 @@
+{
+  "cpalCallbacks": 562,
+  "cpalChannels": 2,
+  "cpalSampleFormat": "F32",
+  "durationS": 6,
+  "framesDelivered": 885,
+  "gainApplied": 0.5,
+  "gate": "S1.6(b)",
+  "pass": true,
+  "step": "S1.6/playout-path"
+}

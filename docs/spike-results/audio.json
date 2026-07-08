@@ -1,0 +1,30 @@
+{
+  "adm": {
+    "admInitOk": true,
+    "captureRmsDbfs": -120.0,
+    "framesFromAdm": 0,
+    "recordingInitOk": true
+  },
+  "captureRmsDbfs": -37.9,
+  "cpal": {
+    "captureRmsDbfs": -37.9,
+    "channels": 1,
+    "format": "F32",
+    "samples": 95232
+  },
+  "decision": "cpal",
+  "gate": "P4(audio)",
+  "gates": {
+    "admInitOk": true,
+    "captureRmsAboveMinus50": true,
+    "playoutErrorsZero": true
+  },
+  "note": "",
+  "pass": true,
+  "playout": {
+    "branch": "cpal (engine-owned)",
+    "playoutErrors": 0,
+    "toneHz": 440
+  },
+  "step": "S1.6/audio-capture-decision"
+}
