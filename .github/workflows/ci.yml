@@ -83,11 +83,13 @@ jobs:
         if: runner.os == 'Linux'
         # Enforced from S2.1 (PLAN §1 Coverage: Rust crates >=70%). Excluded, all
         # 0%-covered non-unit-testable glue validated elsewhere: the src-tauri GUI
-        # shell (S0.2), and the engine's device/PeerConnection/live-SFU orchestration
-        # (engine.rs, audio.rs) — exercised end-to-end at S4.3 (P6), not by unit tests.
-        # The engine's testable core (apm/mixer/pipeline/remote/signaling/state) is
-        # covered here and locally on macOS (S4.1: 95% lines on the core).
-        run: cargo llvm-cov --workspace --summary-only --ignore-filename-regex 'src-tauri|crates/engine/src/(engine|audio)\.rs' --fail-under-lines 70
+        # shell (S0.2), the engine's device/PeerConnection/live-SFU orchestration
+        # (engine.rs, audio.rs) — exercised end-to-end at S4.3 (P6), not by unit tests —
+        # and the capture crate's device glue (screen.rs, webcam.rs) — exercised by the
+        # S5.1 P4 re-run + S5.5 manual webcam QA on real hardware. The testable cores
+        # (engine: apm/mixer/pipeline/remote/signaling/state; capture: config/frame/fake)
+        # are covered here and locally on macOS.
+        run: cargo llvm-cov --workspace --summary-only --ignore-filename-regex 'src-tauri|crates/engine/src/(engine|audio)\.rs|crates/capture/src/(screen|webcam)\.rs' --fail-under-lines 70
 
   bundle:
     name: bundle (${{ matrix.os }})

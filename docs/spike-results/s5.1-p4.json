@@ -1,0 +1,50 @@
+{
+  "gate": "P4 re-run through crates/capture real impl",
+  "pass": true,
+  "pipeline": "DesktopCapturer -> BGRA->I420 (libyuv) -> scale -> sink, per frame",
+  "results": [
+    {
+      "achievedFps": 26.98,
+      "durationS": 10,
+      "emittedH": 720,
+      "emittedW": 1152,
+      "fps": 30,
+      "frames": 270,
+      "gated": true,
+      "heightSel": 720,
+      "pass": true,
+      "sourceH": 1800,
+      "sourceW": 2880,
+      "target": "720p30"
+    },
+    {
+      "achievedFps": 28.28,
+      "durationS": 10,
+      "emittedH": 1080,
+      "emittedW": 1728,
+      "fps": 30,
+      "frames": 283,
+      "gated": true,
+      "heightSel": 1080,
+      "pass": true,
+      "sourceH": 1800,
+      "sourceW": 2880,
+      "target": "1080p30"
+    },
+    {
+      "achievedFps": 115.34,
+      "durationS": 10,
+      "emittedH": 1800,
+      "emittedW": 2880,
+      "fps": 120,
+      "frames": 1154,
+      "gated": false,
+      "heightSel": 0,
+      "pass": true,
+      "sourceH": 1800,
+      "sourceW": 2880,
+      "target": "native120"
+    }
+  ],
+  "step": "S5.1"
+}
