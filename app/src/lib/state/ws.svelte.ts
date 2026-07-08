@@ -3,6 +3,7 @@ import type { ServerFrame } from '../protocol/ServerFrame';
 import type { ChatMsg } from '../protocol/ChatMsg';
 import { chat } from './chat.svelte';
 import { servers } from './servers.svelte';
+import { voice } from './voice.svelte';
 
 // One WebSocket per joined server (§1, ≤5). Protocol frames are `{v:1,t,...}`;
 // the ts-rs ClientFrame/ServerFrame unions (S2.7) omit the transport `v`.
@@ -37,14 +38,14 @@ export function applyServerFrame(serverId: string, frame: ServerFrame): void {
     case 'hello.ok':
       servers.setRoster(serverId, frame.roster);
       servers.setPresence(serverId, frame.presence);
+      voice.setHelloTracks(serverId, frame.tracks);
       break;
-    case 'presence':
-      servers.applyPresence(serverId, {
-        userId: frame.userId,
-        state: frame.state,
-        channelId: frame.channelId,
-      });
+    case 'presence': {
+      const p = { userId: frame.userId, state: frame.state, channelId: frame.channelId };
+      servers.applyPresence(serverId, p);
+      voice.notifyPresence(serverId, p); // resolves the §1 join waiter + re-applies gains
       break;
+    }
     case 'profile':
       servers.applyProfile(serverId, {
         userId: frame.userId,
@@ -59,7 +60,10 @@ export function applyServerFrame(serverId: string, frame: ServerFrame): void {
     case 'chat.history':
       chat.merge(frame.channelId, frame.messages);
       break;
-    // tracks/budget → engine + budget UI (M4 / S6.2); ignored by the shell.
+    case 'tracks':
+      voice.applyTracks(serverId, frame.ownerId, frame.tracks); // forwarded to the engine (§1)
+      break;
+    // budget → budget UI (S6.2); ignored by the shell.
   }
 }
 
@@ -281,3 +285,7 @@ class WsPool {
 }
 
 export const wsPool = new WsPool();
+
+// Bind the voice store's WS seam to the pool (kept here to avoid an import cycle:
+// voice.svelte.ts must not import this module). Tests override voice.sendFrame directly.
+voice.sendFrame = (serverId, frame) => wsPool.get(serverId)?.send(frame);

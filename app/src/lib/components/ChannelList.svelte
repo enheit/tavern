@@ -1,5 +1,6 @@
 <script lang="ts">
   import { servers } from '../state/servers.svelte';
+  import { openChannel } from '../actions';
   import type { Channel } from '../api';
   import CreateChannelDialog from './dialogs/CreateChannelDialog.svelte';
   import UnlockDialog from './dialogs/UnlockDialog.svelte';
@@ -11,7 +12,7 @@
 
   function onChannel(ch: Channel): void {
     if (ch.hasPassword && !ch.unlocked) unlockTarget = ch;
-    else servers.selectChannel(ch.id);
+    else openChannel(ch); // text → chat target + history; voice → §1 join sequence
   }
 </script>
 

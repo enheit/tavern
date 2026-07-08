@@ -100,8 +100,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install Linux system deps
         if: runner.os == 'Linux'
+        # From S4.2 src-tauri links the engine (libwebrtc + cpal): same extra deps
+        # as rust-test (libglib2.0-dev, libasound2-dev, clang, lld).
         run: |
-          sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev libasound2-dev clang lld
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -110,6 +112,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.93.1
+      - name: libwebrtc clang_rt link path (macOS)
+        if: runner.os == 'macOS'
+        # Same fix as rust-test (see that job's comment): fresh -L for this runner's
+        # clang_rt so cached webrtc-sys output can't poison the link across Xcodes.
+        run: |
+          RT=$(find "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang" -name libclang_rt.osx.a -print -quit 2>/dev/null || true)
+          echo "clang_rt: ${RT:-<not found>}"
+          FLAGS="-C link-args=-ObjC"
+          if [ -n "$RT" ]; then FLAGS="$FLAGS -L $(dirname "$RT")"; fi
+          echo "RUSTFLAGS=$FLAGS" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - run: pnpm install --frozen-lockfile
       # Red until S0.2 wires up the Tauri shell.

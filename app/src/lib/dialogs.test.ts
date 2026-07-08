@@ -31,6 +31,19 @@ beforeEach(() => {
   auth.reset();
   servers.reset();
   auth.setSession('u1', 't1', { userId: 'u1', nickname: 'Alice', color: '#8a8f98', avatarKey: null });
+  // create/join dialogs reach selectServer, which opens the per-server WS (S4.2).
+  // Must be a constructible class: WsPool does `new WebSocket(url)`.
+  vi.stubGlobal(
+    'WebSocket',
+    class {
+      onopen = null;
+      onmessage = null;
+      onclose = null;
+      onerror = null;
+      send(): void {}
+      close(): void {}
+    },
+  );
 });
 afterEach(() => {
   clearMocks();

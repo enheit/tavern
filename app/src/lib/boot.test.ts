@@ -14,13 +14,30 @@ function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
-// URL-aware fetch stub: /api/me and /api/servers both hit during boot.
+// URL-aware fetch stub: /api/me, /api/servers, and /api/servers/:id/channels all
+// hit during boot (S4.2 opens the per-server WS + loads the selected server's channels).
 function stubApi(meStatus: number, me: unknown, serverList: unknown = []): void {
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url: string) =>
-      String(url).endsWith('/api/servers') ? json(200, serverList) : json(meStatus, me),
-    ),
+    vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.endsWith('/channels')) return json(200, []);
+      if (u.endsWith('/api/servers')) return json(200, serverList);
+      return json(meStatus, me);
+    }),
+  );
+  // activate() opens one WS per server; stub with a constructible class
+  // (WsPool does `new WebSocket(url)`) so no real socket dials.
+  vi.stubGlobal(
+    'WebSocket',
+    class {
+      onopen = null;
+      onmessage = null;
+      onclose = null;
+      onerror = null;
+      send(): void {}
+      close(): void {}
+    },
   );
 }
 

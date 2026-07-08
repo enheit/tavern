@@ -1,5 +1,3 @@
-use std::sync::Mutex;
-
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -73,24 +71,10 @@ pub fn session_clear(store: State<'_, SessionStore>) -> Result<(), String> {
     store.0.clear()
 }
 
-/// Engine config sink (§1 `engine_configure`). The media engine (M4) reads the
-/// last {apiBase, token} the UI pushed; for now it just records it.
-/// ponytail: a Mutex cell is the seam the engine consumes at S4.1 — no engine yet.
-#[derive(Default)]
-pub struct EngineConfig(pub Mutex<Option<(String, String)>>);
-
-#[tauri::command]
-pub fn engine_configure(
-    config: State<'_, EngineConfig>,
-    api_base: String,
-    token: String,
-) -> Result<(), String> {
-    *config.0.lock().map_err(|e| e.to_string())? = Some((api_base, token));
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
 
     struct MockStore(Mutex<Option<Session>>);

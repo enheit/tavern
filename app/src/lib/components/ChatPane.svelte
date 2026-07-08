@@ -1,12 +1,23 @@
 <script lang="ts">
   import { servers } from '../state/servers.svelte';
   import { chat } from '../state/chat.svelte';
+  import { wsPool } from '../state/ws.svelte';
 
   const channel = $derived(servers.currentChannel);
   const messages = $derived(channel ? chat.messages(channel.id) : []);
 
-  // Send is wired to the WS client in S3.2; the composer is inert for now.
   let draft = $state('');
+
+  // Live send over the per-server WS (§1 chat.send). No optimistic row: the server
+  // echoes chat.msg to everyone including the sender; the nonce guards re-sends.
+  function send(): void {
+    const content = draft.trim();
+    if (!content || !channel || !servers.currentServerId) return;
+    wsPool
+      .get(servers.currentServerId)
+      ?.send({ t: 'chat.send', channelId: channel.id, content, nonce: crypto.randomUUID() });
+    draft = '';
+  }
 </script>
 
 <section class="chat">
@@ -20,13 +31,14 @@
         <p class="msg"><span class="who">{m.userId}</span><span class="body">{m.content}</span></p>
       {/each}
     </div>
-    <form class="composer" onsubmit={(e) => e.preventDefault()}>
-      <input
-        placeholder={`Message #${channel.name}`}
-        bind:value={draft}
-        aria-label="Message"
-        disabled
-      />
+    <form
+      class="composer"
+      onsubmit={(e) => {
+        e.preventDefault();
+        send();
+      }}
+    >
+      <input placeholder={`Message #${channel.name}`} bind:value={draft} aria-label="Message" />
     </form>
   {/if}
 </section>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { servers } from '../state/servers.svelte';
+  import { selectServer } from '../actions';
   import CreateServerDialog from './dialogs/CreateServerDialog.svelte';
   import JoinServerDialog from './dialogs/JoinServerDialog.svelte';
 
@@ -22,7 +23,7 @@
       class="server"
       class:active={s.id === servers.currentServerId}
       title={s.name}
-      onclick={() => servers.selectServer(s.id)}
+      onclick={() => void selectServer(s.id)}
     >
       {initials(s.name)}
     </button>

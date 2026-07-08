@@ -3932,6 +3932,8 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tavern-engine",
+ "tavern-protocol",
 ]
 
 [[package]]

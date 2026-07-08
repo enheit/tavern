@@ -1,43 +1,111 @@
 <script lang="ts">
   import { voice } from '../state/voice.svelte';
+  import { servers } from '../state/servers.svelte';
+
+  // Roster/channel names come from the VOICE server (which can differ from the
+  // server currently being viewed).
+  const roster = $derived(voice.serverId ? (servers.rosterByServer[voice.serverId] ?? []) : []);
+  const channelName = $derived(
+    voice.serverId && voice.channelId
+      ? ((servers.channelsByServer[voice.serverId] ?? []).find((c) => c.id === voice.channelId)
+          ?.name ?? voice.channelId)
+      : null,
+  );
+
+  function nick(userId: string): string {
+    return roster.find((m) => m.userId === userId)?.nickname ?? userId;
+  }
 </script>
 
-<!-- Placeholder voice panel (§1 S3.1). S4.2 wires join/leave, sliders, speaking rings. -->
 <div class="voice">
-  <span class="status">{voice.inVoice ? 'In voice' : 'Not in voice'}</span>
-  <div class="controls">
-    <button
-      class="ctl"
-      class:on={voice.muted}
-      aria-pressed={voice.muted}
-      onclick={() => voice.toggleMute()}
-    >
-      {voice.muted ? 'Unmute' : 'Mute'}
-    </button>
-    <button
-      class="ctl"
-      class:on={voice.deafened}
-      aria-pressed={voice.deafened}
-      onclick={() => voice.toggleDeafen()}
-    >
-      {voice.deafened ? 'Undeafen' : 'Deafen'}
-    </button>
+  {#if voice.error}
+    <p class="toast" role="alert">{voice.error}</p>
+  {/if}
+
+  <div class="row">
+    {#if voice.status === 'joining'}
+      <span class="status">Joining…</span>
+    {:else if voice.inVoice}
+      <span class="status in">🔊 {channelName}</span>
+      <button class="ctl" onclick={() => void voice.leave()}>Leave</button>
+    {:else}
+      <span class="status">Not in voice</span>
+    {/if}
+    <div class="controls">
+      <button
+        class="ctl"
+        class:on={voice.muted}
+        aria-pressed={voice.muted}
+        onclick={() => voice.toggleMute()}
+      >
+        {voice.muted ? 'Unmute' : 'Mute'}
+      </button>
+      <button
+        class="ctl"
+        class:on={voice.deafened}
+        aria-pressed={voice.deafened}
+        onclick={() => voice.toggleDeafen()}
+      >
+        {voice.deafened ? 'Undeafen' : 'Deafen'}
+      </button>
+    </div>
   </div>
+
+  {#if voice.inVoice && voice.participants.length}
+    <ul class="members">
+      {#each voice.participants as userId (userId)}
+        <li class="member">
+          <span class="dot" class:speaking={voice.speaking[userId]} data-testid={`vdot-${userId}`}
+          ></span>
+          <span class="name">{nick(userId)}</span>
+          <input
+            class="gain"
+            type="range"
+            min="0"
+            max="200"
+            value={Math.round(voice.gain(userId) * 100)}
+            aria-label={`Volume for ${nick(userId)}`}
+            oninput={(e) => voice.setGain(userId, Number(e.currentTarget.value) / 100)}
+          />
+        </li>
+      {/each}
+    </ul>
+  {/if}
 </div>
 
 <style>
   .voice {
     display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.5rem 0.75rem;
+    border-top: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+  }
+
+  .toast {
+    margin: 0;
+    padding: 0.35rem 0.5rem;
+    border-radius: 6px;
+    background: color-mix(in srgb, #e5484d 18%, transparent);
+    color: #e5484d;
+    font-size: 0.78rem;
+  }
+
+  .row {
+    display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    padding: 0.5rem 0.75rem;
-    border-top: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
   }
 
   .status {
     font-size: 0.8rem;
     color: var(--muted);
+  }
+
+  .status.in {
+    color: var(--fg);
+    font-weight: 600;
   }
 
   .controls {
@@ -59,5 +127,46 @@
     background: var(--accent);
     color: #fff;
     border-color: var(--accent);
+  }
+
+  .members {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+
+  .member {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.85rem;
+  }
+
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--muted) 45%, transparent);
+    outline: 2px solid transparent;
+  }
+
+  /* §1 speaking ring: RMS > 0.02 sustained ≥100 ms. */
+  .dot.speaking {
+    background: #30a46c;
+    outline-color: color-mix(in srgb, #30a46c 55%, transparent);
+  }
+
+  .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .gain {
+    width: 80px;
   }
 </style>

@@ -21,3 +21,8 @@ serde_json = "1"
 # CredentialStore trait so tests use an in-memory mock; the real keychain is only
 # exercised by the manual restart QA. Pinned exact per §1.
 keyring = "3.6.3"
+# The media engine (S4.1) + the single-source protocol types its commands carry (S4.2).
+# Pulls libwebrtc into this crate's link — the bundle CI job mirrors the rust-test
+# macOS clang_rt step and Linux apt deps for exactly this reason.
+tavern-engine = { path = "../crates/engine" }
+tavern-protocol = { path = "../crates/protocol" }

@@ -127,8 +127,10 @@ impl Driver {
         mic_source: NativeAudioSource,
     ) {
         let mut ticker = tokio::time::interval(Duration::from_millis(10));
+        let mut tick_n: u64 = 0;
         while !self.stop.load(Ordering::Relaxed) {
             ticker.tick().await;
+            tick_n += 1;
             let mic_in = pop_frame(&self.capture, FRAME_SAMPLES);
             let remote_frames = self.remote.drain_frame();
             let sources: Vec<MixSource> = remote_frames
@@ -165,7 +167,10 @@ impl Driver {
                 let _ = mic_source.capture_frame(&af).await;
             }
 
-            // RMS levels @10 Hz (self mic + each remote).
+            // RMS levels @10 Hz (§1) — every 10th 10 ms tick; per-frame RMS as the sample.
+            if !tick_n.is_multiple_of(10) {
+                continue;
+            }
             if let Some(cb) = &self.on_levels {
                 let mut levels = Vec::with_capacity(remote_frames.len() + 1);
                 levels.push(Level {
