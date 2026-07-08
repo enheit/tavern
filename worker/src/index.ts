@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import authRoutes from './routes/auth';
+import rtcRoutes from './routes/rtc';
 import serverRoutes from './routes/servers';
 import wsRoutes from './routes/ws';
 
@@ -10,6 +11,10 @@ export interface Env {
   SERVER_ROOM: DurableObjectNamespace;
   BUDGET_SOFT_GB: number;
   BUDGET_HARD_GB: number;
+  // Realtime SFU credentials (dev: worker/.dev.vars; prod: var + secret). Used
+  // ONLY server-side (Worker/DO); the client never receives them.
+  CF_APP_ID: string;
+  CF_APP_SECRET: string;
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -20,6 +25,7 @@ app.route('/api', authRoutes);
 // bearerAuth)` that would otherwise 401 the header-less WS upgrade (token is in
 // ?token=). First-match wins in Hono, so ws wins for /servers/:id/ws.
 app.route('/api', wsRoutes);
+app.route('/api', rtcRoutes);
 app.route('/api', serverRoutes);
 
 export default app;

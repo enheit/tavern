@@ -1,4 +1,5 @@
 import type { Env } from './index';
+import { type TrackShape, pulledBitrateKbps } from './lib/bitrate';
 
 // Per-server coordination Durable Object (PLAN §1): hibernatable WebSockets,
 // presence, chat, and the unlock rate-limit counter. RTC/track registry + budget
@@ -25,6 +26,10 @@ export class ServerRoom {
   // Per-instance cache of granted channel unlocks (positive only — never cache a
   // miss, so a later unlock is picked up). Lost on hibernation, rebuilt from D1.
   private unlocked = new Set<string>();
+  // rtc rate limit: per-user 1 s window (§1: 10/s/user). In-memory — a
+  // hibernation reset only makes the limiter briefly lenient, which is fine.
+  // ponytail: in-memory 1 s window; move to storage only if abuse matters.
+  private rtcRate = new Map<string, { count: number; windowStart: number }>();
 
   constructor(
     private ctx: DurableObjectState,
@@ -57,6 +62,9 @@ export class ServerRoom {
       const p = await req.json<{ userId: string; nickname: string; color: string; avatarKey: string | null }>();
       this.broadcast({ t: 'profile', ...p });
       return new Response(null, { status: 204 });
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/internal/rtc/')) {
+      return this.rtc(url.pathname.slice('/internal/rtc/'.length), await req.json<any>());
     }
     if (req.headers.get('Upgrade') === 'websocket') return this.handleUpgrade(req);
     return new Response('server-room', { status: 200 });
@@ -141,6 +149,7 @@ export class ServerRoom {
     // A superseded socket (connId mismatch) is ignored (§1).
     if (row && row.conn_id === att.connId) {
       this.sql.exec('DELETE FROM presence WHERE user_id = ?', att.userId);
+      await this.finalizeSubscriber(att.userId); // stop accrual on subscriber disconnect (§1)
       this.broadcast({ t: 'presence', userId: att.userId, state: 'offline', channelId: null });
     }
   }
@@ -263,8 +272,10 @@ export class ServerRoom {
     ];
     for (const { user_id } of stale) {
       this.sql.exec('DELETE FROM presence WHERE user_id = ?', user_id);
+      await this.finalizeSubscriber(user_id); // finalize reaped users' accrual (§1)
       this.broadcast({ t: 'presence', userId: user_id, state: 'offline', channelId: null });
     }
+    await this.flushBudget(); // §1 alarm job 2: budget flush + level re-eval
     // Keep the alarm alive while anyone is connected or present.
     if (this.ctx.getWebSockets().length > 0 || this.presenceCount() > 0) {
       await this.ctx.storage.setAlarm(now + ALARM_MS);
@@ -347,8 +358,8 @@ export class ServerRoom {
         avatarKey: u.avatar_key,
       })),
       presence,
-      tracks: [], // registry populated in S2.6
-      budget: { level: 'ok', estMbps: 0, monthGb: 0 }, // budget in S2.6
+      tracks: await this.allTracks(),
+      budget: { level: await this.budgetLevel(), estMbps: 0, monthGb: 0 },
     };
   }
 
@@ -380,6 +391,271 @@ export class ServerRoom {
 
   private sendError(ws: WebSocket, code: string, msg: string): void {
     ws.send(JSON.stringify({ v: PROTOCOL_V, t: 'error', code, msg }));
+  }
+
+  // ---- RTC signaling (§1 Media-signaling) ----------------------------------
+
+  private async rtc(op: string, b: any): Promise<Response> {
+    if (b.serverId && this.serverId !== b.serverId) {
+      this.serverId = b.serverId;
+      await this.ctx.storage.put('serverId', b.serverId);
+    }
+    if (!this.rtcAllowed(b.userId)) return Response.json({ code: 'rate_limited' }, { status: 429 });
+    switch (op) {
+      case 'session':
+        return this.rtcSession(b);
+      case 'publish':
+        return this.rtcPublish(b);
+      case 'subscribe':
+        return this.rtcSubscribe(b);
+      case 'unsubscribe':
+        return this.rtcUnsubscribe(b);
+      case 'renegotiate':
+        return this.rtcRenegotiate(b);
+      case 'unpublish':
+        return this.rtcUnpublish(b);
+      case 'close':
+        return this.rtcClose(b);
+      default:
+        return new Response('unknown op', { status: 404 });
+    }
+  }
+
+  private rtcAllowed(userId: string): boolean {
+    const now = this.nowMs();
+    const cur = this.rtcRate.get(userId);
+    if (!cur || now - cur.windowStart >= 1000) {
+      this.rtcRate.set(userId, { count: 1, windowStart: now });
+      return true;
+    }
+    cur.count += 1;
+    return cur.count <= 10; // 11th call in the window → false → 429
+  }
+
+  private authorizedVoice(userId: string, channelId: string): boolean {
+    const r = [
+      ...this.sql.exec<{ state: string; channel_id: string | null }>(
+        'SELECT state, channel_id FROM presence WHERE user_id = ?',
+        userId,
+      ),
+    ][0];
+    return !!r && r.state === 'voice' && r.channel_id === channelId;
+  }
+
+  // Server-side SFU call. The bearer secret is set here and never leaves the DO.
+  private sfu(path: string, method: string, body?: unknown): Promise<Response> {
+    return fetch(`https://rtc.live.cloudflare.com/v1/apps/${this.env.CF_APP_ID}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${this.env.CF_APP_SECRET}`, 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  }
+
+  private async rtcSession(b: any): Promise<Response> {
+    if (!this.authorizedVoice(b.userId, b.channelId)) return Response.json({ code: 'not_in_voice' }, { status: 403 });
+    const res = await this.sfu('/sessions/new', 'POST');
+    const sfu = await res.json<any>();
+    if (res.ok && sfu?.sessionId) await this.ctx.storage.put(`sess:${b.userId}`, sfu.sessionId);
+    return Response.json({ sfu }, { status: res.status });
+  }
+
+  private async rtcPublish(b: any): Promise<Response> {
+    if (!this.authorizedVoice(b.userId, b.channelId)) return Response.json({ code: 'not_in_voice' }, { status: 403 });
+    if (b.kind === 'screen' && (await this.countScreens(b.channelId)) >= 3) {
+      return Response.json({ code: 'share_limit' }, { status: 409 });
+    }
+    const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    if (!sessionId) return Response.json({ code: 'no_session' }, { status: 400 });
+
+    const res = await this.sfu(`/sessions/${sessionId}/tracks/new`, 'POST', b.sfu);
+    const sfu = await res.json<any>();
+    if (res.ok) {
+      await this.ctx.storage.put(`track:${b.userId}:${b.trackName}`, {
+        ownerId: b.userId,
+        trackName: b.trackName,
+        kind: b.kind,
+        simulcast: !!b.simulcast,
+        width: b.width ?? 0,
+        height: b.height ?? 0,
+        fps: b.fps ?? 0,
+        channelId: b.channelId,
+      });
+      await this.broadcastTracks(b.userId);
+    }
+    return Response.json({ sfu }, { status: res.status });
+  }
+
+  private async rtcSubscribe(b: any): Promise<Response> {
+    if (!this.authorizedVoice(b.userId, b.channelId)) return Response.json({ code: 'not_in_voice' }, { status: 403 });
+    const ownerSessionId = await this.ctx.storage.get<string>(`sess:${b.ownerId}`);
+    const track = await this.ctx.storage.get<any>(`track:${b.ownerId}:${b.trackName}`);
+    if (!ownerSessionId || !track) return Response.json({ code: 'no_track' }, { status: 404 });
+
+    const isVideo = track.kind === 'screen' || track.kind === 'webcam';
+    if (isVideo && (await this.budgetLevel()) === 'hard') {
+      return Response.json({ code: 'budget_exceeded' }, { status: 403 });
+    }
+    const subSessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    if (!subSessionId) return Response.json({ code: 'no_session' }, { status: 400 });
+
+    const layer: 'l' | 'h' = b.layer === 'l' ? 'l' : 'h';
+    const remote: any = { location: 'remote', sessionId: ownerSessionId, trackName: b.trackName };
+    // Single-encoding tracks ignore `layer` — no rid selection field sent.
+    if (track.simulcast) {
+      remote.simulcast = { preferredRid: layer, priorityOrdering: 'asciibetical', ridNotAvailable: 'asciibetical' };
+    }
+    const sfuReq: any = { tracks: [remote] };
+    if (b.sfu?.sessionDescription) sfuReq.sessionDescription = b.sfu.sessionDescription;
+
+    const res = await this.sfu(`/sessions/${subSessionId}/tracks/new`, 'POST', sfuReq);
+    const sfu = await res.json<any>();
+    if (res.ok) {
+      const bitrateKbps = pulledBitrateKbps(track as TrackShape, layer);
+      await this.ctx.storage.put(`acc:${b.userId}:${b.ownerId}:${b.trackName}`, {
+        bitrateKbps,
+        sinceMs: this.nowMs(),
+      });
+    }
+    return Response.json({ sfu }, { status: res.status });
+  }
+
+  private async rtcUnsubscribe(b: any): Promise<Response> {
+    await this.finalizeAccrual(`acc:${b.userId}:${b.ownerId}:${b.trackName}`);
+    const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    const res = sessionId
+      ? await this.sfu(`/sessions/${sessionId}/tracks/close`, 'PUT', { tracks: [{ trackName: b.trackName }] })
+      : null;
+    return Response.json({ sfu: res ? await res.json<any>() : null }, { status: res?.status ?? 200 });
+  }
+
+  private async rtcRenegotiate(b: any): Promise<Response> {
+    if (!this.authorizedVoice(b.userId, b.channelId)) return Response.json({ code: 'not_in_voice' }, { status: 403 });
+    const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    if (!sessionId) return Response.json({ code: 'no_session' }, { status: 400 });
+    const res = await this.sfu(`/sessions/${sessionId}/renegotiate`, 'PUT', b.sfu);
+    return Response.json({ sfu: await res.json<any>() }, { status: res.status });
+  }
+
+  private async rtcUnpublish(b: any): Promise<Response> {
+    const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    const res = sessionId
+      ? await this.sfu(`/sessions/${sessionId}/tracks/close`, 'PUT', { tracks: [{ trackName: b.trackName }] })
+      : null;
+    await this.ctx.storage.delete(`track:${b.userId}:${b.trackName}`);
+    await this.broadcastTracks(b.userId);
+    return Response.json({ sfu: res ? await res.json<any>() : null }, { status: res?.status ?? 200 });
+  }
+
+  private async rtcClose(b: any): Promise<Response> {
+    const sessionId = await this.ctx.storage.get<string>(`sess:${b.userId}`);
+    const res = sessionId ? await this.sfu(`/sessions/${sessionId}/close`, 'PUT', {}) : null;
+    await this.clearUserMedia(b.userId);
+    return Response.json({ sfu: res ? await res.json<any>() : null }, { status: res?.status ?? 200 });
+  }
+
+  // ---- track registry + accrual --------------------------------------------
+
+  private async countScreens(channelId: string): Promise<number> {
+    const all = await this.ctx.storage.list<any>({ prefix: 'track:' });
+    let n = 0;
+    for (const [, t] of all) if (t.channelId === channelId && t.kind === 'screen') n += 1;
+    return n;
+  }
+
+  private async tracksOf(ownerId: string): Promise<object[]> {
+    const all = await this.ctx.storage.list<any>({ prefix: `track:${ownerId}:` });
+    return [...all.values()].map((t) => ({
+      ownerId: t.ownerId,
+      trackName: t.trackName,
+      kind: t.kind,
+      simulcast: t.simulcast,
+      width: t.width,
+      height: t.height,
+      fps: t.fps,
+    }));
+  }
+
+  private async broadcastTracks(ownerId: string): Promise<void> {
+    this.broadcast({ t: 'tracks', ownerId, tracks: await this.tracksOf(ownerId) });
+  }
+
+  private async allTracks(): Promise<object[]> {
+    const all = await this.ctx.storage.list<any>({ prefix: 'track:' });
+    return [...all.values()].map((t) => ({
+      ownerId: t.ownerId,
+      trackName: t.trackName,
+      kind: t.kind,
+      simulcast: t.simulcast,
+      width: t.width,
+      height: t.height,
+      fps: t.fps,
+    }));
+  }
+
+  private async budgetLevel(): Promise<string> {
+    return (await this.ctx.storage.get<string>('budgetLevel')) ?? 'ok';
+  }
+
+  // Settle an accrual entry up to now, add to pendingGb, and remove it (§1:
+  // finalize on unsubscribe / close / webSocketClose / stale-sweep).
+  private async finalizeAccrual(key: string): Promise<void> {
+    const e = await this.ctx.storage.get<{ bitrateKbps: number; sinceMs: number }>(key);
+    if (!e) return;
+    const gb = (e.bitrateKbps * (this.nowMs() - e.sinceMs)) / 8e9;
+    const pending = (await this.ctx.storage.get<number>('pendingGb')) ?? 0;
+    await this.ctx.storage.put('pendingGb', pending + gb);
+    await this.ctx.storage.delete(key);
+  }
+
+  private async finalizeSubscriber(userId: string): Promise<void> {
+    const entries = await this.ctx.storage.list({ prefix: `acc:${userId}:` });
+    for (const key of entries.keys()) await this.finalizeAccrual(key);
+  }
+
+  private async clearUserMedia(userId: string): Promise<void> {
+    await this.finalizeSubscriber(userId);
+    const tracks = await this.ctx.storage.list({ prefix: `track:${userId}:` });
+    for (const key of tracks.keys()) await this.ctx.storage.delete(key);
+    await this.ctx.storage.delete(`sess:${userId}`);
+    this.broadcast({ t: 'tracks', ownerId: userId, tracks: [] });
+  }
+
+  // Flush accrual → D1 (§1 60 s alarm job 2). Settles active entries, upserts
+  // this server's budget_usage row, re-evaluates the account-wide level, and
+  // broadcasts `budget` on change.
+  private async flushBudget(): Promise<void> {
+    const now = this.nowMs();
+    let gb = (await this.ctx.storage.get<number>('pendingGb')) ?? 0;
+    let activeKbps = 0;
+    const active = await this.ctx.storage.list<{ bitrateKbps: number; sinceMs: number }>({ prefix: 'acc:' });
+    for (const [key, e] of active) {
+      gb += (e.bitrateKbps * (now - e.sinceMs)) / 8e9;
+      activeKbps += e.bitrateKbps;
+      await this.ctx.storage.put(key, { ...e, sinceMs: now });
+    }
+    await this.ctx.storage.put('pendingGb', 0);
+
+    const month = new Date(now).toISOString().slice(0, 7);
+    if (this.serverId && gb > 0) {
+      await this.env.DB.prepare(
+        `INSERT INTO budget_usage (month, server_id, est_gb) VALUES (?, ?, ?)
+         ON CONFLICT(month, server_id) DO UPDATE SET est_gb = est_gb + excluded.est_gb`,
+      )
+        .bind(month, this.serverId, gb)
+        .run();
+    }
+    const row = await this.env.DB.prepare(
+      'SELECT COALESCE(SUM(est_gb), 0) AS total FROM budget_usage WHERE month = ?',
+    )
+      .bind(month)
+      .first<{ total: number }>();
+    const total = row?.total ?? 0;
+    const level = total >= this.env.BUDGET_HARD_GB ? 'hard' : total >= this.env.BUDGET_SOFT_GB ? 'soft' : 'ok';
+    const prev = await this.ctx.storage.get<string>('budgetLevel');
+    await this.ctx.storage.put('budgetLevel', level);
+    if (level !== prev) {
+      this.broadcast({ t: 'budget', level, estMbps: (activeKbps * 1000) / 1e6, monthGb: total });
+    }
   }
 
   // Fixed-window unlock counter (§1). 6th attempt within the window → not allowed.
