@@ -84,9 +84,81 @@ Pull the publisher's remote audio track → per-track `NativeAudioStream` decode
 
 ---
 
-## P1 / P2 / video-tap / TURN (S1.2–S1.4)
+## SFU round-trip: P1 / P2 / layer-pull / TURN (S1.2–S1.4)
 
-Recorded in [`progress.md`](progress.md); summarized here at S1.7. Highlights so far:
-- **P1** (publisher) PASS; **P2** (subscriber + simulcast layer pull, 4.0× h/l ratio) PASS; `turnRequired=false`.
-- **Video-tap branch (S1.4):** FALLBACK (a) — str0m subscriber leg (the libwebrtc 0.3.38 binding
-  exposes no encoded-frame receive hook). Dumps: VP8 IVF, 300 frames each at 360p and 1080p.
+Native libwebrtc (0.3.38, `-ObjC`) ⇄ Cloudflare Realtime SFU (`tavern-sfu`), STUN-only
+(`stun.cloudflare.com:3478`), candidate-less offer/answer → ICE-lite SFU connects peer-reflexively.
+
+### P1 — publisher (S1.2)
+
+| Metric | Value | Gate | |
+|---|---|---|---|
+| iceConnectedMs | 477 | ≤5000 | ✅ |
+| framesEncoded (60 s) | 1819 | ≥1500 | ✅ |
+| pliCount | 0 | ≤6 | ✅ |
+| exit | 0 | 0 | ✅ |
+
+The documented ~3 s native-libwebrtc PLI/keyframe stutter did **not** manifest on the publish
+path (pliCount stayed 0). `publish.json` (redacted request shapes for S2.6 mocks).
+
+### P2 — subscriber + simulcast layer pull (S1.3)
+
+| Metric | Value | Gate | |
+|---|---|---|---|
+| framesDecoded (60 s) | 1788 | ≥ 0.85 × 1811 (=1539) | ✅ |
+| zeroFrameWindows (post-warmup) | 0 | 0 | ✅ |
+| pliCount | 1 | ≤6 | ✅ |
+| iceConnectedMs | 448–550 | ≤5000 | ✅ |
+| layersNegotiated | 2 | 2 (h/l) | ✅ |
+| layer ratio (high/low kbps) | 1012 / 251 = **4.0×** | ≥3× | ✅ |
+
+**Release build required** for clean concurrent decode (debug starved the receive path — CPU
+contention, not an SFU hazard). Evidence: `subscribe.json`, `sub-l.json`, `sub-h.json`.
+
+**Layer-pull request shape** (recorded, for S2.x subscribe proxy):
+```json
+"simulcast": { "preferredRid": "h" | "l", "priorityOrdering": "asciibetical", "ridNotAvailable": "asciibetical" }
+```
+Two independent per-rid pulls (`--rid l`, `--rid h`). Per-stream `maxBitrate` must stay under the
+puller's BWE for `preferredRid` selection to work (cap h=1.0 Mbps < ~1.7 Mbps downlink) — this is
+the cost lever: grid tiles pull `l` (~250 kbps), pinned pulls `h` (~1 Mbps).
+
+### TURN
+
+`turnRequired = false` across all three subscriptions (P2 basic + both simulcast pulls). STUN-only
+is the expected outcome (SFU is publicly addressable); TURN was **not** provisioned and is not
+needed. No STOP condition hit.
+
+### Video-tap branch (S1.4)
+
+**FALLBACK (a): str0m subscriber leg.** The primary path (extract encoded frames via the libwebrtc
+receive-side frame-transformer/cryptor hook) is not viable — the 0.3.38 binding runs both
+`FrameTransformerInterface` impls in C++ and returns only metadata to Rust. str0m (0.21, rust-crypto)
+answers the SFU offer and emits depacketized encoded VP8 → IVF: `dump_360p.ivf`, `dump_1080p.ivf`,
+300 frames each (ffprobe: `codec_name=vp8`, `nb_read_frames=300`). This is a **working** fallback,
+not the (b) STOP.
+
+---
+
+## FALLBACK audit (S1.7 halt-check)
+
+The plan halts M1 only if a FALLBACK reaches a dead-end. None did:
+
+| Point | Primary | Outcome |
+|---|---|---|
+| S1.4 encoded-frame tap | libwebrtc frame-transformer hook (not exposed) | ✅ FALLBACK (a) str0m — works; (b) STOP not reached |
+| S1.6 audio capture | libwebrtc ADM (no standalone PCM) | ✅ cpal capture — the §1-sanctioned branch |
+| S1.3 TURN | STUN-only | ✅ STUN-only achieved; TURN not needed |
+
+Every hard gate (P1–P4) passed on the mandated macOS platform. Windows/Linux runtime (P3/P4) is
+deferred to CI-built bundles per the step texts, with the codec revisit flag noted above.
+
+---
+
+## Verdict — **GO** ✅
+
+Native libwebrtc ⇄ Cloudflare Realtime is validated end-to-end on macOS: publish (P1), subscribe +
+simulcast layer selection (P2), encoded-frame extraction for the decode probe (S1.4), WebCodecs
+decode at grid scale (P3 → **VP8**), screen capture (P4), audio capture (**cpal**) + engine-owned
+playout. No FALLBACK dead-end, no STOP condition, `turnRequired=false`. **Milestone 1 GO** —
+proceed to Milestone 2.
