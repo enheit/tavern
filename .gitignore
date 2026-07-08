@@ -14,6 +14,11 @@ target/
 src-tauri/gen/
 spikes/webcodecs/gen/
 
+# ts-rs default output dir (S2.7): `cargo test --workspace` writes here without
+# TS_RS_EXPORT_DIR. The committed protocol TS lives in worker/src/protocol +
+# app/src/lib/protocol (generated via `pnpm gen:protocol`).
+crates/protocol/bindings/
+
 # Secrets / keys
 *.key
 

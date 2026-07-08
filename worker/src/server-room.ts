@@ -1,5 +1,8 @@
 import type { Env } from './index';
 import { type TrackShape, pulledBitrateKbps } from './lib/bitrate';
+// Single-source protocol types (ts-rs-generated from crates/protocol, S2.7).
+import type { Member } from './protocol/Member';
+import type { TrackInfo } from './protocol/TrackInfo';
 
 // Per-server coordination Durable Object (PLAN §1): hibernatable WebSockets,
 // presence, chat, and the unlock rate-limit counter. RTC/track registry + budget
@@ -351,12 +354,14 @@ export class ServerRoom {
       v: PROTOCOL_V,
       t: 'hello.ok',
       userId,
-      roster: roster.results.map((u) => ({
-        userId: u.id,
-        nickname: u.nickname,
-        color: u.nickname_color,
-        avatarKey: u.avatar_key,
-      })),
+      roster: roster.results.map(
+        (u): Member => ({
+          userId: u.id,
+          nickname: u.nickname,
+          color: u.nickname_color,
+          avatarKey: u.avatar_key,
+        }),
+      ),
       presence,
       tracks: await this.allTracks(),
       budget: { level: await this.budgetLevel(), estMbps: 0, monthGb: 0 },
@@ -562,7 +567,7 @@ export class ServerRoom {
     return n;
   }
 
-  private async tracksOf(ownerId: string): Promise<object[]> {
+  private async tracksOf(ownerId: string): Promise<TrackInfo[]> {
     const all = await this.ctx.storage.list<any>({ prefix: `track:${ownerId}:` });
     return [...all.values()].map((t) => ({
       ownerId: t.ownerId,
@@ -579,7 +584,7 @@ export class ServerRoom {
     this.broadcast({ t: 'tracks', ownerId, tracks: await this.tracksOf(ownerId) });
   }
 
-  private async allTracks(): Promise<object[]> {
+  private async allTracks(): Promise<TrackInfo[]> {
     const all = await this.ctx.storage.list<any>({ prefix: 'track:' });
     return [...all.values()].map((t) => ({
       ownerId: t.ownerId,

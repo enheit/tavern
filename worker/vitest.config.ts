@@ -24,6 +24,8 @@ export default defineConfig(async () => {
       coverage: {
         provider: 'istanbul',
         include: ['src/**/*.ts'],
+        // src/protocol/** is ts-rs-generated type-only code (S2.7); nothing to cover.
+        exclude: ['src/protocol/**'],
         reporter: ['text', 'json'],
         // Enforced from S2.1 (PLAN §1 Coverage: worker lines >=85%).
         thresholds: { lines: 85 },
