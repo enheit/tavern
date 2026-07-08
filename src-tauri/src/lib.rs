@@ -30,6 +30,12 @@ pub fn run() {
             engine_cmds::set_user_gain,
             engine_cmds::set_remote_tracks,
             engine_cmds::engine_status,
+            engine_cmds::screen_sources,
+            engine_cmds::screen_share_start,
+            engine_cmds::screen_share_stop,
+            engine_cmds::webcam_list,
+            engine_cmds::webcam_start,
+            engine_cmds::webcam_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tavern application")

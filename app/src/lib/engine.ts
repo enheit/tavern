@@ -27,4 +27,31 @@ export const engine = {
   async setRemoteTracks(tracks: TrackInfo[]): Promise<void> {
     if (inTauri()) await invoke('set_remote_tracks', { tracks });
   },
+  async screenSources(): Promise<ScreenSource[]> {
+    if (!inTauri()) return [];
+    return await invoke<ScreenSource[]>('screen_sources');
+  },
+  async screenShareStart(
+    sourceId: string,
+    width: number,
+    height: number,
+    fps: number,
+  ): Promise<{ trackName: string } | null> {
+    if (!inTauri()) return null;
+    return await invoke<{ trackName: string }>('screen_share_start', {
+      sourceId,
+      width,
+      height,
+      fps,
+    });
+  },
+  async screenShareStop(): Promise<void> {
+    if (inTauri()) await invoke('screen_share_stop');
+  },
 };
+
+export interface ScreenSource {
+  id: string;
+  name: string;
+  kind: 'screen' | 'window';
+}

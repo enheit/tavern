@@ -17,6 +17,20 @@ export const SPEAKING_HOLD_MS = 100;
 
 export type VoiceStatus = 'idle' | 'joining' | 'in';
 
+// §0: ≤3 simultaneous screen shares per channel (Start disabled at the cap, server 409s past it).
+export const SHARE_CAP = 3;
+// §0 resolution choices → the screen_share_start {width,height} payload; native = 0×0 (§1).
+// Fixed rows use the canonical 16:9 dims; the engine sizes by height + real source aspect.
+export const SHARE_RES: Record<string, { width: number; height: number }> = {
+  native: { width: 0, height: 0 },
+  '360': { width: 640, height: 360 },
+  '480': { width: 854, height: 480 },
+  '720': { width: 1280, height: 720 },
+  '1080': { width: 1920, height: 1080 },
+  '1440': { width: 2560, height: 1440 },
+};
+export const SHARE_FPS = [15, 30, 60, 120];
+
 interface Level {
   userId: string;
   rms: number;
@@ -30,6 +44,8 @@ export class VoiceStore {
   deafened = $state(false);
   error = $state<string | null>(null);
   micTrackName = $state<string | null>(null);
+  /// Our live screen share, if any ("You are sharing").
+  sharing = $state<{ trackName: string } | null>(null);
   speaking = $state<Record<string, boolean>>({});
   // Full track roster per server (ownerId → their tracks), fed by hello.ok + `tracks`
   // frames; flattened and forwarded to the engine while in voice (§1).
@@ -100,7 +116,7 @@ export class VoiceStore {
   async leave(): Promise<void> {
     if (this.status !== 'in') return;
     const serverId = this.serverId;
-    // §1 order: engine voice_leave FIRST, then WS voice.leave.
+    // §1 order: engine voice_leave FIRST (which also tears down any live share), then WS.
     try {
       await engine.voiceLeave();
     } catch {
@@ -108,6 +124,47 @@ export class VoiceStore {
     }
     if (serverId) this.sendFrame(serverId, { t: 'voice.leave' });
     this.resetVoiceState();
+  }
+
+  // ---- screen share (S5.3) ---------------------------------------------------
+
+  // Screen tracks visible in OUR voice channel: tracks carry no channelId, so join
+  // owners' tracks with their presence (a publisher must be in voice in the channel).
+  get screenTrackCount(): number {
+    if (!this.serverId || !this.channelId) return 0;
+    const pres = servers.presenceByServer[this.serverId] ?? {};
+    const byOwner = this.tracksByServer[this.serverId] ?? {};
+    let n = 0;
+    for (const [ownerId, tracks] of Object.entries(byOwner)) {
+      const p = pres[ownerId];
+      if (!p || p.state !== 'voice' || p.channelId !== this.channelId) continue;
+      n += tracks.filter((t) => t.kind === 'screen').length;
+    }
+    return n;
+  }
+
+  get shareDisabled(): boolean {
+    return this.screenTrackCount >= SHARE_CAP;
+  }
+
+  async shareStart(sourceId: string, width: number, height: number, fps: number): Promise<void> {
+    if (!this.inVoice || this.sharing) return;
+    try {
+      const r = await engine.screenShareStart(sourceId, width, height, fps);
+      if (r) this.sharing = { trackName: r.trackName };
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async shareStop(): Promise<void> {
+    if (!this.sharing) return;
+    try {
+      await engine.screenShareStop();
+    } catch {
+      // local indicator clears regardless; the server sweeps stale tracks
+    }
+    this.sharing = null;
   }
 
   toggleMute(): void {
@@ -204,6 +261,7 @@ export class VoiceStore {
     this.serverId = null;
     this.channelId = null;
     this.micTrackName = null;
+    this.sharing = null;
     this.speaking = {};
     this.aboveSince.clear();
   }

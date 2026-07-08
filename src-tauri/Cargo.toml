@@ -25,4 +25,5 @@ keyring = "3.6.3"
 # Pulls libwebrtc into this crate's link — the bundle CI job mirrors the rust-test
 # macOS clang_rt step and Linux apt deps for exactly this reason.
 tavern-engine = { path = "../crates/engine" }
+tavern-capture = { path = "../crates/capture" }
 tavern-protocol = { path = "../crates/protocol" }

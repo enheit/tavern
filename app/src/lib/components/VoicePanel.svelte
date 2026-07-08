@@ -1,6 +1,9 @@
 <script lang="ts">
-  import { voice } from '../state/voice.svelte';
+  import { voice, SHARE_CAP } from '../state/voice.svelte';
   import { servers } from '../state/servers.svelte';
+  import ShareDialog from './dialogs/ShareDialog.svelte';
+
+  let sharePickerOpen = $state(false);
 
   // Roster/channel names come from the VOICE server (which can differ from the
   // server currently being viewed).
@@ -50,6 +53,28 @@
       </button>
     </div>
   </div>
+
+  {#if voice.inVoice}
+    <div class="row">
+      {#if voice.sharing}
+        <span class="status in" data-testid="sharing-indicator">🖥️ You are sharing</span>
+        <button class="ctl" onclick={() => void voice.shareStop()}>Stop sharing</button>
+      {:else}
+        <button
+          class="ctl"
+          disabled={voice.shareDisabled}
+          title={voice.shareDisabled ? `Share limit reached (${SHARE_CAP} per channel)` : undefined}
+          onclick={() => (sharePickerOpen = true)}
+        >
+          Share screen
+        </button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if sharePickerOpen}
+    <ShareDialog onclose={() => (sharePickerOpen = false)} />
+  {/if}
 
   {#if voice.inVoice && voice.participants.length}
     <ul class="members">

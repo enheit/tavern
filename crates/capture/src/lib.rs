@@ -85,7 +85,8 @@ impl std::error::Error for CaptureError {}
 pub type FrameSink = Box<dyn FnMut(Frame) + Send + 'static>;
 
 /// A running capture. Dropping it stops the capture and joins the pump thread.
-pub trait CaptureSession: Send {
+/// `Sync` so callers may poll accessors through a shared reference across await points.
+pub trait CaptureSession: Send + Sync {
     /// Frames delivered to the sink so far.
     fn frames_delivered(&self) -> u64;
     /// Requested-vs-achieved reporting: delivered / elapsed since open.

@@ -4423,6 +4423,7 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "tavern-capture",
  "tavern-engine",
  "tavern-protocol",
 ]
