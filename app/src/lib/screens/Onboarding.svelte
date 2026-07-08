@@ -1,5 +1,6 @@
 <script lang="ts">
   import { auth } from '../state/auth.svelte';
+  import { activate } from '../boot';
   import { nicknameError, passwordError } from '../validate';
 
   let mode = $state<'login' | 'register'>('register');
@@ -25,6 +26,10 @@
     if (!canSubmit || auth.pending) return;
     if (mode === 'register') await auth.register(nickname, password, repeat);
     else await auth.login(nickname, password);
+    // On success, persist the session + load servers (§1: engine_configure after login).
+    if (auth.authed && auth.userId && auth.token) {
+      await activate({ userId: auth.userId, token: auth.token });
+    }
   }
 
   function switchMode(m: 'login' | 'register'): void {

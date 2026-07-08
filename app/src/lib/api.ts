@@ -1,13 +1,21 @@
 // Thin REST client for the Worker. WS lives in ws.svelte.ts (S3.2); RTC in the
 // Rust engine (M4). Only the endpoints the shell needs so far are wired here;
 // S3.4 adds servers/channels/unlock/avatar.
-const BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8787';
+export const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8787';
 
 export interface Profile {
   userId: string;
   nickname: string;
   color: string;
   avatarKey: string | null;
+}
+
+export interface Me {
+  userId: string;
+  nickname: string;
+  color: string;
+  avatarKey: string | null;
+  servers: { id: string; name: string }[];
 }
 
 export interface Session {
@@ -44,7 +52,7 @@ async function req<T>(
   path: string,
   opts: { method?: string; body?: unknown; token?: string } = {},
 ): Promise<T> {
-  const res = await fetch(BASE + path, {
+  const res = await fetch(API_BASE + path, {
     method: opts.method ?? 'GET',
     headers: {
       'content-type': 'application/json',
@@ -69,4 +77,5 @@ export const api = {
     req<Session>('/api/register', { method: 'POST', body: { nickname, password, repeat } }),
   login: (nickname: string, password: string) =>
     req<Session>('/api/login', { method: 'POST', body: { nickname, password } }),
+  me: (token: string) => req<Me>('/api/me', { token }),
 };
