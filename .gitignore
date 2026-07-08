@@ -1,6 +1,7 @@
 # Node / pnpm
 node_modules/
 dist/
+coverage/
 
 # Rust
 target/

@@ -19,6 +19,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r lint
       - run: pnpm -r build
+      # Chromium for the app project's vitest browser-mode tests.
+      - run: pnpm --filter tavern-app exec playwright install --with-deps chromium
       # Test + coverage gates (worker lines >=85%, app lines >=70%) enforced from S2.1.
       - run: pnpm -r test
 
