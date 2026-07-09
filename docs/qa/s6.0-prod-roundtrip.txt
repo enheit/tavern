@@ -1,0 +1,12 @@
+### S6.0 prod roundtrip — 2026-07-09T00:16:59Z — base https://tavern.roman-mahotskyi.workers.dev
+$ curl -s -X POST $BASE/api/register -H 'content-type: application/json' -d '{"nickname":"s60check_2a4151","password":"<redacted>","repeat":"<redacted>"}'
+HTTP 201
+{"userId":"fbece64a-31e9-4492-92bb-61f9751bf2e1","token":"<redacted>","profile":{"userId":"fbece64a-31e9-4492-92bb-61f9751bf2e1","nickname":"s60check_2a4151","color":"#8a8f98","avatarKey":null}}
+
+$ curl -s -X POST $BASE/api/login -d '{"nickname":"s60check_2a4151","password":"<redacted>"}'
+HTTP 200
+{"userId":"fbece64a-31e9-4492-92bb-61f9751bf2e1","token":"<redacted>","profile":{"userId":"fbece64a-31e9-4492-92bb-61f9751bf2e1","nickname":"s60check_2a4151","color":"#8a8f98","avatarKey":null}}
+
+$ curl -s $BASE/api/me -H 'authorization: Bearer <redacted>'
+HTTP 200
+{"userId":"fbece64a-31e9-4492-92bb-61f9751bf2e1","nickname":"s60check_2a4151","color":"#8a8f98","avatarKey":null,"servers":[]}

@@ -5,16 +5,17 @@
   "compatibility_date": "2026-07-08",
   "observability": { "enabled": true },
   // Account-wide egress budget caps (GB). See §1 Budget model.
+  // CF_APP_ID is the Realtime SFU app id (not a secret; CF_APP_SECRET is a wrangler secret, S6.0).
   "vars": {
     "BUDGET_SOFT_GB": 800,
-    "BUDGET_HARD_GB": 950
+    "BUDGET_HARD_GB": 950,
+    "CF_APP_ID": "e0269bdb00a0f6a0dd5daf7dbb866ea6"
   },
-  // database_id is a placeholder for local dev; the real id is wired at S6.0.
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "tavern-db",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_id": "49d52212-7fd9-4d4e-a7dd-d48f90dc0219"
     }
   ],
   "r2_buckets": [
