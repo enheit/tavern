@@ -152,7 +152,8 @@ jobs:
       - name: Install runtime deps
         run: |
           xbps-install -Syu xbps
-          xbps-install -y xorg-server-xvfb dbus mesa-dri
+          # bash: AppImage AppRun shebangs `#!/usr/bin/env bash`; void-glibc-full omits it.
+          xbps-install -y bash xorg-server-xvfb dbus mesa-dri
       - uses: actions/download-artifact@v4
         with:
           name: tavern-ubuntu-latest
