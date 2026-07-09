@@ -63,3 +63,34 @@ describe('S6.3 updates route + manifest schema', () => {
     ).toBe(false);
   });
 });
+
+describe('S6.4 CORS for the app webview', () => {
+  it('preflight OPTIONS /api/login from tauri://localhost → 204 with allow headers (not 401 from bearerAuth)', async () => {
+    const res = await SELF.fetch('https://tavern.test/api/login', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'tauri://localhost',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('tauri://localhost');
+    expect(res.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('content-type');
+  });
+
+  it('POST /api/* echoes the allowed origin; unknown origins get nothing', async () => {
+    const ok = await SELF.fetch('https://tavern.test/api/login', {
+      method: 'POST',
+      headers: { origin: 'http://tauri.localhost', 'content-type': 'application/json' },
+      body: JSON.stringify({ nickname: 'nobody', password: 'irrelevant1' }),
+    });
+    expect(ok.headers.get('access-control-allow-origin')).toBe('http://tauri.localhost');
+    const evil = await SELF.fetch('https://tavern.test/api/login', {
+      method: 'POST',
+      headers: { origin: 'https://evil.example', 'content-type': 'application/json' },
+      body: JSON.stringify({ nickname: 'nobody', password: 'irrelevant1' }),
+    });
+    expect(evil.headers.get('access-control-allow-origin')).toBeNull();
+  });
+});

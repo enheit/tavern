@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import authRoutes from './routes/auth';
 import rtcRoutes from './routes/rtc';
 import serverRoutes from './routes/servers';
@@ -18,6 +19,23 @@ export interface Env {
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+// S6.4 QA finding: the bundled app's webview origin is tauri://localhost
+// (http://tauri.localhost on Windows; localhost:1420 in dev) — without CORS every
+// /api fetch dies in the webview and the UI shows network_error. Mounted before the
+// routes so the preflight OPTIONS never reaches bearerAuth.
+app.use(
+  '/api/*',
+  cors({
+    origin: [
+      'tauri://localhost',
+      'http://tauri.localhost',
+      'https://tauri.localhost',
+      'http://localhost:1420',
+    ],
+    allowHeaders: ['authorization', 'content-type'],
+  })
+);
 
 app.get('/', (c) => c.text('ok'));
 
