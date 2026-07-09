@@ -137,3 +137,44 @@ jobs:
           path: |
             target/release/bundle/**
           if-no-files-found: error
+
+  # Boot the Ubuntu-built AppImage on a different distro (Void) to catch
+  # missing-lib / loader / startup crashes that only show off-Ubuntu. Runs
+  # headless (Xvfb + llvmpipe), so GPU-driver-specific failures (e.g. the
+  # NVIDIA DMA-BUF EGL abort) still need real hardware — this is a floor,
+  # not full runtime QA.
+  smoke-void:
+    name: smoke (void linux)
+    needs: bundle
+    runs-on: ubuntu-latest
+    container: ghcr.io/void-linux/void-glibc-full
+    steps:
+      - name: Install runtime deps
+        run: |
+          xbps-install -Syu xbps
+          xbps-install -y xorg-server-xvfb dbus mesa-dri
+      - uses: actions/download-artifact@v4
+        with:
+          name: tavern-ubuntu-latest
+          path: bundle
+      - name: Boot AppImage under Xvfb
+        run: |
+          APPIMAGE=$(ls bundle/appimage/*.AppImage)
+          chmod +x "$APPIMAGE"
+          # No FUSE in containers: extract instead of mounting.
+          "$APPIMAGE" --appimage-extract >/dev/null
+          Xvfb :99 -screen 0 1280x800x24 &
+          export DISPLAY=:99
+          dbus-run-session -- sh -c '
+            ./squashfs-root/AppRun >app.log 2>&1 &
+            APP=$!
+            sleep 15
+            if ! kill -0 $APP 2>/dev/null; then
+              echo "::error::Tavern exited within 15s on Void Linux"
+              cat app.log
+              exit 1
+            fi
+            kill $APP
+          '
+          echo "--- app.log ---"
+          cat app.log
