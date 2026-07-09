@@ -63,6 +63,13 @@ export class VoiceStore {
   // Full track roster per server (ownerId → their tracks), fed by hello.ok + `tracks`
   // frames; flattened and forwarded to the engine while in voice (§1).
   tracksByServer = $state<Record<string, Record<string, TrackInfo[]>>>({});
+  // S6.1: WS-resume re-join in flight (drives the banner together with the engine's
+  // own `reconnecting` ICE state).
+  resuming = $state(false);
+  private engineVoice = $state('idle');
+  // Last share/webcam picker params, remembered so a WS resume can re-publish.
+  private shareParams: [string, number, number, number] | null = null;
+  private camParams: [string, number, number, number] | null = null;
 
   // WS seam: ws.svelte.ts binds this to the pool; tests override with a spy.
   sendFrame: (serverId: string, frame: ClientFrame) => void = () => {};
@@ -73,10 +80,22 @@ export class VoiceStore {
 
   constructor() {
     onEngineEvent('engine://levels', (payload) => this.onLevels(payload as Level[]));
+    onEngineEvent('engine://state', (payload) => {
+      const p = payload as { voice: string; err?: string };
+      this.engineVoice = p.voice;
+      // S6.1: engine exhausted its ICE recovery windows (media dead, WS possibly fine)
+      // → same full re-join as a WS resume.
+      if (p.err === 'reconnect_failed' && this.serverId) void this.resumeAfterWs(this.serverId);
+    });
   }
 
   get inVoice(): boolean {
     return this.status === 'in';
+  }
+
+  // S6.1 `reconnecting` banner: engine ICE restart in progress OR a WS-resume re-join.
+  get reconnecting(): boolean {
+    return this.resuming || (this.inVoice && this.engineVoice === 'reconnecting');
   }
 
   // Users (excluding self) currently in our voice channel, for the panel rows.
@@ -137,6 +156,31 @@ export class VoiceStore {
     }
     if (serverId) this.sendFrame(serverId, { t: 'voice.leave' });
     this.resetVoiceState();
+  }
+
+  // S6.1: the WS dropped and resumed while we were in voice. The DO cleared our presence,
+  // SFU-session mapping, and track registry on the close, so the whole voice session must
+  // be re-established: full leave → re-join → re-publish share/webcam → re-watch the
+  // previous set (restoring `watched` re-runs every joined tile's effect → fresh watches).
+  async resumeAfterWs(serverId: string): Promise<void> {
+    if (this.status !== 'in' || this.serverId !== serverId || this.resuming) return;
+    this.resuming = true;
+    const channelId = this.channelId!;
+    const share = this.shareParams;
+    const cam = this.camParams;
+    const watched = { ...this.watched };
+    const pinned = this.pinned;
+    try {
+      await this.leave();
+      await this.join(serverId, channelId);
+      if (this.status !== 'in') return; // join failed; its error is already surfaced
+      if (share) await this.shareStart(...share);
+      if (cam) await this.camStart(...cam);
+      this.pinned = pinned;
+      this.watched = watched;
+    } finally {
+      this.resuming = false;
+    }
   }
 
   // ---- screen share (S5.3) ---------------------------------------------------
@@ -232,7 +276,10 @@ export class VoiceStore {
     if (!this.inVoice || this.sharing) return;
     try {
       const r = await engine.screenShareStart(sourceId, width, height, fps);
-      if (r) this.sharing = { trackName: r.trackName };
+      if (r) {
+        this.sharing = { trackName: r.trackName };
+        this.shareParams = [sourceId, width, height, fps];
+      }
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
     }
@@ -246,6 +293,7 @@ export class VoiceStore {
       // local indicator clears regardless; the server sweeps stale tracks
     }
     this.sharing = null;
+    this.shareParams = null;
   }
 
   // ---- webcam (S5.5) -----------------------------------------------------------
@@ -254,7 +302,10 @@ export class VoiceStore {
     if (!this.inVoice || this.camera) return;
     try {
       const r = await engine.webcamStart(deviceId, width, height, fps);
-      if (r) this.camera = { trackName: r.trackName };
+      if (r) {
+        this.camera = { trackName: r.trackName };
+        this.camParams = [deviceId, width, height, fps];
+      }
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
     }
@@ -268,6 +319,7 @@ export class VoiceStore {
       // local indicator clears regardless
     }
     this.camera = null;
+    this.camParams = null;
   }
 
   toggleMute(): void {
@@ -377,6 +429,8 @@ export class VoiceStore {
     this.micTrackName = null;
     this.sharing = null;
     this.camera = null;
+    this.shareParams = null;
+    this.camParams = null;
     this.watched = {};
     this.pinned = null;
     this.speaking = {};

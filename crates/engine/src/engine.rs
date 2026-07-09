@@ -17,7 +17,9 @@ use libwebrtc::audio_source::native::NativeAudioSource;
 use libwebrtc::audio_source::AudioSourceOptions;
 use libwebrtc::audio_stream::native::NativeAudioStream;
 use libwebrtc::media_stream_track::MediaStreamTrack;
-use libwebrtc::peer_connection::{AnswerOptions, OfferOptions, PeerConnection, TrackEvent};
+use libwebrtc::peer_connection::{
+    AnswerOptions, IceConnectionState, OfferOptions, PeerConnection, TrackEvent,
+};
 use libwebrtc::peer_connection_factory::native::PeerConnectionFactoryExt;
 use libwebrtc::peer_connection_factory::{
     ContinualGatheringPolicy, IceServer, IceTransportsType, PeerConnectionFactory, RtcConfiguration,
@@ -38,7 +40,7 @@ use crate::audio::{self, Driver, Level, RemoteMix};
 use crate::pipeline::{AudioPipeline, MicState, SAMPLE_RATE};
 use crate::remote::{diff_mic, TrackRef};
 use crate::signaling::{PublishTrack, Signaling};
-use crate::state::{EngineError, VoiceSm, VoiceState};
+use crate::state::{EngineError, ReconnectDecision, ReconnectSm, VoiceSm, VoiceState};
 use crate::video::{self, SharesSm, VideoKind};
 use crate::watch::{self, ChunkSink, WatchHandle};
 
@@ -119,7 +121,8 @@ impl Drop for Session {
 pub struct Engine {
     factory: PeerConnectionFactory,
     sig: Mutex<Option<Signaling>>,
-    sm: Mutex<VoiceSm>,
+    /// Arc so the S6.1 reconnect task can mirror ICE recovery into the status label.
+    sm: Arc<Mutex<VoiceSm>>,
     mic_state: MicState,
     remote: RemoteMix,
     /// Currently auto-subscribed remote mics.
@@ -156,7 +159,7 @@ impl Engine {
         Self {
             factory: PeerConnectionFactory::default(),
             sig: Mutex::new(None),
-            sm: Mutex::new(VoiceSm::new()),
+            sm: Arc::new(Mutex::new(VoiceSm::new())),
             mic_state: MicState::default(),
             remote: RemoteMix::default(),
             subs: Mutex::new(BTreeSet::new()),
@@ -297,6 +300,16 @@ impl Engine {
             }
         })));
 
+        // S6.1 reconnection: ICE disconnect/failure → bounded recovery windows, then a
+        // `reconnect_failed` error event. The stop flag is created early so leave()
+        // cancels the task along with everything else.
+        let stop = Arc::new(AtomicBool::new(false));
+        let (ice_tx, ice_rx) = mpsc::unbounded_channel();
+        pc.on_ice_connection_state_change(Some(Box::new(move |st: IceConnectionState| {
+            let _ = ice_tx.send(st);
+        })));
+        self.spawn_reconnect_task(pc.clone(), stop.clone(), ice_rx);
+
         // Mic: NativeAudioSource fed by the driver; trackName = `mic-{uuid}` (§1).
         let mic_track_name = format!("mic-{}", uuid::Uuid::new_v4());
         let mic_source = NativeAudioSource::new(AudioSourceOptions::default(), AUDIO_HZ, 1, 1000);
@@ -350,7 +363,6 @@ impl Engine {
         .map_err(|e| EngineError::Media(format!("set_remote: {e:?}")))?;
 
         // Start device I/O + the 10 ms driver.
-        let stop = Arc::new(AtomicBool::new(false));
         let (capture, playout) = audio::device_rings();
         let device_thread = spawn_device_thread(
             capture.clone(),
@@ -425,6 +437,11 @@ impl Engine {
     pub async fn voice_leave(&self) -> Result<(), EngineError> {
         let channel = self.sm.lock().unwrap().leave();
         let session = self.session.lock().unwrap().take(); // Drop stops the device thread
+        if let Some(s) = session.as_ref() {
+            // Drop the ICE observer: its channel sender is what keeps the S6.1 reconnect
+            // task (and through it the PC) alive — clearing it lets both wind down.
+            s.pc.on_ice_connection_state_change(None);
+        }
         *self.track_rx.lock().await = None;
         self.subs.lock().unwrap().clear();
         self.remote.clear();
@@ -829,6 +846,69 @@ impl Engine {
         Ok(())
     }
 
+    /// S6.1: drive [`ReconnectSm`] off the PC's ICE state events. On disconnect/failure:
+    /// mark `reconnecting`, then up to 5 paced recovery windows (≤5 s each) waiting for
+    /// continual gathering to reconnect the ICE-lite SFU peer-reflexively (see
+    /// [`rtc_config`] — the SFU rejects restart offers, so no SDP is exchanged here);
+    /// recovery restores `connected`, exhaustion emits the `reconnect_failed` error event
+    /// (the UI reacts with a full re-join).
+    fn spawn_reconnect_task(
+        &self,
+        pc: Arc<PeerConnection>,
+        stop: Arc<AtomicBool>,
+        mut ice_rx: mpsc::UnboundedReceiver<IceConnectionState>,
+    ) {
+        let sm = self.sm.clone();
+        let on_state = self.on_state.lock().unwrap().clone();
+        let on_error = self.on_error.lock().unwrap().clone();
+        let emit_state = move |label: &str| {
+            if let Some(cb) = &on_state {
+                cb(label.to_string());
+            }
+        };
+        tokio::spawn(async move {
+            let mut rsm = ReconnectSm::default();
+            while let Some(st) = ice_rx.recv().await {
+                if stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                if !matches!(
+                    st,
+                    IceConnectionState::Disconnected | IceConnectionState::Failed
+                ) {
+                    continue;
+                }
+                if rsm.on_ice_down() != ReconnectDecision::Start {
+                    continue;
+                }
+                sm.lock().unwrap().mark_reconnecting();
+                emit_state("reconnecting");
+                loop {
+                    if stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let connected = recovery_window(&pc).await;
+                    match rsm.on_attempt(connected) {
+                        ReconnectDecision::Recovered => {
+                            sm.lock().unwrap().mark_connected();
+                            emit_state("connected");
+                            break;
+                        }
+                        ReconnectDecision::Retry { .. } => continue,
+                        _ => {
+                            // GiveUp: stay in `reconnecting`; the UI reacts to the event
+                            // (its WS-resume flow re-joins, or the user leaves).
+                            if let Some(cb) = &on_error {
+                                cb("reconnect_failed".to_string());
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     async fn stop_video(&self, kind: VideoKind) -> Result<(), EngineError> {
         // Idempotent: nothing active (or a start still in flight) → no-op.
         let Some(track_name) = self.shares.lock().unwrap().stop(kind) else {
@@ -862,6 +942,26 @@ impl Engine {
     }
 }
 
+/// One recovery window: 5 attempts × 5 s = 25 s of grace, comfortably past a
+/// short blip while still bounding how long a dead session lingers.
+const RECONNECT_ATTEMPT_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Wait out one window for ICE to return (continual gathering re-establishes the pair
+/// once the network is back — no signaling involved).
+async fn recovery_window(pc: &Arc<PeerConnection>) -> bool {
+    let deadline = std::time::Instant::now() + RECONNECT_ATTEMPT_WINDOW;
+    while std::time::Instant::now() < deadline {
+        if matches!(
+            pc.ice_connection_state(),
+            IceConnectionState::Connected | IceConnectionState::Completed
+        ) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    false
+}
+
 /// Poll a capture session until its first frame reveals the raw source dims (≤5 s).
 async fn wait_source_size(session: &dyn CaptureSession) -> Result<(u32, u32), EngineError> {
     for _ in 0..100 {
@@ -880,7 +980,12 @@ fn rtc_config() -> RtcConfiguration {
             username: String::new(),
             password: String::new(),
         }],
-        continual_gathering_policy: ContinualGatheringPolicy::GatherOnce,
+        // S6.1: GatherContinually (was GatherOnce) — when an interface drops and returns,
+        // libwebrtc re-gathers on it and reconnects the ICE-lite SFU peer-reflexively with
+        // UNCHANGED credentials. This is the only engine-level recovery the SFU supports:
+        // it 406es offer-type renegotiation, so a classic restart_ice can never complete
+        // (and a half-applied restart offer bricks ICE — P7 run 1 evidence).
+        continual_gathering_policy: ContinualGatheringPolicy::GatherContinually,
         ice_transport_type: IceTransportsType::All,
     }
 }

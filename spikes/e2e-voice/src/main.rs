@@ -38,7 +38,9 @@ async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mode = args.get(1).map(String::as_str).unwrap_or("");
     let code = match mode {
-        "seed" => seed(&flag(&args, "--api").unwrap_or_else(|| "http://127.0.0.1:8787".into())).await,
+        "seed" => {
+            seed(&flag(&args, "--api").unwrap_or_else(|| "http://127.0.0.1:8787".into())).await
+        }
         "run" => run(&args).await,
         "pubsynth" => pubsynth(&args).await,
         "check" => check(&args),
@@ -60,7 +62,10 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 
 async fn seed(api: &str) -> i32 {
     let http = reqwest::Client::new();
-    let suffix = format!("{:x}", std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos() & 0xffff_ffff);
+    let suffix = format!(
+        "{:x}",
+        std::time::UNIX_EPOCH.elapsed().unwrap().as_nanos() & 0xffff_ffff
+    );
     let register = |nick: String| {
         let http = http.clone();
         let api = api.to_string();
@@ -74,7 +79,10 @@ async fn seed(api: &str) -> i32 {
             let status = r.status();
             let v: Value = r.json().await.expect("register json");
             assert!(status.is_success(), "register failed: {v}");
-            (v["userId"].as_str().unwrap().to_string(), v["token"].as_str().unwrap().to_string())
+            (
+                v["userId"].as_str().unwrap().to_string(),
+                v["token"].as_str().unwrap().to_string(),
+            )
         }
     };
     let (user_a, token_a) = register(format!("e2eA_{suffix}")).await;
@@ -130,22 +138,31 @@ async fn seed(api: &str) -> i32 {
 
 async fn run(args: &[String]) -> i32 {
     let user = flag(args, "--user").unwrap_or_default();
-    let secs: u64 = flag(args, "--secs").and_then(|s| s.parse().ok()).unwrap_or(60);
+    let secs: u64 = flag(args, "--secs")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(60);
     // S5.2 mode: --share HxF (e.g. 720x30) publishes the primary screen after voice_join and
     // gates on framesEncoded ≥ 0.8×F×secs instead of the P6 audio gates.
     let share: Option<(u32, u32)> = flag(args, "--share").and_then(|s| {
         let (h, f) = s.split_once('x')?;
         Some((h.parse().ok()?, f.parse().ok()?))
     });
+    // S6.1 P7 mode: --p7-marks F points at a JSON {offMs, onMs} the wrapper script writes
+    // after toggling WiFi; the harness samples 1 Hz counters and gates on resume ≤15 s.
+    let p7_marks = flag(args, "--p7-marks");
     let out = flag(args, "--out").unwrap_or_else(|| {
-        if share.is_some() {
+        if p7_marks.is_some() {
+            format!("{DEFAULT_OUT_DIR}/p7.json")
+        } else if share.is_some() {
             format!("{DEFAULT_OUT_DIR}/s5.2-share.json")
         } else {
             format!("{DEFAULT_OUT_DIR}/p6-{user}.json")
         }
     });
 
-    let handoff: Value = serde_json::from_str(&std::fs::read_to_string(HANDOFF).expect("handoff (run seed first)")).unwrap();
+    let handoff: Value =
+        serde_json::from_str(&std::fs::read_to_string(HANDOFF).expect("handoff (run seed first)"))
+            .unwrap();
     let api = handoff["apiBase"].as_str().unwrap().to_string();
     let server_id = handoff["serverId"].as_str().unwrap().to_string();
     let channel_id = handoff["channelId"].as_str().unwrap().to_string();
@@ -163,12 +180,17 @@ async fn run(args: &[String]) -> i32 {
     let last_bytes: Arc<Mutex<(u64, u64)>> = Arc::new(Mutex::new((0, 0)));
     let frames_encoded: Arc<Mutex<u64>> = Arc::new(Mutex::new(0));
     let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    // P7: per-second (tsMs, framesEncoded, bytesSent, iceState) samples — the 1 Hz log the
+    // gates read. NB: framesEncoded/bytesSent are libwebrtc-local counters and keep ticking
+    // while the wire is dead (P7 run 1 evidence) — iceState is the honest link signal.
+    let samples: Arc<Mutex<Vec<(u64, u64, u64, String)>>> = Arc::new(Mutex::new(Vec::new()));
     {
-        let (rtt, bytes, frames, user) = (
+        let (rtt, bytes, frames, user, samples) = (
             rtt_samples.clone(),
             last_bytes.clone(),
             frames_encoded.clone(),
             user.clone(),
+            samples.clone(),
         );
         engine.set_stats_sink(Arc::new(move |s: Value| {
             if let Some(ms) = s["rttMs"].as_f64() {
@@ -179,6 +201,13 @@ async fn run(args: &[String]) -> i32 {
                 s["bytesReceived"].as_u64().unwrap_or(0),
             );
             *frames.lock().unwrap() = s["framesEncoded"].as_u64().unwrap_or(0);
+            let ts = std::time::UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+            samples.lock().unwrap().push((
+                ts,
+                s["framesEncoded"].as_u64().unwrap_or(0),
+                s["bytesSent"].as_u64().unwrap_or(0),
+                s["iceState"].as_str().unwrap_or("").to_string(),
+            ));
             eprintln!("[{user}] stats {s}");
         }));
         let errs = errors.clone();
@@ -193,7 +222,9 @@ async fn run(args: &[String]) -> i32 {
         "{}/api/servers/{server_id}/ws?token={token}",
         api.replacen("http", "ws", 1)
     );
-    let (ws, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("ws connect");
+    let (ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .expect("ws connect");
     let (mut ws_tx, mut ws_rx) = ws.split();
     let (joined_tx, joined_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -207,7 +238,9 @@ async fn run(args: &[String]) -> i32 {
                 std::collections::HashMap::new();
             while let Some(Ok(msg)) = ws_rx.next().await {
                 let Ok(text) = msg.into_text() else { continue };
-                let Ok(frame) = serde_json::from_str::<Value>(&text) else { continue };
+                let Ok(frame) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
                 match frame["t"].as_str().unwrap_or("") {
                     "presence" => {
                         if frame["userId"] == user_id.as_str()
@@ -223,8 +256,12 @@ async fn run(args: &[String]) -> i32 {
                         if frame["t"] == "hello.ok" {
                             by_owner.clear();
                             for t in frame["tracks"].as_array().cloned().unwrap_or_default() {
-                                let info: tavern_protocol::TrackInfo = serde_json::from_value(t).unwrap();
-                                by_owner.entry(info.owner_id.clone()).or_default().push(info);
+                                let info: tavern_protocol::TrackInfo =
+                                    serde_json::from_value(t).unwrap();
+                                by_owner
+                                    .entry(info.owner_id.clone())
+                                    .or_default()
+                                    .push(info);
                             }
                         } else {
                             let owner = frame["ownerId"].as_str().unwrap_or("").to_string();
@@ -247,7 +284,11 @@ async fn run(args: &[String]) -> i32 {
     };
 
     ws_tx
-        .send(Message::Text(json!({ "v": 1, "t": "voice.join", "channelId": channel_id }).to_string().into()))
+        .send(Message::Text(
+            json!({ "v": 1, "t": "voice.join", "channelId": channel_id })
+                .to_string()
+                .into(),
+        ))
         .await
         .expect("send voice.join");
     tokio::time::timeout(Duration::from_secs(5), joined_rx)
@@ -256,7 +297,10 @@ async fn run(args: &[String]) -> i32 {
         .expect("presence waiter dropped");
     eprintln!("[{user}] presence voice confirmed — engine voice_join");
 
-    let track_name = engine.voice_join(&channel_id).await.expect("engine voice_join");
+    let track_name = engine
+        .voice_join(&channel_id)
+        .await
+        .expect("engine voice_join");
     eprintln!("[{user}] publishing mic {track_name}");
 
     // S5.2: publish the primary screen through the real engine path (capture → I420 →
@@ -277,7 +321,9 @@ async fn run(args: &[String]) -> i32 {
         loop {
             t.tick().await;
             if ws_tx
-                .send(Message::Text(json!({ "v": 1, "t": "heartbeat" }).to_string().into()))
+                .send(Message::Text(
+                    json!({ "v": 1, "t": "heartbeat" }).to_string().into(),
+                ))
                 .await
                 .is_err()
             {
@@ -287,6 +333,82 @@ async fn run(args: &[String]) -> i32 {
     });
 
     tokio::time::sleep(Duration::from_secs(secs)).await;
+
+    // ---- P7 report (S6.1): resume ≤15 s after WiFi-on, gap visible in the log ----
+    if let Some(marks_path) = p7_marks {
+        engine.screen_share_stop().await.ok();
+        engine.voice_leave().await.ok();
+        hb.abort();
+        reader.abort();
+
+        let marks: Value = serde_json::from_str(
+            &std::fs::read_to_string(&marks_path).expect("marks file (run p7.sh)"),
+        )
+        .unwrap();
+        let (off_ms, on_ms) = (
+            marks["offMs"].as_u64().expect("offMs"),
+            marks["onMs"].as_u64().expect("onMs"),
+        );
+        let samples = samples.lock().unwrap().clone();
+
+        let ice_up = |s: &str| s == "Connected" || s == "Completed";
+        // First sample pair after ON where each counter increases again (None = never).
+        let resume_after = |pick: fn(&(u64, u64, u64, String)) -> u64| -> Option<u64> {
+            samples
+                .windows(2)
+                .find(|w| w[1].0 > on_ms && pick(&w[1]) > pick(&w[0]))
+                .map(|w| w[1].0)
+        };
+        let frames_resume = resume_after(|s| s.1);
+        let bytes_resume = resume_after(|s| s.2);
+        // The link itself: first sample after ON with ICE back up. framesEncoded/bytesSent
+        // are libwebrtc-local counters that keep ticking while the wire is dead (run 1
+        // evidence), so the visible gap + true recovery are read from iceState.
+        let ice_resume = samples
+            .iter()
+            .find(|s| s.0 > on_ms && ice_up(&s.3))
+            .map(|s| s.0);
+        // Gap: a 1 Hz sample during the outage window with ICE down.
+        let gap_seen = samples
+            .iter()
+            .any(|s| s.0 >= off_ms && s.0 <= on_ms + 15_000 && !ice_up(&s.3));
+
+        let within = |t: Option<u64>| {
+            t.map(|t| t.saturating_sub(on_ms) <= 15_000)
+                .unwrap_or(false)
+        };
+        let gates = json!({
+            "framesEncodedResume_le_15s": within(frames_resume),
+            "bytesSentResume_le_15s": within(bytes_resume),
+            "iceRecovered_le_15s": within(ice_resume),
+            "gapVisible": gap_seen,
+        });
+        let pass = gates
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|v| v.as_bool() == Some(true));
+        let report = json!({
+            "step": "S6.1/reconnect",
+            "gate": "P7",
+            "durationS": secs,
+            "offMs": off_ms,
+            "onMs": on_ms,
+            "framesResumeMsAfterOn": frames_resume.map(|t| t.saturating_sub(on_ms)),
+            "bytesResumeMsAfterOn": bytes_resume.map(|t| t.saturating_sub(on_ms)),
+            "iceRecoveredMsAfterOn": ice_resume.map(|t| t.saturating_sub(on_ms)),
+            "samples": samples.iter().map(|(t, f, b, ice)| json!({ "tsMs": t, "framesEncoded": f, "bytesSent": b, "iceState": ice })).collect::<Vec<_>>(),
+            "gates": gates,
+            "pass": pass,
+        });
+        std::fs::create_dir_all(std::path::Path::new(&out).parent().unwrap()).unwrap();
+        std::fs::write(&out, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+        println!(
+            "[{user}] P7 {}: framesResume={frames_resume:?} bytesResume={bytes_resume:?} iceResume={ice_resume:?} (on={on_ms}) gap={gap_seen}",
+            if pass { "PASS" } else { "FAIL" }
+        );
+        return if pass { 0 } else { 1 };
+    }
 
     // S5.2 report path: framesEncoded gate, then clean stop (unpublish) + leave.
     if let Some((h, f)) = share {
@@ -335,7 +457,11 @@ async fn run(args: &[String]) -> i32 {
         "deviceErrors_eq_0": device_errors == 0,
         "audioBothWays": bytes_sent > 1000 && bytes_received > 1000,
     });
-    let pass = gates.as_object().unwrap().values().all(|v| v.as_bool() == Some(true));
+    let pass = gates
+        .as_object()
+        .unwrap()
+        .values()
+        .all(|v| v.as_bool() == Some(true));
     let report = json!({
         "step": "S4.3/e2e-voice",
         "gate": "P6",
@@ -381,11 +507,21 @@ async fn pubsynth(args: &[String]) -> i32 {
     use tavern_engine::signaling::{PublishTrack, Signaling};
 
     let n: usize = flag(args, "--n").and_then(|s| s.parse().ok()).unwrap_or(1);
-    let width: u32 = flag(args, "--width").and_then(|s| s.parse().ok()).unwrap_or(640);
-    let height: u32 = flag(args, "--height").and_then(|s| s.parse().ok()).unwrap_or(360);
-    let fps: u32 = flag(args, "--fps").and_then(|s| s.parse().ok()).unwrap_or(30);
-    let kbps: u64 = flag(args, "--kbps").and_then(|s| s.parse().ok()).unwrap_or(300);
-    let secs: u64 = flag(args, "--secs").and_then(|s| s.parse().ok()).unwrap_or(120);
+    let width: u32 = flag(args, "--width")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(640);
+    let height: u32 = flag(args, "--height")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(360);
+    let fps: u32 = flag(args, "--fps")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    let kbps: u64 = flag(args, "--kbps")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    let secs: u64 = flag(args, "--secs")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(120);
 
     let handoff: Value =
         serde_json::from_str(&std::fs::read_to_string(HANDOFF).expect("handoff (run seed first)"))
@@ -436,16 +572,25 @@ async fn pubsynth(args: &[String]) -> i32 {
         let (mut ws_tx, mut ws_rx) = ws.split();
         ws_tx
             .send(Message::Text(
-                json!({ "v": 1, "t": "voice.join", "channelId": channel_id }).to_string().into(),
+                json!({ "v": 1, "t": "voice.join", "channelId": channel_id })
+                    .to_string()
+                    .into(),
             ))
             .await
             .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         loop {
-            assert!(std::time::Instant::now() < deadline, "no voice presence for {nick}");
-            let Some(Ok(msg)) = ws_rx.next().await else { continue };
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no voice presence for {nick}"
+            );
+            let Some(Ok(msg)) = ws_rx.next().await else {
+                continue;
+            };
             let Ok(text) = msg.into_text() else { continue };
-            let Ok(f) = serde_json::from_str::<Value>(&text) else { continue };
+            let Ok(f) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
             if f["t"] == "presence" && f["userId"] == user_id.as_str() && f["state"] == "voice" {
                 break;
             }
@@ -492,7 +637,11 @@ async fn pubsynth(args: &[String]) -> i32 {
             )
             .expect("transceiver");
         let offer = pc
-            .create_offer(OfferOptions { ice_restart: false, offer_to_receive_audio: false, offer_to_receive_video: false })
+            .create_offer(OfferOptions {
+                ice_restart: false,
+                offer_to_receive_audio: false,
+                offer_to_receive_video: false,
+            })
             .await
             .expect("offer");
         let offer_sdp = offer.to_string();
@@ -523,7 +672,9 @@ async fn pubsynth(args: &[String]) -> i32 {
         spawn_synth_pump(source, width, height, fps as u64);
         // Keep the PC alive for the whole run.
         std::mem::forget(pc);
-        eprintln!("[pubsynth] {i}: {nick} publishing {track_name} {width}x{height}@{fps} {kbps}kbps");
+        eprintln!(
+            "[pubsynth] {i}: {nick} publishing {track_name} {width}x{height}@{fps} {kbps}kbps"
+        );
     }
 
     // Heartbeat all sockets every 20 s for the duration.
@@ -534,7 +685,9 @@ async fn pubsynth(args: &[String]) -> i32 {
             t.tick().await;
             for ws_tx in hb_writers.iter_mut() {
                 let _ = ws_tx
-                    .send(Message::Text(json!({ "v": 1, "t": "heartbeat" }).to_string().into()))
+                    .send(Message::Text(
+                        json!({ "v": 1, "t": "heartbeat" }).to_string().into(),
+                    ))
                     .await;
             }
         }
@@ -555,8 +708,10 @@ fn spawn_synth_pump(src: NativeVideoSource, w: u32, h: u32, fps: u64) {
             fill_bars(&mut buf, w as usize, h as usize, phase);
             phase = (phase + 4) % (w as usize).max(1);
             let mut frame = VideoFrame::new(VideoRotation::VideoRotation0, buf);
-            frame.timestamp_us =
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as i64;
+            frame.timestamp_us = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros() as i64;
             src.capture_frame(&frame);
         }
     });
@@ -629,7 +784,8 @@ fn median(xs: &[f64]) -> Option<f64> {
 // ---- check ------------------------------------------------------------------
 
 fn check(args: &[String]) -> i32 {
-    let load = |p: &str| -> Value { serde_json::from_str(&std::fs::read_to_string(p).expect(p)).unwrap() };
+    let load =
+        |p: &str| -> Value { serde_json::from_str(&std::fs::read_to_string(p).expect(p)).unwrap() };
     let a = load(&flag(args, "--a").expect("--a"));
     let b = load(&flag(args, "--b").expect("--b"));
     let mut ok = true;

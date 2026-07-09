@@ -1,0 +1,379 @@
+{
+  "bytesResumeMsAfterOn": 959,
+  "durationS": 60,
+  "framesResumeMsAfterOn": 959,
+  "gate": "P7",
+  "gates": {
+    "bytesSentResume_le_15s": true,
+    "framesEncodedResume_le_15s": true,
+    "gapVisible": true,
+    "iceRecovered_le_15s": true
+  },
+  "iceRecoveredMsAfterOn": 1959,
+  "offMs": 1783558812000,
+  "onMs": 1783558823000,
+  "pass": true,
+  "samples": [
+    {
+      "bytesSent": 44821,
+      "framesEncoded": 22,
+      "iceState": "Connected",
+      "tsMs": 1783558790960
+    },
+    {
+      "bytesSent": 120808,
+      "framesEncoded": 57,
+      "iceState": "Connected",
+      "tsMs": 1783558791960
+    },
+    {
+      "bytesSent": 329044,
+      "framesEncoded": 101,
+      "iceState": "Connected",
+      "tsMs": 1783558792959
+    },
+    {
+      "bytesSent": 529996,
+      "framesEncoded": 146,
+      "iceState": "Connected",
+      "tsMs": 1783558793959
+    },
+    {
+      "bytesSent": 664769,
+      "framesEncoded": 191,
+      "iceState": "Connected",
+      "tsMs": 1783558794960
+    },
+    {
+      "bytesSent": 828309,
+      "framesEncoded": 223,
+      "iceState": "Connected",
+      "tsMs": 1783558796016
+    },
+    {
+      "bytesSent": 911122,
+      "framesEncoded": 249,
+      "iceState": "Connected",
+      "tsMs": 1783558796967
+    },
+    {
+      "bytesSent": 997905,
+      "framesEncoded": 269,
+      "iceState": "Connected",
+      "tsMs": 1783558798289
+    },
+    {
+      "bytesSent": 1127248,
+      "framesEncoded": 299,
+      "iceState": "Connected",
+      "tsMs": 1783558798961
+    },
+    {
+      "bytesSent": 1312922,
+      "framesEncoded": 344,
+      "iceState": "Connected",
+      "tsMs": 1783558799959
+    },
+    {
+      "bytesSent": 1378983,
+      "framesEncoded": 389,
+      "iceState": "Connected",
+      "tsMs": 1783558800959
+    },
+    {
+      "bytesSent": 1508051,
+      "framesEncoded": 431,
+      "iceState": "Connected",
+      "tsMs": 1783558801961
+    },
+    {
+      "bytesSent": 1710667,
+      "framesEncoded": 478,
+      "iceState": "Connected",
+      "tsMs": 1783558802960
+    },
+    {
+      "bytesSent": 1754634,
+      "framesEncoded": 523,
+      "iceState": "Connected",
+      "tsMs": 1783558803960
+    },
+    {
+      "bytesSent": 2049289,
+      "framesEncoded": 561,
+      "iceState": "Connected",
+      "tsMs": 1783558804959
+    },
+    {
+      "bytesSent": 2180379,
+      "framesEncoded": 603,
+      "iceState": "Connected",
+      "tsMs": 1783558805959
+    },
+    {
+      "bytesSent": 2500733,
+      "framesEncoded": 642,
+      "iceState": "Connected",
+      "tsMs": 1783558806960
+    },
+    {
+      "bytesSent": 2646085,
+      "framesEncoded": 682,
+      "iceState": "Connected",
+      "tsMs": 1783558807959
+    },
+    {
+      "bytesSent": 2853583,
+      "framesEncoded": 727,
+      "iceState": "Connected",
+      "tsMs": 1783558808959
+    },
+    {
+      "bytesSent": 3062040,
+      "framesEncoded": 771,
+      "iceState": "Connected",
+      "tsMs": 1783558809960
+    },
+    {
+      "bytesSent": 3281900,
+      "framesEncoded": 816,
+      "iceState": "Connected",
+      "tsMs": 1783558810958
+    },
+    {
+      "bytesSent": 3486016,
+      "framesEncoded": 861,
+      "iceState": "Connected",
+      "tsMs": 1783558811959
+    },
+    {
+      "bytesSent": 3855802,
+      "framesEncoded": 899,
+      "iceState": "Connected",
+      "tsMs": 1783558812960
+    },
+    {
+      "bytesSent": 3994615,
+      "framesEncoded": 937,
+      "iceState": "Connected",
+      "tsMs": 1783558813959
+    },
+    {
+      "bytesSent": 4143543,
+      "framesEncoded": 977,
+      "iceState": "Connected",
+      "tsMs": 1783558814959
+    },
+    {
+      "bytesSent": 4289931,
+      "framesEncoded": 1021,
+      "iceState": "Connected",
+      "tsMs": 1783558815959
+    },
+    {
+      "bytesSent": 4331217,
+      "framesEncoded": 1049,
+      "iceState": "Connected",
+      "tsMs": 1783558816959
+    },
+    {
+      "bytesSent": 4430158,
+      "framesEncoded": 1079,
+      "iceState": "Connected",
+      "tsMs": 1783558817959
+    },
+    {
+      "bytesSent": 4527986,
+      "framesEncoded": 1097,
+      "iceState": "Connected",
+      "tsMs": 1783558819029
+    },
+    {
+      "bytesSent": 4574068,
+      "framesEncoded": 1116,
+      "iceState": "Disconnected",
+      "tsMs": 1783558819959
+    },
+    {
+      "bytesSent": 4620522,
+      "framesEncoded": 1141,
+      "iceState": "Disconnected",
+      "tsMs": 1783558820960
+    },
+    {
+      "bytesSent": 4667712,
+      "framesEncoded": 1171,
+      "iceState": "Disconnected",
+      "tsMs": 1783558821959
+    },
+    {
+      "bytesSent": 4718469,
+      "framesEncoded": 1193,
+      "iceState": "Disconnected",
+      "tsMs": 1783558822960
+    },
+    {
+      "bytesSent": 4745537,
+      "framesEncoded": 1208,
+      "iceState": "Disconnected",
+      "tsMs": 1783558823959
+    },
+    {
+      "bytesSent": 4766603,
+      "framesEncoded": 1222,
+      "iceState": "Connected",
+      "tsMs": 1783558824959
+    },
+    {
+      "bytesSent": 4781883,
+      "framesEncoded": 1237,
+      "iceState": "Connected",
+      "tsMs": 1783558825960
+    },
+    {
+      "bytesSent": 4792205,
+      "framesEncoded": 1252,
+      "iceState": "Connected",
+      "tsMs": 1783558826959
+    },
+    {
+      "bytesSent": 4804303,
+      "framesEncoded": 1267,
+      "iceState": "Connected",
+      "tsMs": 1783558827959
+    },
+    {
+      "bytesSent": 4814863,
+      "framesEncoded": 1282,
+      "iceState": "Connected",
+      "tsMs": 1783558828958
+    },
+    {
+      "bytesSent": 4966984,
+      "framesEncoded": 1304,
+      "iceState": "Connected",
+      "tsMs": 1783558829959
+    },
+    {
+      "bytesSent": 5089153,
+      "framesEncoded": 1335,
+      "iceState": "Connected",
+      "tsMs": 1783558830959
+    },
+    {
+      "bytesSent": 5214959,
+      "framesEncoded": 1379,
+      "iceState": "Connected",
+      "tsMs": 1783558831959
+    },
+    {
+      "bytesSent": 5339574,
+      "framesEncoded": 1424,
+      "iceState": "Connected",
+      "tsMs": 1783558832959
+    },
+    {
+      "bytesSent": 5387048,
+      "framesEncoded": 1469,
+      "iceState": "Connected",
+      "tsMs": 1783558833959
+    },
+    {
+      "bytesSent": 5437742,
+      "framesEncoded": 1514,
+      "iceState": "Connected",
+      "tsMs": 1783558834959
+    },
+    {
+      "bytesSent": 5458274,
+      "framesEncoded": 1541,
+      "iceState": "Connected",
+      "tsMs": 1783558835959
+    },
+    {
+      "bytesSent": 5715010,
+      "framesEncoded": 1583,
+      "iceState": "Connected",
+      "tsMs": 1783558836959
+    },
+    {
+      "bytesSent": 5786245,
+      "framesEncoded": 1628,
+      "iceState": "Connected",
+      "tsMs": 1783558837959
+    },
+    {
+      "bytesSent": 5847734,
+      "framesEncoded": 1673,
+      "iceState": "Connected",
+      "tsMs": 1783558838959
+    },
+    {
+      "bytesSent": 5893989,
+      "framesEncoded": 1718,
+      "iceState": "Connected",
+      "tsMs": 1783558839959
+    },
+    {
+      "bytesSent": 5952161,
+      "framesEncoded": 1763,
+      "iceState": "Connected",
+      "tsMs": 1783558840959
+    },
+    {
+      "bytesSent": 5989219,
+      "framesEncoded": 1808,
+      "iceState": "Connected",
+      "tsMs": 1783558841960
+    },
+    {
+      "bytesSent": 6021812,
+      "framesEncoded": 1853,
+      "iceState": "Connected",
+      "tsMs": 1783558842959
+    },
+    {
+      "bytesSent": 6051718,
+      "framesEncoded": 1898,
+      "iceState": "Connected",
+      "tsMs": 1783558843959
+    },
+    {
+      "bytesSent": 6084995,
+      "framesEncoded": 1943,
+      "iceState": "Connected",
+      "tsMs": 1783558844959
+    },
+    {
+      "bytesSent": 6115637,
+      "framesEncoded": 1988,
+      "iceState": "Connected",
+      "tsMs": 1783558845959
+    },
+    {
+      "bytesSent": 6145958,
+      "framesEncoded": 2033,
+      "iceState": "Connected",
+      "tsMs": 1783558846959
+    },
+    {
+      "bytesSent": 6173777,
+      "framesEncoded": 2078,
+      "iceState": "Connected",
+      "tsMs": 1783558847958
+    },
+    {
+      "bytesSent": 6202440,
+      "framesEncoded": 2123,
+      "iceState": "Connected",
+      "tsMs": 1783558848959
+    },
+    {
+      "bytesSent": 6230898,
+      "framesEncoded": 2168,
+      "iceState": "Connected",
+      "tsMs": 1783558849959
+    }
+  ],
+  "step": "S6.1/reconnect"
+}

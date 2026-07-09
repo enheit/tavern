@@ -203,6 +203,10 @@ impl Signaling {
         self.post("renegotiate", body).await.map(|_| ())
     }
 
+    // NOTE (S6.1): there is deliberately NO offer-type renegotiate — the SFU rejects
+    // client offers on PUT /renegotiate (406, verified live at P7). ICE recovery is
+    // credential-preserving and signaling-free (see engine::rtc_config).
+
     /// Stop pulling a remote track (SFU tracks/close + DO stops accrual).
     pub async fn unsubscribe(
         &self,

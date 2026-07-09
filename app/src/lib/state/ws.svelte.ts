@@ -86,6 +86,8 @@ export class WsClient {
   private socket: Socket | null = null;
   private attempt = 0;
   private intentional = false;
+  // True once a hello.ok has landed; the next hello.ok is then a RESUME (S6.1).
+  private everOpened = false;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   private backoff: ReturnType<typeof setTimeout> | null = null;
@@ -97,6 +99,8 @@ export class WsClient {
     private opts: {
       connect: (url: string) => Socket;
       onFrame?: (f: ServerFrame) => void;
+      // Fired on a hello.ok that follows a drop (S6.1: voice re-join/re-publish/re-watch).
+      onResume?: () => void;
     },
   ) {}
 
@@ -147,11 +151,14 @@ export class WsClient {
     if (frame.t === 'chat.history') for (const m of frame.messages) this.bumpSeen(m.channelId, m.id);
 
     if (frame.t === 'hello.ok') {
+      const isResume = this.everOpened;
+      this.everOpened = true;
       this.attempt = 0;
       this.state = 'open';
       this.startHeartbeat();
       this.opts.onFrame?.(frame);
       void this.resume();
+      if (isResume) this.opts.onResume?.();
       return;
     }
     if (frame.t === 'heartbeat.ok') return; // liveness only
@@ -268,6 +275,7 @@ class WsPool {
     client = new WsClient(wsUrl(apiBase, serverId, token), {
       connect: (u) => new WebSocket(u) as unknown as Socket,
       onFrame: (f) => applyServerFrame(serverId, f),
+      onResume: () => void voice.resumeAfterWs(serverId),
     });
     this.clients.set(serverId, client);
     client.open();

@@ -289,6 +289,35 @@ describe('ServerRoom: presence', () => {
   });
 });
 
+describe('ServerRoom: eviction mid-session (S6.1)', () => {
+  it('evictDurableObject mid-voice-session → driver reconnects, roster restores', async () => {
+    const owner = await newUser();
+    const bob = await newUser();
+    const serverId = await newServer(owner.token);
+    await j('/api/servers/join', { serverId }, bob.token);
+    const voiceCh = await newChannel(owner.token, serverId, { kind: 'voice' });
+
+    const a = (await connect(serverId, owner.token))!;
+    await a.waitFor((m) => m.t === 'hello.ok');
+    const b = (await connect(serverId, bob.token))!;
+    b.send({ v: 1, t: 'voice.join', channelId: voiceCh });
+    await a.waitFor((m) => m.t === 'presence' && m.userId === bob.userId && m.state === 'voice');
+
+    await evictDurableObject(stubFor(serverId)); // in-memory DO state gone mid-session
+
+    // The protocol driver reconnects (client backoff → fresh WS) — hello.ok must
+    // restore the full roster and the persisted presence, including bob's voice state.
+    const a2 = (await connect(serverId, owner.token))!;
+    const hello = await a2.waitFor((m) => m.t === 'hello.ok');
+    expect(hello.roster.map((u: any) => u.userId).sort()).toEqual([owner.userId, bob.userId].sort());
+    expect(hello.presence).toContainEqual({ userId: bob.userId, state: 'voice', channelId: voiceCh });
+
+    // The revived DO still serves the reconnected driver end-to-end.
+    a2.send({ v: 1, t: 'chat.send', channelId: voiceCh, content: 'post-evict', nonce: crypto.randomUUID() });
+    expect((await a2.waitFor((m) => m.t === 'chat.msg')).content).toBe('post-evict');
+  });
+});
+
 describe('ServerRoom: locked channels + stale sweep', () => {
   it('locked channel blocks chat.send + voice.join until unlock', async () => {
     const owner = await newUser();

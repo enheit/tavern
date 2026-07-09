@@ -2,6 +2,7 @@
   import { auth } from '../state/auth.svelte';
   import { servers } from '../state/servers.svelte';
   import { theme } from '../state/theme.svelte';
+  import { voice } from '../state/voice.svelte';
   import ServerRail from '../components/ServerRail.svelte';
   import ChannelList from '../components/ChannelList.svelte';
   import ChatPane from '../components/ChatPane.svelte';
@@ -13,6 +14,10 @@
   const currentServer = $derived(servers.list.find((s) => s.id === servers.currentServerId));
   let settingsOpen = $state(false);
 </script>
+
+{#if voice.reconnecting}
+  <div class="reconnecting" role="status">Reconnecting…</div>
+{/if}
 
 <div class="layout">
   <ServerRail />
@@ -46,6 +51,19 @@
 {#if settingsOpen}<SettingsModal onclose={() => (settingsOpen = false)} />{/if}
 
 <style>
+  .reconnecting {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    padding: 0.25rem;
+    text-align: center;
+    font-size: 0.85rem;
+    background: #b45309;
+    color: #fff;
+  }
+
   .layout {
     display: grid;
     grid-template-columns: auto 220px 1fr 200px;

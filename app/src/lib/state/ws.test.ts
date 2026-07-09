@@ -134,6 +134,26 @@ test('drop→reconnect gap-fills missed messages with no loss or dupes', async (
   client.close();
 });
 
+test('onResume fires on the hello.ok AFTER a drop, never on the first connect (S6.1)', async () => {
+  vi.useFakeTimers();
+  const srv = new MockServer();
+  let resumes = 0;
+  const client = new WsClient('ws://x', { connect: srv.factory, onResume: () => (resumes += 1) });
+
+  client.open();
+  await vi.advanceTimersByTimeAsync(0); // first hello.ok
+  expect(client.state).toBe('open');
+  expect(resumes).toBe(0);
+
+  srv.sockets.at(-1)!.close(); // drop → backoff → reconnect → hello.ok again
+  await vi.advanceTimersByTimeAsync(backoffMs(0) + 50);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(client.state).toBe('open');
+  expect(resumes).toBe(1);
+
+  client.close();
+});
+
 test('watchdog force-closes after 45 s of server silence; a message resets it', async () => {
   vi.useFakeTimers();
   const srv = new MockServer(); // silent to heartbeats

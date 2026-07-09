@@ -158,3 +158,107 @@ test('tracks rosters are forwarded to the engine while in voice', async () => {
   voice.applyTracks('s1', 'bob', []); // bob unpublished → forward again
   await vi.waitFor(() => expect(order).toContain('set_remote_tracks'));
 });
+
+// ---- S6.1 WS-resume reconnection ------------------------------------------------
+
+const screenTrack: TrackInfo = {
+  ownerId: 'bob',
+  trackName: 'screen-b',
+  kind: 'screen',
+  simulcast: true,
+  width: 1280,
+  height: 720,
+  fps: 30,
+};
+
+test('resumeAfterWs: full leave → re-join → re-publish share → watched/pinned restored', async () => {
+  mockIPC((cmd, args) => {
+    const a = args as Record<string, unknown> | undefined;
+    order.push(cmd === 'set_user_gain' ? `${cmd}:${a?.userId}:${a?.gain}` : cmd);
+    if (cmd === 'voice_join') return { trackName: 'mic-x' };
+    if (cmd === 'screen_share_start') return { trackName: 'screen-me' };
+    return null;
+  });
+  servers.setPresence('s1', [{ userId: 'bob', state: 'voice', channelId: 'c1' }]);
+  await joinAndConfirm('s1', 'c1');
+  await voice.shareStart('screen:primary', 1280, 720, 30);
+  voice.applyTracks('s1', 'bob', [screenTrack]);
+  voice.joinStream(screenTrack);
+  voice.togglePin(screenTrack);
+  expect(voice.watched).toEqual({ 'bob/screen-b': 'h' });
+  order.length = 0;
+
+  const p = voice.resumeAfterWs('s1');
+  expect(voice.reconnecting).toBe(true);
+  await vi.waitFor(() => expect(order.filter((x) => x === 'ws:voice.join:s1').length).toBe(1));
+  voice.notifyPresence('s1', { userId: 'me', state: 'voice', channelId: 'c1' });
+  await p;
+
+  // Sequence: engine leave → WS leave → WS join → engine join → re-publish the share.
+  const seq = order.filter((x) =>
+    ['voice_leave', 'ws:voice.leave:s1', 'ws:voice.join:s1', 'voice_join', 'screen_share_start'].includes(x),
+  );
+  expect(seq).toEqual(['voice_leave', 'ws:voice.leave:s1', 'ws:voice.join:s1', 'voice_join', 'screen_share_start']);
+  expect(voice.status).toBe('in');
+  expect(voice.sharing?.trackName).toBe('screen-me');
+  // Watch state restored (tiles re-subscribe off the fresh `watched` object).
+  expect(voice.watched).toEqual({ 'bob/screen-b': 'h' });
+  expect(voice.pinned).toBe('bob/screen-b');
+  expect(voice.reconnecting).toBe(false);
+});
+
+test('resumeAfterWs is a no-op when idle or for a different server', async () => {
+  await voice.resumeAfterWs('s1'); // idle
+  expect(order).toEqual([]);
+
+  await joinAndConfirm('s1', 'c1');
+  order.length = 0;
+  await voice.resumeAfterWs('s2'); // some other server's socket resumed
+  expect(order).toEqual([]);
+  expect(voice.status).toBe('in');
+});
+
+test('reconnecting banner: engine ICE `reconnecting` while in voice; cleared on recovery', async () => {
+  expect(voice.reconnecting).toBe(false);
+  emitEngineEvent('engine://state', { voice: 'reconnecting' });
+  expect(voice.reconnecting).toBe(false); // not in voice → no banner
+
+  await joinAndConfirm('s1', 'c1');
+  emitEngineEvent('engine://state', { voice: 'reconnecting' });
+  expect(voice.reconnecting).toBe(true);
+  emitEngineEvent('engine://state', { voice: 'connected' });
+  expect(voice.reconnecting).toBe(false);
+});
+
+test('a stopped share is not re-published on resume', async () => {
+  mockIPC((cmd) => {
+    order.push(cmd);
+    if (cmd === 'voice_join') return { trackName: 'mic-x' };
+    if (cmd === 'screen_share_start') return { trackName: 'screen-me' };
+    return null;
+  });
+  await joinAndConfirm('s1', 'c1');
+  await voice.shareStart('screen:primary', 1280, 720, 30);
+  await voice.shareStop();
+  order.length = 0;
+
+  const p = voice.resumeAfterWs('s1');
+  await vi.waitFor(() => expect(order).toContain('ws:voice.join:s1'));
+  voice.notifyPresence('s1', { userId: 'me', state: 'voice', channelId: 'c1' });
+  await p;
+  expect(order).not.toContain('screen_share_start');
+  expect(voice.sharing).toBeNull();
+});
+
+test('engine reconnect_failed event triggers the full re-join (S6.1)', async () => {
+  await joinAndConfirm('s1', 'c1');
+  order.length = 0;
+
+  emitEngineEvent('engine://state', { voice: 'reconnecting', err: 'reconnect_failed' });
+  await vi.waitFor(() => expect(order).toContain('ws:voice.join:s1'));
+  voice.notifyPresence('s1', { userId: 'me', state: 'voice', channelId: 'c1' });
+  await vi.waitFor(() => expect(voice.status).toBe('in'));
+
+  const seq = order.filter((x) => ['voice_leave', 'ws:voice.join:s1', 'voice_join'].includes(x));
+  expect(seq).toEqual(['voice_leave', 'ws:voice.join:s1', 'voice_join']);
+});
