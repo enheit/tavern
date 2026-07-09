@@ -5,6 +5,14 @@ use std::sync::Arc;
 
 use engine_cmds::EngineHandle;
 use session::{KeyringStore, SessionStore};
+use tauri::Emitter;
+
+// Applies an installed update: the updater has already swapped the bundle on disk,
+// restart boots into the new version.
+#[tauri::command]
+fn relaunch(app: tauri::AppHandle) {
+    app.restart();
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -18,7 +26,8 @@ pub fn run() {
         .setup(move |app| {
             engine_cmds::bridge_events(&engine_for_setup, app.handle());
             // S6.3: silent update check on boot; a found update is downloaded and
-            // installed in the background and applies on the next launch.
+            // installed in the background, then `update://ready` tells the UI to
+            // offer a restart (the `relaunch` command) that applies it.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 use tauri_plugin_updater::UpdaterExt;
@@ -28,10 +37,10 @@ pub fn run() {
                 if let Ok(Some(update)) = updater.check().await {
                     eprintln!("[updater] downloading {}", update.version);
                     match update.download_and_install(|_, _| {}, || {}).await {
-                        Ok(()) => eprintln!(
-                            "[updater] installed {} (applies on relaunch)",
-                            update.version
-                        ),
+                        Ok(()) => {
+                            eprintln!("[updater] installed {} (restart to apply)", update.version);
+                            let _ = handle.emit("update://ready", &update.version);
+                        }
                         Err(e) => eprintln!("[updater] failed: {e}"),
                     }
                 }
@@ -39,6 +48,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            relaunch,
             session::session_load,
             session::session_save,
             session::session_clear,

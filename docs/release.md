@@ -43,8 +43,9 @@ bundle (macOS `Tavern.app.tar.gz`, Windows the NSIS `*-setup.exe`, Linux the
 5. `npx wrangler r2 object put tavern-updates/latest.json --file latest.json --remote`
 
 Clients check `https://tavern.roman-mahotskyi.workers.dev/updates/latest.json`
-(Worker route → R2, 60 s cache) silently at boot, download + install in the
-background, and apply on the next launch.
+(Worker route → R2, 60 s cache) silently at boot and download + install in the
+background; the UI then shows an "Update to X ready — restart Tavern" pill that
+relaunches into the new version (or it applies on the next manual launch).
 
 ## macOS signing & notarization
 

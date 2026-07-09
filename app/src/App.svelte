@@ -1,6 +1,6 @@
 <script lang="ts">
   import { auth } from './lib/state/auth.svelte';
-  import { runtime, isLinux } from './lib/state/runtime.svelte';
+  import { runtime, isLinux, relaunch } from './lib/state/runtime.svelte';
   import Onboarding from './lib/screens/Onboarding.svelte';
   import Main from './lib/screens/Main.svelte';
   import Modal from './lib/components/Modal.svelte';
@@ -22,6 +22,12 @@
   <Onboarding />
 {/if}
 
+{#if runtime.updateVersion}
+  <button class="update-pill" data-testid="update-ready" onclick={() => relaunch()}>
+    Update to {runtime.updateVersion} ready — restart Tavern
+  </button>
+{/if}
+
 {#if runtime.captureError}
   <Modal title="Screen capture unavailable" onclose={() => runtime.dismissCaptureError()}>
     <p data-testid="capture-error">{runtime.captureError}</p>
@@ -30,6 +36,20 @@
 {/if}
 
 <style>
+  .update-pill {
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 10;
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 999px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    cursor: pointer;
+  }
+
   .fatal {
     height: 100vh;
     display: flex;
