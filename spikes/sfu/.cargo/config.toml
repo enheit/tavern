@@ -1,9 +1,0 @@
-# Scoped to the spike crate (run cargo from this dir). libwebrtc's prebuilt uses ObjC
-# categories (VideoToolbox codecs); without -ObjC it links fine but crashes at runtime with
-# `-[RTCVideoCodecInfo nativeSdpVideoFormat]: unrecognized selector`. Kept out of the root
-# .cargo so the main workspace + CI are unaffected.
-[target.aarch64-apple-darwin]
-rustflags = ["-C", "link-args=-ObjC"]
-
-[target.x86_64-apple-darwin]
-rustflags = ["-C", "link-args=-ObjC"]

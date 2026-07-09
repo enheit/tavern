@@ -1,7 +1,0 @@
-# Scoped to the spike (run cargo from this dir). Same macOS -ObjC requirement as every
-# libwebrtc-linking binary (see the root .cargo/config.toml comment / progress S1.2).
-[target.aarch64-apple-darwin]
-rustflags = ["-C", "link-args=-ObjC"]
-
-[target.x86_64-apple-darwin]
-rustflags = ["-C", "link-args=-ObjC"]

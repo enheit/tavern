@@ -1,8 +1,0 @@
-[workspace]
-resolver = "2"
-members = ["crates/*", "src-tauri"]
-# spikes/* are throwaway M1 SPIKE crates (libwebrtc ⇄ Cloudflare Realtime). They pull a
-# ~hundreds-of-MB prebuilt static libwebrtc and are macOS-runtime, local/manual only — the
-# plan keeps media/capture out of CI. Excluding them keeps `cargo test --workspace`,
-# clippy, and llvm-cov (all 3 OS runners) fast and green. Each spike is its own workspace.
-exclude = ["spikes"]
