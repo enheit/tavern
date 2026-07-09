@@ -28,10 +28,10 @@ platform-reality: macOS now; Windows/Linux deferred to real hardware.
 
 | Check | macOS | Windows | Linux |
 |---|---|---|---|
-| Echo on speakers (AEC) | PENDING (dev-machine session) | deferred (§1) | deferred (§1) |
-| Deafen / undeafen restore | PENDING | deferred | deferred |
-| Per-user volume 0–200% + persistence | PENDING | deferred | deferred |
-| Speaking rings | PENDING | deferred | deferred |
+| Echo on speakers (AEC) | DEFERRED — needs a second machine + ears (one shared mic/speaker set can't distinguish the echo path); user signed off 2026-07-09. Automated backstop: P6 (APM/AEC3 active, clean bidirectional audio, deviceErrors 0) | deferred (§1) | deferred (§1) |
+| Deafen / undeafen restore | PASS 2026-07-09 (two release-bundle instances, one machine, prod worker + real SFU) | deferred | deferred |
+| Per-user volume 0–200% + persistence | PASS 2026-07-09 (same session) | deferred | deferred |
+| Speaking rings | PASS 2026-07-09 (same session; shared mic rings both users — expected one-machine artifact, ring tracks sound start/stop) | deferred | deferred |
 
 > Fill PASS/FAIL + date when run. Win/Linux rows move out of "deferred" only
 > on real hardware (never faked, per §1).

@@ -24,11 +24,14 @@ Win/Linux rows deferred per PLAN §1 platform-reality.
 
 | Check | Result |
 |---|---|
-| TCC prompt on first start, granted flow works | PENDING |
-| 720p30 live picture on watcher (quality/orientation) | PENDING |
-| 360p15 visibly lower res + fps | PENDING |
-| 480p 4:3 aspect not stretched | PENDING |
-| Turn off removes the tile server-wide | PENDING |
+| TCC prompt on first start, granted flow works | PASS 2026-07-09 |
+| 720p30 live picture on watcher (quality/orientation) | PASS 2026-07-09 |
+| 360p15 visibly lower res + fps | PASS 2026-07-09 |
+| 480p 4:3 aspect not stretched | PASS 2026-07-09 |
+| Turn off removes the tile server-wide | PASS 2026-07-09 |
+
+All five run in the S6.4 session: two release-bundle instances on one machine (users
+`qa_final_a`/`qa_final_b`), prod worker + real SFU, watcher = second instance's grid.
 
 Automated coverage (already green): picker→`webcam_start` mapping for all 6 §0 combos,
 stop mapping, indicator states, §1-table encoding params (engine `video.rs` tests),
