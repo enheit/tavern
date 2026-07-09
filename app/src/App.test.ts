@@ -1,6 +1,7 @@
 import { render } from 'vitest-browser-svelte';
 import { flushSync } from 'svelte';
 import { afterEach, expect, test, vi } from 'vitest';
+import { clearMocks, mockIPC } from '@tauri-apps/api/mocks';
 import App from './App.svelte';
 import { auth } from './lib/state/auth.svelte';
 import { servers } from './lib/state/servers.svelte';
@@ -27,9 +28,16 @@ test('shows onboarding when unauthed and swaps to the shell once a session lands
 });
 
 // S6.3 DoD: missing VideoDecoder (mocked) → blocking error screen, Main never renders.
+// The requirement is DESKTOP-only (the S7 web build renders watched streams via
+// <video>, no WebCodecs needed), so the probe blocks only under the Tauri marker.
 test('probe with VideoDecoder absent → blocking error screen', async () => {
   vi.stubGlobal('VideoDecoder', undefined);
-  await runtime.probe(); // outside Tauri the engine report is a no-op
+  mockIPC(() => undefined); // provides __TAURI_INTERNALS__ → desktop probe semantics
+  try {
+    await runtime.probe();
+  } finally {
+    clearMocks();
+  }
   expect(runtime.webcodecsOk).toBe(false);
 
   auth.setSession('u1', 't', { userId: 'u1', nickname: 'Alice', color: '#8a8f98', avatarKey: null });

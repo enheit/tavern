@@ -19,7 +19,10 @@ export class RuntimeStore {
   updateVersion = $state<string | null>(null);
 
   async probe(): Promise<void> {
-    const ok = typeof VideoDecoder !== 'undefined';
+    // WebCodecs is required only by the DESKTOP video path (chunk decode). The web
+    // build (S7) renders watched streams via <video srcObject> — never block there.
+    const tauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+    const ok = !tauri || typeof VideoDecoder !== 'undefined';
     this.webcodecsOk = ok;
     await engine.setWebcodecsOk(ok); // reported via engine_status().webcodecsOk (§1)
     if (isLinux()) this.captureError = await engine.captureProbe();

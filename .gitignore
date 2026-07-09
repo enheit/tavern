@@ -32,6 +32,9 @@ crates/protocol/bindings/
 # Playwright MCP scratch output
 .playwright-mcp/
 
+# Real-browser e2e artifacts (app/e2e): screenshots + generated fake-mic tone
+app/e2e/screenshots/
+
 # S1.4 encoded-frame dumps: large (~2 MB) VP8 binaries, regenerable via
 # spikes/sfu/run_tap.sh; kept on disk as S1.5 decode-probe input. Sidecar
 # dump_*.json (branch + frame counts) IS committed as the DoD evidence.

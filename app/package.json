@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "lint": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
-    "test:cov": "vitest run --coverage"
+    "test:cov": "vitest run --coverage",
+    "test:e2e": "node e2e/web-chat.mjs && node e2e/web-voice.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { engine, inTauri } from '../engine';
   import { voice, VoiceStore } from '../state/voice.svelte';
   import { servers } from '../state/servers.svelte';
   import type { TrackInfo } from '../protocol/TrackInfo';
@@ -15,14 +16,55 @@
       : track.ownerId,
   );
 
+  // Desktop renders decoded chunks on a canvas; the web build (S7) attaches the
+  // watch PeerConnection's MediaStream to a <video> — same tile, same controls.
+  const desktop = inTauri();
+
   let canvas = $state<HTMLCanvasElement | null>(null);
+  let video = $state<HTMLVideoElement | null>(null);
   let fps = $state(0); // decoded frames in the last second (P5 per-tile measure)
+
+  // Web watch effect: startStream resolves once the remote track arrived, then the
+  // stream is live in engine.streamMedia. rVFC counts decoded frames for data-fps.
+  $effect(() => {
+    if (desktop || !joined || !video) return;
+    const layer = voice.watched[key] ?? 'l';
+    const el = video;
+    let closed = false;
+    let frames = 0;
+    let rvfc = 0;
+    const fpsTimer = setInterval(() => {
+      fps = frames;
+      frames = 0;
+    }, 1000);
+    const count = () => {
+      frames += 1;
+      rvfc = el.requestVideoFrameCallback(count);
+    };
+    void voice.startStream(track, layer, () => {}).then(() => {
+      if (closed) return;
+      const ms = engine.streamMedia(track.ownerId, track.trackName);
+      if (ms) {
+        el.srcObject = ms;
+        void el.play().catch(() => {});
+        rvfc = el.requestVideoFrameCallback(count);
+      }
+    });
+    return () => {
+      closed = true;
+      clearInterval(fpsTimer);
+      fps = 0;
+      el.cancelVideoFrameCallback(rvfc);
+      el.srcObject = null;
+      void voice.stopStream(track);
+    };
+  });
 
   // One watch session per (joined, layer): pin swaps flip the layer → the effect re-runs,
   // which is exactly §1's "layer change = unwatch then watch" (cleanup → stopStream, then
   // startStream at the new layer; brief tile blank acceptable).
   $effect(() => {
-    if (!joined || !canvas) return;
+    if (!desktop || !joined || !canvas) return;
     const layer = voice.watched[key] ?? 'l';
     const ctx = canvas.getContext('2d');
     let closed = false;
@@ -113,7 +155,12 @@
     </span>
   </header>
   {#if joined}
-    <canvas data-testid={`canvas-${key}`} bind:this={canvas}></canvas>
+    {#if desktop}
+      <canvas data-testid={`canvas-${key}`} bind:this={canvas}></canvas>
+    {:else}
+      <!-- svelte-ignore a11y_media_has_caption -->
+      <video data-testid={`video-${key}`} bind:this={video} autoplay playsinline muted></video>
+    {/if}
   {/if}
 </div>
 
@@ -167,7 +214,8 @@
     cursor: not-allowed;
   }
 
-  canvas {
+  canvas,
+  video {
     width: 100%;
     display: block;
     background: #000;

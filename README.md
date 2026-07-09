@@ -13,6 +13,8 @@ Cloudflare-only backend (Workers + Durable Objects + D1 + R2 + Realtime SFU).
 - Screen share + webcam with resolution/fps pickers, simulcast, watch-multiple + pin
 - Password-locked channels, editable nickname / color / avatar, light/dark/system theme
 - Self-updating builds for macOS, Windows, Linux
+- The same UI served as a web app by the Worker — chat, voice, screen share and webcam
+  via browser WebRTC (`app/src/lib/engine.web.ts`); desktop keeps the native engine
 
 ## Development
 
@@ -21,6 +23,7 @@ pnpm install
 pnpm dev:worker   # local Cloudflare stack (wrangler dev, port 8787)
 pnpm tauri dev    # the desktop app
 pnpm test         # app + worker suites; `cargo test --workspace` for the Rust side
+pnpm --filter tavern-app test:e2e  # real-browser web e2e (see app/e2e/README.md)
 ```
 
 Docs: [`docs/PLAN.md`](docs/PLAN.md) (implementation plan),

@@ -4,6 +4,14 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-08",
   "observability": { "enabled": true },
+  // Web build of the app (S7): the same Svelte UI the desktop shell bundles, served
+  // same-origin so VITE_API_BASE=<this worker> needs no extra CORS. API/WS/updater
+  // paths bypass assets so index.html never shadows them.
+  "assets": {
+    "directory": "../app/dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/updates/*"]
+  },
   // Account-wide egress budget caps (GB). See §1 Budget model.
   // CF_APP_ID is the Realtime SFU app id (not a secret; CF_APP_SECRET is a wrangler secret, S6.0).
   "vars": {
