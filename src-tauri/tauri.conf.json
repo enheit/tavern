@@ -33,6 +33,20 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true,
+    "macOS": {
+      "minimumSystemVersion": "13.3",
+      "entitlements": "entitlements.plist",
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://tavern.roman-mahotskyi.workers.dev/updates/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFDMjI0OTU5NThEMTI5ODUKUldTRktkRllXVWtpSE9mVXgwcCsyVDRMT0U4OEQwMkZVTVlOUlh0OGxlQW15VVhvaWlJSC9KVHAK"
+    }
   }
 }

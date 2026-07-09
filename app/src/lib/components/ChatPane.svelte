@@ -5,6 +5,9 @@
 
   const channel = $derived(servers.currentChannel);
   const messages = $derived(channel ? chat.messages(channel.id) : []);
+  // §0: author shown as nickname in their chosen color (falls back to the raw id
+  // for users who left the server — their messages remain).
+  const byId = $derived(new Map(servers.roster.map((m) => [m.userId, m])));
 
   let draft = $state('');
 
@@ -28,7 +31,11 @@
   {:else}
     <div class="log">
       {#each messages as m (m.id)}
-        <p class="msg"><span class="who">{m.userId}</span><span class="body">{m.content}</span></p>
+        <p class="msg">
+          <span class="who" style:color={byId.get(m.userId)?.color}>
+            {byId.get(m.userId)?.nickname ?? m.userId}
+          </span><span class="body">{m.content}</span>
+        </p>
       {/each}
     </div>
     <form

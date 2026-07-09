@@ -27,6 +27,8 @@ test('renders the shell: server name, channels, selected-channel chat, member do
   await expect.element(screen.getByText('Friends')).toBeInTheDocument();
   await expect.element(screen.getByText('Lounge')).toBeInTheDocument();
   await expect.element(screen.getByText('hello there')).toBeInTheDocument();
+  // §0: chat author renders as nickname (in their color), not the raw userId.
+  expect(screen.container.querySelector('.who')?.textContent).toContain('Bob');
   await expect.element(screen.getByTestId('dot-u1')).toHaveClass('online');
 });
 

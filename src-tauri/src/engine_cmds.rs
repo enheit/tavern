@@ -239,6 +239,20 @@ pub async fn set_remote_tracks(
         .map_err(|e| e.to_string())
 }
 
+/// S6.3 boot probe: the webview reports `typeof VideoDecoder !== 'undefined'` here so
+/// `engine_status().webcodecsOk` carries it (§1).
+#[tauri::command]
+pub fn set_webcodecs_ok(engine: State<'_, EngineHandle>, ok: bool) {
+    engine.0.set_webcodecs_ok(ok);
+}
+
+/// S6.3 boot probe: can this OS create a screen capturer at all? Returns the typed
+/// message (Linux: portal/PipeWire) as the invoke rejection for the boot dialog.
+#[tauri::command]
+pub fn capture_probe() -> Result<(), String> {
+    tavern_capture::probe_screen_capture().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn engine_status(engine: State<'_, EngineHandle>) -> StatusDto {
     let s = engine.0.status();

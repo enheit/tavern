@@ -80,6 +80,20 @@ export const engine = {
   async webcamStop(): Promise<void> {
     if (inTauri()) await invoke('webcam_stop');
   },
+  // S6.3 boot probes.
+  async setWebcodecsOk(ok: boolean): Promise<void> {
+    if (inTauri()) await invoke('set_webcodecs_ok', { ok });
+  },
+  /// null = capture available; string = the typed error (Linux portal/PipeWire).
+  async captureProbe(): Promise<string | null> {
+    if (!inTauri()) return null;
+    try {
+      await invoke('capture_probe');
+      return null;
+    } catch (e) {
+      return String(e);
+    }
+  },
 };
 
 export interface WebcamDevice {

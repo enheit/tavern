@@ -61,8 +61,7 @@ pub struct EngineStatus {
     pub voice: String,
     pub publishing: Vec<PublishedTrack>,
     pub watching: Vec<WatchingTrack>,
-    /// Webview WebCodecs support — reported through the engine per §1; set at S6.3 (video). Voice
-    /// does not use WebCodecs, so it stays `false` here.
+    /// Webview WebCodecs support — the S6.3 boot probe reports it via `set_webcodecs_ok`.
     pub webcodecs_ok: bool,
 }
 
@@ -137,6 +136,8 @@ pub struct Engine {
     videos: Mutex<Vec<ActiveVideo>>,
     /// Live video watches (str0m pull legs), shared with the 1 Hz stats task.
     watches: Arc<Mutex<Vec<WatchEntry>>>,
+    /// §1: webview WebCodecs support, reported by the boot probe (S6.3).
+    webcodecs_ok: AtomicBool,
     session: Mutex<Option<Session>>,
     /// Remote audio tracks the SFU adds to our PC, in arrival order (paired to subscribes). Held
     /// in an async mutex so the subscribe path can `recv().await` without blocking other locks.
@@ -168,6 +169,7 @@ impl Engine {
             shares: Mutex::new(SharesSm::default()),
             videos: Mutex::new(Vec::new()),
             watches: Arc::new(Mutex::new(Vec::new())),
+            webcodecs_ok: AtomicBool::new(false),
             session: Mutex::new(None),
             track_rx: tokio::sync::Mutex::new(None),
             on_levels: Mutex::new(None),
@@ -234,6 +236,12 @@ impl Engine {
         self.remote.set_gain(user_id, gain);
     }
 
+    /// S6.3 boot probe result: `typeof VideoDecoder !== 'undefined'` in the webview,
+    /// reported through the engine per §1 (`engine_status().webcodecsOk`).
+    pub fn set_webcodecs_ok(&self, ok: bool) {
+        self.webcodecs_ok.store(ok, Ordering::Relaxed);
+    }
+
     pub fn status(&self) -> EngineStatus {
         EngineStatus {
             voice: self.sm.lock().unwrap().state().label().to_string(),
@@ -249,7 +257,7 @@ impl Engine {
                     layer: w.layer.clone(),
                 })
                 .collect(),
-            webcodecs_ok: false,
+            webcodecs_ok: self.webcodecs_ok.load(Ordering::Relaxed),
         }
     }
 

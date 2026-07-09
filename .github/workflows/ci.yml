@@ -126,8 +126,11 @@ jobs:
           echo "RUSTFLAGS=$FLAGS" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
       - run: pnpm install --frozen-lockfile
-      # Red until S0.2 wires up the Tauri shell.
       - run: pnpm tauri build
+        env:
+          # S6.3: createUpdaterArtifacts needs the minisign key to emit .sig files.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
       - uses: actions/upload-artifact@v4
         with:
           name: tavern-${{ matrix.os }}
