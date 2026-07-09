@@ -337,6 +337,73 @@ describe('rtc: budget', () => {
     expect(mic.status).toBe(200); // mic never blocked
   });
 
+  // S6.2: soft level blocks only the HIGH layer of video pulls; "l" and mic still work.
+  it('soft level: video layer h → 403 budget_exceeded, layer l allowed, mic unaffected', async () => {
+    const owner = await newUser();
+    const sub = await newUser();
+    const serverId = await makeServer(owner.token);
+    await jpost('/api/servers/join', { serverId }, sub.token);
+    const voice = await makeVoice(owner.token, serverId);
+
+    const month = '2044-01';
+    const ts = Date.parse(`${month}-15T00:00:00Z`);
+    // Between soft (800) and hard (950).
+    await env.DB.prepare('INSERT INTO budget_usage (month, server_id, est_gb) VALUES (?, ?, ?)')
+      .bind(month, serverId, 850)
+      .run();
+    const stub = stubFor(serverId);
+    await runInDurableObject(stub, (i: ServerRoom) => {
+      i.nowMs = () => ts;
+    });
+    await joinVoice(serverId, voice, owner);
+    await joinVoice(serverId, voice, sub);
+    await publish(owner.token, voice, { trackName: 'scr', kind: 'screen', width: 1920, height: 1080, fps: 30, simulcast: true });
+    await publish(owner.token, voice, { trackName: 'mic', kind: 'mic', simulcast: false });
+    await runDurableObjectAlarm(stub); // flush → level=soft cached
+
+    const hi = await rtc('subscribe', { channelId: voice, ownerId: owner.userId, trackName: 'scr', layer: 'h' }, sub.token);
+    expect(hi.status).toBe(403);
+    expect(await hi.json()).toEqual({ code: 'budget_exceeded' });
+
+    const lo = await rtc('subscribe', { channelId: voice, ownerId: owner.userId, trackName: 'scr', layer: 'l' }, sub.token);
+    expect(lo.status).toBe(200); // retry at "l" succeeds
+
+    const mic = await rtc('subscribe', { channelId: voice, ownerId: owner.userId, trackName: 'mic', layer: 'h' }, sub.token);
+    expect(mic.status).toBe(200);
+  });
+
+  // S6.2: UTC-month rollover resets the level (new month sums to 0) and broadcasts `budget`.
+  it('month rollover resets the level and broadcasts on each change', async () => {
+    const owner = await newUser();
+    const serverId = await makeServer(owner.token);
+    const voice = await makeVoice(owner.token, serverId);
+
+    const month = '2045-05';
+    const inMonth = Date.parse(`${month}-15T00:00:00Z`);
+    const nextMonth = Date.parse('2045-06-01T00:00:00Z');
+    await env.DB.prepare('INSERT INTO budget_usage (month, server_id, est_gb) VALUES (?, ?, ?)')
+      .bind(month, serverId, 900)
+      .run();
+    const stub = stubFor(serverId);
+    const setClock = (ts: number) => runInDurableObject(stub, (i: ServerRoom) => (i.nowMs = () => ts));
+
+    await setClock(inMonth);
+    const c = await joinVoice(serverId, voice, owner);
+    await runDurableObjectAlarm(stub);
+    const soft = await c.waitFor((m) => m.t === 'budget', 'budget soft');
+    expect(soft.level).toBe('soft');
+    expect(soft.monthGb).toBeCloseTo(900, 6);
+
+    await setClock(nextMonth); // UTC month key rolls over → SUM(new month) = 0
+    await runDurableObjectAlarm(stub);
+    const ok = await c.waitFor((m) => m.t === 'budget' && m.level === 'ok', 'budget ok');
+    expect(ok.monthGb).toBe(0);
+    // And a fresh hello reflects the reset level.
+    const c2 = await connect(serverId, owner.token);
+    const hello = await c2.waitFor((m) => m.t === 'hello.ok');
+    expect(hello.budget.level).toBe('ok');
+  });
+
   it('accrual grows under injectable clock, flushes to D1, stops on unsubscribe', async () => {
     const owner = await newUser();
     const sub = await newUser();

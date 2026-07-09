@@ -505,8 +505,13 @@ export class ServerRoom {
     if (!ownerSessionId || !track) return Response.json({ code: 'no_track' }, { status: 404 });
 
     const isVideo = track.kind === 'screen' || track.kind === 'webcam';
-    if (isVideo && (await this.budgetLevel()) === 'hard') {
-      return Response.json({ code: 'budget_exceeded' }, { status: 403 });
+    if (isVideo) {
+      const level = await this.budgetLevel();
+      // §1 budget effects: hard → all video blocked; soft → only the high layer
+      // (S6.2 — the client may retry with "l"). Mic pulls are never blocked.
+      if (level === 'hard' || (level === 'soft' && b.layer !== 'l')) {
+        return Response.json({ code: 'budget_exceeded' }, { status: 403 });
+      }
     }
     // Mic pulls ride the subscriber's PC session; video pulls ride a DEDICATED watch
     // session per (subscriber, owner, trackName) — the engine's str0m watch leg (S1.4

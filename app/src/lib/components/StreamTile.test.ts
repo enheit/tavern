@@ -179,3 +179,23 @@ test('StreamGrid renders one tile per video track of channel members and unmount
   ]);
   expect(voice.videoTiles.map((t) => VoiceStore.tileKey(t))).toEqual(['alice/screen-a']);
 });
+
+// ---- S6.2 budget disabled states -------------------------------------------
+
+test('budget hard: Join Stream disabled with tooltip; soft: pin disabled with tooltip', async () => {
+  voice.applyBudget({ level: 'hard', estMbps: 0, monthGb: 960 });
+  const screen = render(StreamTile, { track: SCREEN_A });
+  const join = screen.getByRole('button', { name: 'Join Stream' });
+  await expect.element(join).toBeDisabled();
+  await expect
+    .element(join)
+    .toHaveAttribute('title', 'Egress budget exhausted — watching disabled until next month');
+
+  // Soft: watching allowed again, but pin (high layer) is disabled.
+  voice.applyBudget({ level: 'soft', estMbps: 0, monthGb: 850 });
+  await expect.element(join).not.toBeDisabled();
+  await join.click();
+  const pin = screen.getByRole('button', { name: 'Pin Alice' });
+  await expect.element(pin).toBeDisabled();
+  await expect.element(pin).toHaveAttribute('title', 'Egress budget limited — high quality disabled');
+});

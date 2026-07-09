@@ -66,7 +66,12 @@ export class VoiceStore {
   // S6.1: WS-resume re-join in flight (drives the banner together with the engine's
   // own `reconnecting` ICE state).
   resuming = $state(false);
+  // S6.2 account-wide egress budget level (hello.ok + `budget` broadcasts).
+  budgetLevel = $state<'ok' | 'soft' | 'hard'>('ok');
   private engineVoice = $state('idle');
+  // Engine-side received-media rate, for the §1 log-only comparison vs the DO estimate.
+  private engineRxMbps = 0;
+  private lastRx: { bytes: number; ts: number } | null = null;
   // Last share/webcam picker params, remembered so a WS resume can re-publish.
   private shareParams: [string, number, number, number] | null = null;
   private camParams: [string, number, number, number] | null = null;
@@ -86,6 +91,15 @@ export class VoiceStore {
       // S6.1: engine exhausted its ICE recovery windows (media dead, WS possibly fine)
       // → same full re-join as a WS resume.
       if (p.err === 'reconnect_failed' && this.serverId) void this.resumeAfterWs(this.serverId);
+    });
+    onEngineEvent('engine://stats', (payload) => {
+      const bytes = (payload as { bytesReceived?: number }).bytesReceived;
+      if (bytes == null) return;
+      const now = Date.now();
+      if (this.lastRx && now > this.lastRx.ts) {
+        this.engineRxMbps = ((bytes - this.lastRx.bytes) * 8) / ((now - this.lastRx.ts) / 1000) / 1e6;
+      }
+      this.lastRx = { bytes, ts: now };
     });
   }
 
@@ -231,6 +245,7 @@ export class VoiceStore {
   }
 
   joinStream(t: TrackInfo): void {
+    if (this.budgetLevel === 'hard') return; // §1: hard → all video subscribes 403 anyway
     const key = VoiceStore.tileKey(t);
     this.watched = { ...this.watched, [key]: this.layerFor(key) };
   }
@@ -247,6 +262,7 @@ export class VoiceStore {
   // Non-simulcast tiles cannot be pinned (single encoding — the UI disables the control).
   togglePin(t: TrackInfo): void {
     if (!t.simulcast) return;
+    if (this.budgetLevel !== 'ok') return; // S6.2: soft/hard → pin (layer "h") disabled
     const key = VoiceStore.tileKey(t);
     this.pinned = this.pinned === key ? null : key;
     // Refresh watched layers so tile effects re-run with the new layer.
@@ -348,6 +364,24 @@ export class VoiceStore {
 
   // ---- WS-fed hooks (called from applyServerFrame) --------------------------
 
+  // S6.2 `budget` (and hello.ok's embedded budget): track the level; on soft/hard,
+  // auto-drop every tile to "l" and unpin (the fresh `watched` object re-runs each
+  // joined tile's effect → re-subscribe at the new layer). §1: the engine-side egress
+  // estimate is logged against the DO's — log only, no behavior.
+  applyBudget(b: { level: string; estMbps: number; monthGb: number }): void {
+    const level = b.level === 'hard' ? 'hard' : b.level === 'soft' ? 'soft' : 'ok';
+    this.budgetLevel = level;
+    console.info(
+      `[budget] level=${level} doEstMbps=${b.estMbps} monthGb=${b.monthGb} engineRxMbps=${this.engineRxMbps.toFixed(3)}`,
+    );
+    if (level !== 'ok' && (this.pinned || Object.values(this.watched).includes('h'))) {
+      this.pinned = null;
+      const next: Record<string, 'l' | 'h'> = {};
+      for (const k of Object.keys(this.watched)) next[k] = 'l';
+      this.watched = next;
+    }
+  }
+
   notifyPresence(serverId: string, p: Presence): void {
     const w = this.waiter;
     if (
@@ -401,6 +435,7 @@ export class VoiceStore {
     this.muted = false;
     this.deafened = false;
     this.tracksByServer = {};
+    this.budgetLevel = 'ok';
   }
 
   // ---- internals -------------------------------------------------------------

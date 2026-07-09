@@ -262,3 +262,38 @@ test('engine reconnect_failed event triggers the full re-join (S6.1)', async () 
   const seq = order.filter((x) => ['voice_leave', 'ws:voice.join:s1', 'voice_join'].includes(x));
   expect(seq).toEqual(['voice_leave', 'ws:voice.join:s1', 'voice_join']);
 });
+
+// ---- S6.2 budget UI state ---------------------------------------------------
+
+test('budget soft: tiles auto-drop to l (fresh watched object) and pin clears', () => {
+  voice.applyTracks('s1', 'bob', [screenTrack]);
+  servers.setPresence('s1', [{ userId: 'bob', state: 'voice', channelId: 'c1' }]);
+  voice.serverId = 's1';
+  voice.channelId = 'c1';
+  voice.status = 'in';
+  voice.joinStream(screenTrack);
+  voice.togglePin(screenTrack);
+  expect(voice.watched).toEqual({ 'bob/screen-b': 'h' });
+  const before = voice.watched;
+
+  voice.applyBudget({ level: 'soft', estMbps: 1.2, monthGb: 850 });
+  expect(voice.budgetLevel).toBe('soft');
+  expect(voice.pinned).toBeNull();
+  expect(voice.watched).toEqual({ 'bob/screen-b': 'l' }); // downgrade dispatched
+  expect(voice.watched).not.toBe(before); // fresh object → tile effects re-run
+
+  // Pin is disabled while budget-limited.
+  voice.togglePin(screenTrack);
+  expect(voice.pinned).toBeNull();
+
+  // Back to ok → pinning works again.
+  voice.applyBudget({ level: 'ok', estMbps: 0, monthGb: 10 });
+  voice.togglePin(screenTrack);
+  expect(voice.pinned).toBe('bob/screen-b');
+});
+
+test('budget hard: joinStream is a no-op (watch disabled)', () => {
+  voice.applyBudget({ level: 'hard', estMbps: 0, monthGb: 960 });
+  voice.joinStream(screenTrack);
+  expect(voice.watched).toEqual({});
+});

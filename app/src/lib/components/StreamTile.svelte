@@ -87,15 +87,28 @@
           class:on={pinnedHere}
           aria-pressed={pinnedHere}
           aria-label={`Pin ${nick}`}
-          disabled={!track.simulcast}
-          title={track.simulcast ? 'Pin for high quality' : 'Single-quality stream'}
+          disabled={!track.simulcast || voice.budgetLevel !== 'ok'}
+          title={!track.simulcast
+            ? 'Single-quality stream'
+            : voice.budgetLevel !== 'ok'
+              ? 'Egress budget limited — high quality disabled'
+              : 'Pin for high quality'}
           onclick={() => voice.togglePin(track)}
         >
           📌
         </button>
         <button class="ctl" onclick={() => voice.leaveStream(track)}>Leave</button>
       {:else}
-        <button class="ctl" onclick={() => voice.joinStream(track)}>Join Stream</button>
+        <button
+          class="ctl"
+          disabled={voice.budgetLevel === 'hard'}
+          title={voice.budgetLevel === 'hard'
+            ? 'Egress budget exhausted — watching disabled until next month'
+            : undefined}
+          onclick={() => voice.joinStream(track)}
+        >
+          Join Stream
+        </button>
       {/if}
     </span>
   </header>

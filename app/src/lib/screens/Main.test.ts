@@ -29,3 +29,13 @@ test('renders the shell: server name, channels, selected-channel chat, member do
   await expect.element(screen.getByText('hello there')).toBeInTheDocument();
   await expect.element(screen.getByTestId('dot-u1')).toHaveClass('online');
 });
+
+test('S6.2: soft budget level shows the banner; ok hides it', async () => {
+  const { voice } = await import('../state/voice.svelte');
+  voice.applyBudget({ level: 'soft', estMbps: 1, monthGb: 850 });
+  const screen = render(Main);
+  await expect.element(screen.getByTestId('budget-banner')).toBeInTheDocument();
+
+  voice.applyBudget({ level: 'ok', estMbps: 0, monthGb: 10 });
+  await expect.element(screen.getByTestId('budget-banner')).not.toBeInTheDocument();
+});

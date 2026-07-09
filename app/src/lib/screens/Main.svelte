@@ -15,8 +15,17 @@
   let settingsOpen = $state(false);
 </script>
 
-{#if voice.reconnecting}
-  <div class="reconnecting" role="status">Reconnecting…</div>
+{#if voice.reconnecting || voice.budgetLevel === 'soft'}
+  <div class="banners">
+    {#if voice.reconnecting}
+      <div class="banner reconnecting" role="status">Reconnecting…</div>
+    {/if}
+    {#if voice.budgetLevel === 'soft'}
+      <div class="banner budget" role="status" data-testid="budget-banner">
+        Egress budget: soft cap reached — streams drop to low quality
+      </div>
+    {/if}
+  </div>
 {/if}
 
 <div class="layout">
@@ -51,17 +60,27 @@
 {#if settingsOpen}<SettingsModal onclose={() => (settingsOpen = false)} />{/if}
 
 <style>
-  .reconnecting {
+  .banners {
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
     z-index: 10;
+  }
+
+  .banner {
     padding: 0.25rem;
     text-align: center;
     font-size: 0.85rem;
-    background: #b45309;
     color: #fff;
+  }
+
+  .reconnecting {
+    background: #b45309;
+  }
+
+  .budget {
+    background: #9a3412;
   }
 
   .layout {

@@ -39,6 +39,7 @@ export function applyServerFrame(serverId: string, frame: ServerFrame): void {
       servers.setRoster(serverId, frame.roster);
       servers.setPresence(serverId, frame.presence);
       voice.setHelloTracks(serverId, frame.tracks);
+      voice.applyBudget(frame.budget);
       break;
     case 'presence': {
       const p = { userId: frame.userId, state: frame.state, channelId: frame.channelId };
@@ -63,7 +64,9 @@ export function applyServerFrame(serverId: string, frame: ServerFrame): void {
     case 'tracks':
       voice.applyTracks(serverId, frame.ownerId, frame.tracks); // forwarded to the engine (§1)
       break;
-    // budget → budget UI (S6.2); ignored by the shell.
+    case 'budget':
+      voice.applyBudget(frame); // S6.2: banner + tile downgrade + disabled states
+      break;
   }
 }
 
