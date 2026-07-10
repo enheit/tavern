@@ -9,9 +9,12 @@ import {
   PhoneOffIcon,
   VideoIcon,
 } from "lucide-react";
+import { useState } from "react";
 import { useStore } from "zustand";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { SharePickerDialog } from "@/features/streams/SharePickerDialog";
+import { useScreenShare } from "@/features/streams/useScreenShare";
 import { TimerChip } from "@/features/voice/TimerChip";
 import { useVoice } from "@/features/voice/useVoice";
 import { VoiceElsewhereError } from "@/features/voice/voiceController";
@@ -26,6 +29,8 @@ export function ControlsBar({ serverId }: { serverId: string }) {
   const { status, inVoiceServerId, join, leave, muted, setMuted, deafened, setDeafened } =
     useVoice(serverId);
   const active = inVoiceServerId === serverId && (status === "joined" || status === "joining");
+  const { sharing, start: startShare, stop: stopShare } = useScreenShare();
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const onJoin = (): void => {
     void join().catch((err) => {
@@ -77,10 +82,20 @@ export function ControlsBar({ serverId }: { serverId: string }) {
         {deafened ? <HeadphoneOffIcon /> : <HeadphonesIcon />}
       </Button>
       <span className="mx-1 h-5 w-px bg-border" />
-      {/* Disabled placeholders — screen share (S8.1), webcam (S8.3), record (S9.3). */}
-      <Button variant="ghost" size="icon-sm" data-testid="controls-screen" disabled>
+      {/* FR-27 screen share: idle↔sharing (pulsing accent ring); click while sharing = stop. */}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        data-testid="controls-screen"
+        aria-label={sharing ? m.streams_share_stop() : m.streams_share_open()}
+        aria-pressed={sharing}
+        disabled={!active}
+        className={cn(sharing && "animate-pulse text-primary ring-2 ring-primary/60")}
+        onClick={() => (sharing ? void stopShare() : setPickerOpen(true))}
+      >
         <MonitorUpIcon />
       </Button>
+      {/* Disabled placeholders — webcam (S8.3), record (S9.3). */}
       <Button variant="ghost" size="icon-sm" data-testid="controls-cam" disabled>
         <VideoIcon />
       </Button>
@@ -89,6 +104,14 @@ export function ControlsBar({ serverId }: { serverId: string }) {
       </Button>
       <div className="flex-1" />
       <TimerChip sessionStartedAt={sessionStartedAt} />
+      <SharePickerDialog
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onStart={(sel) => {
+          setPickerOpen(false);
+          void startShare(sel);
+        }}
+      />
     </div>
   );
 }

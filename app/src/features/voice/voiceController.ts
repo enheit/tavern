@@ -1,4 +1,4 @@
-import type { ClientMessage, ServerMessage, VoiceMember } from "@tavern/shared";
+import type { ClientMessage, PresetId, ServerMessage, VoiceMember } from "@tavern/shared";
 import { apiClient } from "@/lib/apiClient";
 import { installTestHooks } from "@/lib/testHooks";
 import type { VoiceStats } from "@/lib/testHooks";
@@ -39,6 +39,14 @@ interface MicOpts {
 interface PublishLike {
   connect(): Promise<void>;
   publishMic(track: MediaStreamTrack): Promise<{ trackName: string }>;
+  // §7.1: mic + screen + cam share ONE publishPC. S8.1's screen share publishes through this same
+  // session (exposed via `screenPublisher()`); the session owns track naming + App-D encodings.
+  publishStream(
+    video: MediaStreamTrack,
+    audio: MediaStreamTrack | null,
+    preset: PresetId,
+  ): Promise<{ videoTrackName: string; audioTrackName?: string }>;
+  unpublish(trackNames: string[]): Promise<void>;
   micSender(): RTCRtpSender | null;
   setTrackEnabled(trackName: string, enabled: boolean): void;
   close(): Promise<void>;
@@ -260,6 +268,12 @@ export class VoiceController {
     this.localMic = next;
     this.deps.graph.attachLocalMic(next);
     this.startSpeaking(this.selfId(), this.deps.graph.getLocalAnalyser());
+  }
+
+  // S8.1 screen share publishes on the SAME publishPC as the mic (§7.1 one-publisher rule). Returns
+  // the shared session (null before voice is joined) so useScreenShare never creates a second one.
+  screenPublisher(): PublishLike | null {
+    return this.publish;
   }
 
   // FR-21 output change — reroutes remote voice, streams, and soundboard (§7.3).

@@ -10,6 +10,7 @@ function makeBridge(
   return {
     kind,
     isE2E: false,
+    os: kind === "web" ? "web" : "darwin",
     secrets,
     capture: {
       getScreenSources: async () => [],

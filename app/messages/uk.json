@@ -134,5 +134,16 @@
   "settings_tabs_voice": "Голос",
   "settings_voice_input": "Пристрій вводу",
   "settings_voice_output": "Пристрій виводу",
-  "settings_voice_noise": "Придушення шуму"
+  "settings_voice_noise": "Придушення шуму",
+  "streams_self_audio_caveat": "Звук трансляції включає весь системний звук — голоси та саундборд Tavern буде чутно у вашій трансляції.",
+  "streams_share_title": "Поділитися екраном",
+  "streams_share_web_hint": "Браузер запитає, яким екраном чи вікном поділитися. Звук залежить від цього діалогу.",
+  "streams_share_tab_screens": "Екрани",
+  "streams_share_tab_windows": "Вікна",
+  "streams_share_quality": "Якість",
+  "streams_share_audio": "Транслювати звук",
+  "streams_share_no_sources": "Немає доступних джерел",
+  "streams_share_start": "Поділитися",
+  "streams_share_open": "Поділитися екраном",
+  "streams_share_stop": "Зупинити трансляцію"
 }

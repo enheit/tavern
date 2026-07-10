@@ -1,5 +1,9 @@
 import type { PresetId } from "@tavern/shared";
 import { SCREEN_PRESETS, WEBCAM_PRESET } from "@tavern/shared";
+import type { ShareSelection } from "@/features/streams/types";
+// The captureScreen signature (S8.1) takes only a ShareSelection, so it reads the platform singleton
+// directly (aliased to avoid shadowing getScreen's `platform` parameter). getScreen keeps DI.
+import { platform as platformBridge } from "@/platform/types";
 import type { PlatformBridge } from "@/platform/types";
 
 // Capture acquisition (PLAN §7.2). This module + ports.ts are the only app files permitted to call
@@ -67,6 +71,27 @@ export async function getScreen(
       frameRate: { ideal: spec.fps, max: spec.fps },
     },
     audio: withLoopback,
+  });
+  return { video: firstVideoTrack(stream), audio: stream.getAudioTracks()[0] ?? null };
+}
+
+// FR-27/FR-28 screen capture. Desktop: arm the main-process display-media handler with the picked
+// source (§6.3 selectSource), then getDisplayMedia. Web: getDisplayMedia directly (the browser's
+// native picker chooses the source). Only ideal/max constraint keys — min/exact throw on display
+// capture (PLAN §7.2). `withAudio` requests system/loopback (desktop) or tab (web) audio; the
+// SharePickerDialog only sets it true where the OS supports it, so no probe is needed here.
+export async function captureScreen(
+  sel: ShareSelection,
+): Promise<{ video: MediaStreamTrack; audio: MediaStreamTrack | null }> {
+  const spec = SCREEN_PRESETS[sel.preset];
+  if (platformBridge.kind === "desktop") await platformBridge.capture.selectSource(sel.sourceId);
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    video: {
+      width: { ideal: spec.width, max: spec.width },
+      height: { ideal: spec.height, max: spec.height },
+      frameRate: { ideal: spec.fps, max: spec.fps },
+    },
+    audio: sel.withAudio,
   });
   return { video: firstVideoTrack(stream), audio: stream.getAudioTracks()[0] ?? null };
 }

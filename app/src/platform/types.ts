@@ -9,6 +9,9 @@ export interface PlatformBridge {
   // §10 hermeticity: true under the e2e harness (desktop reads window.tavern.isE2E; web reads the
   // `?e2e=1` query param). The voice controller installs the test hooks only when this is set.
   isE2E: boolean;
+  // The concrete OS on desktop (from window.tavern.platform), or "web" in the browser. Features must
+  // read this only through the bridge (A1) — e.g. FR-28 hides the loopback-audio switch on Linux v1.
+  os: "win32" | "darwin" | "linux" | "web";
   secrets: { getToken(): Promise<string | null>; setToken(t: string | null): Promise<void> };
   capture: {
     getScreenSources(): Promise<ScreenSource[]>;
