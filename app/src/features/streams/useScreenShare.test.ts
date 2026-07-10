@@ -208,3 +208,72 @@ describe("FR-27 screen share publish", () => {
     expect(video.stop).toHaveBeenCalled();
   });
 });
+
+describe("FR-27 on-the-fly preset switch", () => {
+  it("setPreset applies ideal/max constraints then setParameters on h only", async () => {
+    const { session, port } = await makePublisher();
+    const video = captureTrack("video");
+    const { deps } = makeDeps(session, {
+      capture: async () => ({ video: video.track, audio: null }),
+    });
+    const controller = new ScreenShareController(deps);
+    await controller.start({ sourceId: "screen:0", preset: "1080p30", withAudio: false });
+
+    await controller.setPreset("480p15");
+
+    // (a) §7.2 ideal/max ONLY (never min/exact) for the new preset's resolution + fps.
+    expect(video.track.applyConstraints).toHaveBeenCalledWith({
+      width: { ideal: 854, max: 854 },
+      height: { ideal: 480, max: 480 },
+      frameRate: { ideal: 15, max: 15 },
+    });
+    // (b) only the h-encoding is re-priced (App-D 480p15 = 400 kbps @ 15fps); the l-encoding's fixed
+    // 250 kbps is untouched (its scaleResolutionDownBy tracks the source, but the constant does not).
+    const sender = port.last().transceivers[0]?.sender;
+    expect(sender?.encodings[0]).toMatchObject({ rid: "h", maxBitrate: 400_000, maxFramerate: 15 });
+    expect(sender?.encodings[1]?.maxBitrate).toBe(250_000);
+    expect(useMediaStore.getState().sharePreset).toBe("480p15");
+  });
+
+  it("no renegotiation occurs (fake signal layer records zero new offers)", async () => {
+    const { session, signal } = await makePublisher();
+    const video = captureTrack("video");
+    const { deps } = makeDeps(session, {
+      capture: async () => ({ video: video.track, audio: null }),
+    });
+    const controller = new ScreenShareController(deps);
+    await controller.start(SEL);
+    expect(signal.published).toHaveLength(1); // the initial publish offer
+
+    await controller.setPreset("720p30");
+
+    // A preset switch is applyConstraints + setParameters ONLY — no new publish offer, no renegotiate.
+    expect(signal.published).toHaveLength(1);
+    expect(signal.renegotiated).toHaveLength(0);
+  });
+
+  it("stream.preset sent after a successful local switch", async () => {
+    const { session } = await makePublisher();
+    const video = captureTrack("video");
+    const { deps, sent } = makeDeps(session, {
+      capture: async () => ({ video: video.track, audio: null }),
+    });
+    const controller = new ScreenShareController(deps);
+    await controller.start(SEL);
+
+    await controller.setPreset("720p60");
+
+    expect(sent).toContainEqual({
+      t: "stream.preset",
+      trackName: `screen:${USER}:1`,
+      preset: "720p60",
+    });
+  });
+
+  it("setPreset is a no-op when not sharing (nothing sent)", async () => {
+    const { session } = await makePublisher();
+    const { deps, sent } = makeDeps(session);
+    await new ScreenShareController(deps).setPreset("480p15");
+    expect(sent).toHaveLength(0);
+  });
+});

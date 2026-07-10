@@ -50,6 +50,10 @@ interface PublishLike {
   unpublish(trackNames: string[]): Promise<void>;
   micSender(): RTCRtpSender | null;
   setTrackEnabled(trackName: string, enabled: boolean): void;
+  // FR-27 on-the-fly preset switch (S8.4): applyConstraints + sender.setParameters on the h-encoding,
+  // never a renegotiation. Owned by PublishSession (it holds the App-D encodings). useScreenShare drives
+  // it on the shared publishPC exposed via screenPublisher().
+  setPreset(trackName: string, preset: PresetId): Promise<void>;
   close(): Promise<void>;
   // Optional so unit-test fakes need not implement it; the real PublishSession exposes it. Surfaced
   // via the §10 e2e publish-state hook only.

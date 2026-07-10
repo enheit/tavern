@@ -80,6 +80,7 @@ export class FakeSignal implements SfuSignal {
     _serverId: string,
     _sessionId: string,
     mid: string,
+    _trackName: string,
     preferredRid: "h" | "l",
   ): Promise<void> {
     this.log.record("updateLayer");

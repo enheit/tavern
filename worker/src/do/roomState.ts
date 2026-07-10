@@ -278,6 +278,39 @@ export class RoomState {
     await this.writeRtc(reg);
   }
 
+  // watch.stop / release (S8.4): drop ONE viewer's grant for a track (G1 hygiene — a subsequent
+  // un-watched pull is then denied). No-op when the grant is absent.
+  async rtcRemoveGrant(viewerId: string, trackName: string): Promise<void> {
+    const reg = await this.readRtc();
+    const grants = reg.grants[viewerId];
+    if (grants === undefined || grants[trackName] === undefined) return;
+    delete grants[trackName];
+    if (Object.keys(grants).length === 0) delete reg.grants[viewerId];
+    await this.writeRtc(reg);
+  }
+
+  // FR-27 on-the-fly preset switch (S8.4): update the registry preset for a SCREEN track the caller
+  // OWNS, so a watcher that STARTS after the switch is metered at the new bitrate (open watches are
+  // repriced separately by the cost meter). Returns false when the track is unknown, not owned by
+  // `userId`, or not a screen (the webcam preset is fixed) — the caller answers bad_message + skips.
+  async rtcRepriceStream(userId: string, trackName: string, preset: PresetId): Promise<boolean> {
+    const reg = await this.readRtc();
+    const track = reg.tracks[trackName];
+    if (track === undefined || track.userId !== userId || track.kind !== "screen") return false;
+    reg.tracks[trackName] = { ...track, preset };
+    await this.writeRtc(reg);
+    return true;
+  }
+
+  // Resolve a watchable video track (screen/cam) → its publisher + current preset, for watch.start's
+  // grant seed + meter openWatch. Null for an unknown track or a non-video kind (mic/screenAudio).
+  async rtcWatchable(trackName: string): Promise<{ streamerId: string; preset: PresetId } | null> {
+    const reg = await this.readRtc();
+    const track = reg.tracks[trackName];
+    if (track === undefined || (track.kind !== "screen" && track.kind !== "cam")) return null;
+    return { streamerId: track.userId, preset: track.preset ?? DEFAULT_SCREEN_PRESET };
+  }
+
   // The StreamInfo for a published track, or null for the non-video kinds. mic/screenAudio are NOT
   // StreamInfo (the pinned schema requires kind ∈ {screen,webcam} + a preset; mics ride voice.state) —
   // they register for pull resolution but never broadcast stream.added.
@@ -378,7 +411,7 @@ export class RoomState {
         if (grants !== undefined && grants[req.trackName] !== undefined) {
           grants[req.trackName] = req.preferredRid;
           await this.writeRtc(reg);
-          await meter.setRid(req.userId, req.trackName, req.preferredRid, at);
+          await meter.setWatcherLayer(req.userId, req.trackName, req.preferredRid, at);
         }
         return { ok: true };
       }

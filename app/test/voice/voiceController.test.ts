@@ -47,6 +47,9 @@ class FakePublish {
     this.log.push(`publish.setEnabled:${enabled}`);
     this.enabled.push([name, enabled]);
   }
+  async setPreset(name: string, preset: string): Promise<void> {
+    this.log.push(`publish.setPreset:${name}:${preset}`);
+  }
   async close(): Promise<void> {
     this.log.push("publish.close");
     this.closed = true;

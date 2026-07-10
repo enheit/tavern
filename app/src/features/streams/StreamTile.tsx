@@ -1,14 +1,25 @@
-import type { StreamInfo } from "@tavern/shared";
+import type { PresetId, StreamInfo } from "@tavern/shared";
+import { PRESET_IDS } from "@tavern/shared";
 import { MonitorIcon, VideoIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import { getVoiceController } from "@/features/voice/voiceController";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
+import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
+import { PRESET_ITEMS, isPreset } from "./SharePickerDialog";
+import { useScreenShare } from "./useScreenShare";
 import { useWatch } from "./useWatch";
 
 // FR-31: apply the tile's per-stream gain to the shared graph AND persist it under
@@ -34,6 +45,10 @@ export function StreamTile({
   const { state, mediaStream, watch, unwatch, setLayer } = useWatch(stream);
   const watching = state !== "idle";
   const streamKey = `${stream.userId}:${stream.kind}`;
+  const selfUserId = useSessionStore((s) => s.profile?.userId);
+  // FR-27: the on-the-fly quality dropdown lives ONLY on the sharer's OWN screen tile (the webcam
+  // preset is fixed; other members cannot change a publisher's preset).
+  const isOwnScreen = stream.kind === "screen" && stream.userId === selfUserId;
 
   // FR-33: a focused (double-clicked) tile pulls the high simulcast layer; a grid tile the low one.
   useEffect(() => {
@@ -47,6 +62,7 @@ export function StreamTile({
       onDoubleClick={watching ? onToggleFocus : undefined}
       className="group relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden rounded-lg bg-black/90"
     >
+      {isOwnScreen && <OwnPresetControl trackName={stream.trackName} fallback={stream.preset} />}
       {watching ? (
         <WatchingView
           stream={stream}
@@ -119,6 +135,40 @@ function StreamVolume({ streamKey }: { streamKey: string }) {
         }}
       />
       <span className="w-9 shrink-0 text-right text-xs text-white/80 tabular-nums">{percent}%</span>
+    </div>
+  );
+}
+
+// FR-27 on-the-fly preset switch, sharer side: a compact quality dropdown overlaid on the OWN screen
+// tile. `useScreenShare().preset` is the live self-share preset (mirrored from stores/media); it falls
+// back to the StreamInfo preset before the first switch. Selecting a preset drives setPreset (which
+// applyConstraints + setParameters + sends stream.preset) — no restart, no viewer renegotiation.
+function OwnPresetControl({ trackName, fallback }: { trackName: string; fallback: PresetId }) {
+  const { preset, setPreset } = useScreenShare();
+  const value: PresetId = preset ?? fallback;
+  return (
+    <div
+      className="absolute top-2 left-2 z-10 opacity-0 transition-opacity group-hover:opacity-100"
+      title={m.streams_preset()}
+    >
+      <Select
+        value={value}
+        items={PRESET_ITEMS}
+        onValueChange={(next) => {
+          if (isPreset(next)) void setPreset(next);
+        }}
+      >
+        <SelectTrigger size="sm" data-testid={`stream-preset-${trackName}`}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {PRESET_IDS.map((id) => (
+            <SelectItem key={id} value={id} data-testid={`stream-preset-option-${id}`}>
+              {PRESET_ITEMS[id]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
     </div>
   );
 }

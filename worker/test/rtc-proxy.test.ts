@@ -336,6 +336,43 @@ describe("FR-19 sdp ops (passthrough)", () => {
     expect(call.payload).toEqual({ mid: "2", simulcast: { preferredRid: "h" } });
   });
 
+  it("tracks/update with a trackName reprices the DO watch grant (FR-33 op:'layer', G5)", async () => {
+    const owner = await register("rtc_sdp_layer");
+    const viewerId = await meUserId(owner);
+    const serverId = await createServer(owner, "rtc-sdp-layer");
+    const publisherId = crypto.randomUUID();
+    const screenTrack = `screen:${publisherId}:1`;
+    // Seed a published screen + the viewer's watch grant at the high layer.
+    await seedRegistry(serverId, {
+      sessions: { "pub-sess": publisherId },
+      tracks: {
+        [screenTrack]: {
+          userId: publisherId,
+          sessionId: "pub-sess",
+          kind: "screen",
+          preset: "1080p30",
+        },
+      },
+      grants: { [viewerId]: { [screenTrack]: "h" } },
+    });
+    resetSfuMock();
+
+    // Focus → grid: the client sends the trackName alongside the mid; the DO drops the grant to 'l'.
+    const res = await authed(owner, `/api/rtc/${serverId}/tracks/update?session=sess-l`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        tracks: [{ mid: "4", trackName: screenTrack, simulcast: { preferredRid: "l" } }],
+      }),
+    });
+    expect(res.status).toBe(200);
+    // The SFU still received the passthrough switch...
+    expect(sfuMockCalls.some((c) => c.op === "updateTrack")).toBe(true);
+    // ...and the DO grant was repriced h → l.
+    const reg = await readRegistry(serverId);
+    expect(reg.grants[viewerId]?.[screenTrack]).toBe("l");
+  });
+
   it("close forwards the mids + force flag to the SFU tracks/close (PUT)", async () => {
     const owner = await register("rtc_sdp_c");
     const serverId = await createServer(owner, "rtc-sdp-c");

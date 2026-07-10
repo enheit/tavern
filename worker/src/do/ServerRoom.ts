@@ -78,6 +78,16 @@ const FAST_ALARM_MS = 5_000;
 // rateSoundPlayPerSec = 1/s → 1000 ms). Token bucket of capacity 1 = a per-user last-accepted stamp.
 const SOUND_PLAY_MIN_GAP_MS = 1000 / LIMITS.rateSoundPlayPerSec;
 
+// Streamer userId encoded in a watchable video track name (§7.1 grammar `screen:{uid}:{n}` /
+// `cam:{uid}`). Used to key the watch-stat (viewer→streamer) pair on watch.stop, when the stream may
+// already be gone from the registry (the streamer stopped first) — the name still carries the owner.
+function streamerIdOf(trackName: string): string | null {
+  const parts = trackName.split(":");
+  if (parts[0] === "screen" && parts.length === 3) return parts[1] ?? null;
+  if (parts[0] === "cam" && parts.length === 2) return parts[1] ?? null;
+  return null;
+}
+
 declare global {
   // Test-only flag: '1' shortens the voice alarm interval to 5 s. Optional — absent in production.
   interface Env {
@@ -142,11 +152,11 @@ export class ServerRoom extends DurableObject<Env> {
       "voice.join": (ws, att) => this.handleVoiceJoin(ws, att),
       "voice.leave": (_ws, att) => this.leaveVoice(att.userId, Date.now()),
       "voice.state": (ws, att, msg) => this.handleVoiceState(ws, att, msg),
-      "stream.start": (ws) => this.notImplemented(ws),
-      "stream.preset": (ws) => this.notImplemented(ws),
-      "stream.stop": (ws) => this.notImplemented(ws),
-      "watch.start": (ws) => this.notImplemented(ws),
-      "watch.stop": (ws) => this.notImplemented(ws),
+      "stream.start": (_ws, att) => this.handleStreamStart(att),
+      "stream.preset": (ws, att, msg) => this.handleStreamPreset(ws, att, msg),
+      "stream.stop": (_ws, att, msg) => this.handleStreamStop(att, msg),
+      "watch.start": (ws, att, msg) => this.handleWatchStart(ws, att, msg),
+      "watch.stop": (_ws, att, msg) => this.handleWatchStop(att, msg),
       "sound.play": (ws, att, msg) => this.handleSoundPlay(ws, att, msg),
       "rec.start": (ws, att) => this.handleRecStart(ws, att),
       "rec.stop": (ws, att) => this.handleRecStop(ws, att),
@@ -607,6 +617,84 @@ export class ServerRoom extends DurableObject<Env> {
     });
     await this.room.persistVoice();
     this.room.broadcast({ t: "voice.state", voice: snapshot, at: Date.now() });
+  }
+
+  // stream.start (FR-40): the publisher's "hours streamed" clock opens (server-authoritative). The
+  // stream itself was registered + `stream.added`-broadcast on the publish authorize (S7.1 HTTP path);
+  // this frame only starts the stat. Idempotent per user — a 2nd concurrent share (webcam alongside a
+  // screen, FR-29) does NOT restart the clock, so one clock spans "user is streaming ≥1 thing".
+  private async handleStreamStart(att: ConnAttachment): Promise<void> {
+    await this.stats.noteStreamStart(att.userId, Date.now());
+  }
+
+  // stream.stop (FR-40): close the publisher's stream clock ONLY when they have no OTHER live video
+  // track (the registry is the source of truth for active streams). Excluding the track being stopped
+  // handles the screen+webcam case (stopping one keeps the clock running while the other streams). The
+  // client sends this frame BEFORE the RTC close, so the registry still lists the stopped track here.
+  private async handleStreamStop(att: ConnAttachment, msg: ClientMessage): Promise<void> {
+    if (msg.t !== "stream.stop") return;
+    const now = Date.now();
+    const reg = await this.room.rtcSnapshot();
+    const otherLiveStream = Object.entries(reg.tracks).some(
+      ([name, t]) =>
+        t.userId === att.userId &&
+        (t.kind === "screen" || t.kind === "cam") &&
+        name !== msg.trackName,
+    );
+    if (!otherLiveStream) await this.stats.noteStreamStop(att.userId, now);
+  }
+
+  // watch.start (G1/FR-40): grant the viewer the pull (default low layer, G3), open the cost-meter
+  // watch at the stream's CURRENT registry preset (G5), and start the (viewer→streamer) watch-stat
+  // clock. No wire ack — the client's pull is authorized against the grant this seeds. An unknown /
+  // non-video track → socket-local bad_message (the client reverts to idle on the error frame).
+  private async handleWatchStart(
+    ws: WebSocket,
+    att: ConnAttachment,
+    msg: ClientMessage,
+  ): Promise<void> {
+    if (msg.t !== "watch.start") return;
+    const at = Date.now();
+    const info = await this.room.rtcWatchable(msg.trackName);
+    if (info === null) {
+      this.room.send(ws, { t: "error", code: "bad_message" });
+      return;
+    }
+    await this.room.rtcAddGrant(att.userId, msg.trackName, "l");
+    await this.costMeter.openWatch(att.userId, msg.trackName, info.preset, "l", at);
+    await this.stats.noteWatchStart(att.userId, info.streamerId, at);
+  }
+
+  // watch.stop (G1/FR-40): close the cost-meter watch + the watch-stat pair, and release the grant so a
+  // later un-watched pull is denied. Idempotent (closing a non-open watch/interval is a no-op). The
+  // streamer is derived from the track-name grammar so it works even after the stream was removed.
+  private async handleWatchStop(att: ConnAttachment, msg: ClientMessage): Promise<void> {
+    if (msg.t !== "watch.stop") return;
+    const at = Date.now();
+    await this.costMeter.closeWatch(att.userId, msg.trackName, at);
+    const streamerId = streamerIdOf(msg.trackName);
+    if (streamerId !== null) await this.stats.noteWatchStop(att.userId, streamerId, at);
+    await this.room.rtcRemoveGrant(att.userId, msg.trackName);
+  }
+
+  // stream.preset (FR-27): the publisher changed their screen preset on the fly. Validate ownership of a
+  // SCREEN track (webcam preset is fixed) + update the registry so a NEW watcher meters at the new rate;
+  // reprice EVERY open watch of the stream (G5); broadcast `stream.updated` so viewers' StreamInfo stays
+  // current. A non-owner / non-screen / unknown track → socket-local bad_message + NO reprice/broadcast.
+  private async handleStreamPreset(
+    ws: WebSocket,
+    att: ConnAttachment,
+    msg: ClientMessage,
+  ): Promise<void> {
+    if (msg.t !== "stream.preset") return;
+    const at = Date.now();
+    const ok = await this.room.rtcRepriceStream(att.userId, msg.trackName, msg.preset);
+    if (!ok) {
+      this.room.send(ws, { t: "error", code: "bad_message" });
+      return;
+    }
+    await this.costMeter.repriceStream(msg.trackName, msg.preset, at);
+    this.room.broadcast({ t: "stream.updated", trackName: msg.trackName, preset: msg.preset, at });
   }
 
   // Single, multiplexed, idempotent alarm (DO alarms are at-least-once). (a) Reconcile ghosts — any

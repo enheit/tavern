@@ -1,3 +1,4 @@
+import { platform } from "@/platform/types";
 import type { RtcPort } from "../ports";
 import type { SfuSignal } from "../sfuSignal";
 
@@ -140,10 +141,17 @@ export class PullSession {
   }
 
   // FR-33: quality follows tile size via simulcast — tracks/update on the existing pull, no SDP op.
+  // The trackName rides along so the Worker/DO can reprice this watcher's egress (op:'layer', G5).
   async setLayer(trackName: string, rid: "h" | "l"): Promise<void> {
     const mid = this.nameToMid.get(trackName);
     if (!mid) throw new Error(`no pulled track ${trackName}`);
-    await this.signal.updateLayer(this.serverId, this.requireSession(), mid, rid);
+    // §10 e2e hook: record each switch so S8.5's FR-33 spec can assert the layer request happened
+    // (mirrors soundboardPlayer's platform.isE2E window write). Installed only under the harness.
+    if (platform.isE2E && typeof window !== "undefined") {
+      // oxlint-disable-next-line no-underscore-dangle -- pinned §10 e2e hook global window.__tavernTestRtc
+      window.__tavernTestRtc?.layerCalls.push({ trackName, rid });
+    }
+    await this.signal.updateLayer(this.serverId, this.requireSession(), mid, trackName, rid);
   }
 
   // Read-only inbound-rtp audio summary of this pull PC — the source for the pinned §10 e2e

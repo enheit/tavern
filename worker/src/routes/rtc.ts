@@ -67,10 +67,16 @@ const rtcPullBody = z.object({
   ),
 });
 
-// Client → Worker tracks/update (FR-33 layer switch): the puller's mid + target rid.
+// Client → Worker tracks/update (FR-33 layer switch): the puller's mid + target rid. `trackName` is
+// sent by the S7.2 client so the DO can reprice the watcher's egress (op:'layer', G5); it is optional
+// (a body without it stays a pure SFU passthrough — the meter simply is not notified for that track).
 const rtcUpdateBody = z.object({
   tracks: z.array(
-    z.object({ mid: z.string(), simulcast: z.object({ preferredRid: z.enum(["h", "l"]) }) }),
+    z.object({
+      mid: z.string(),
+      trackName: z.string().optional(),
+      simulcast: z.object({ preferredRid: z.enum(["h", "l"]) }),
+    }),
   ),
 });
 
@@ -327,13 +333,32 @@ rtcRoute.put("/:serverId/renegotiate", rtcMember, async (c) => {
   return c.json({});
 });
 
-// PUT /api/rtc/:serverId/tracks/update (member): simulcast layer switch (FR-33) — SFU passthrough. The
-// meter reprice (DO op:'layer') is driven by S8.4 with the trackName (the client body carries only mid).
+// PUT /api/rtc/:serverId/tracks/update (member): simulcast layer switch (FR-33). Notify the DO of each
+// watcher's new layer (op:'layer', G5 reprice — the DO no-ops a track with no active grant), then SFU
+// passthrough. The reprice must use the trackName the client sends alongside the mid.
 rtcRoute.put("/:serverId/tracks/update", rtcMember, async (c) => {
+  const userId = invariant(c.get("userId"), "rtcMember guarantees userId");
+  const serverId = invariant(c.req.param("serverId"), "route guarantees :serverId");
   const sessionId = c.req.query("session");
   if (sessionId === undefined) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
   const body = rtcUpdateBody.safeParse(await c.req.json());
   if (!body.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  // Meter reprice (G5): price this watcher at the l-rate (250 kbps) vs the h-rate (preset kbps · dt).
+  // Collect the per-track op:'layer' notifies and await them together (the DO serializes internally).
+  const repriceOps: Promise<AuthorizeResult>[] = [];
+  for (const t of body.data.tracks) {
+    if (t.trackName !== undefined) {
+      repriceOps.push(
+        authorize(c.env, serverId, {
+          op: "layer",
+          userId,
+          trackName: t.trackName,
+          preferredRid: t.simulcast.preferredRid,
+        }),
+      );
+    }
+  }
+  await Promise.all(repriceOps);
   const client = createRealtimeClient(c.env);
   // Distinct mids on one session — the SFU layer switch is idempotent per mid, so no serialization.
   await Promise.all(body.data.tracks.map((t) => client.updateTrack(sessionId, t.mid, t.simulcast)));
