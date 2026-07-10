@@ -9,6 +9,7 @@ allowBuilds:
   sharp: true
   workerd: true
   electron: true
+  electron-winstaller: false
 minimumReleaseAgeExclude:
   - "@cloudflare/vitest-pool-workers@0.18.4"
   - miniflare@4.20260708.1

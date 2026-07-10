@@ -1,0 +1,38 @@
+appId: com.tavern.app
+productName: Tavern
+directories:
+  output: dist-electron
+  buildResources: build
+files:
+  - out/**
+  - from: ../app/dist
+    to: renderer
+# Fuses: deliberately NOT configured in v1 — Electron defaults keep the nodeCliInspect fuse ON,
+# which Playwright _electron.launch requires (PLAN §10). Flipping fuses needs a blocker first.
+mac:
+  target: [dmg, zip]          # zip is what Squirrel.Mac updates from — never remove (PLAN §11)
+  hardenedRuntime: true
+  notarize: true
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: "Tavern needs your microphone for voice chat."
+    NSCameraUsageDescription: "Tavern needs your camera to share your webcam."
+    NSAudioCaptureUsageDescription: "Tavern captures system audio when you share your screen with sound."
+win:
+  target: nsis
+nsis:
+  oneClick: true
+  perMachine: false
+linux:
+  target: AppImage
+  category: Network
+# AppImage static-runtime toolset (no FUSE2 — required for Void/Ubuntu 24.04+, PLAN §3.2/§3.6).
+# `toolsets` is a ROOT-level key in the electron-builder 26.15.6 schema (ToolsetConfig), not a
+# `linux` child — see docs/progress.md deviation for the S12.1 placement fix.
+toolsets:
+  appimage: "1.0.3"
+publish:
+  provider: github
+  # owner/repo inferred from package.json "repository"; releases are created as DRAFTS
+  # (electron-builder default) — S12.2's pipeline publishes the draft.
