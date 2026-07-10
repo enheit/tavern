@@ -27,6 +27,12 @@ export function createAuth(env: Env) {
         avatarKey: { type: "string", required: false, input: false },
       },
     },
+    // The shared contract (S0.2 `UserProfile.userId = z.uuid()`, and the UUID id-space every
+    // downstream schema uses — MembersResponse, the member.update fan-out, the DO member cache)
+    // requires better-auth's generated ids to be UUIDs. Without this, ids are a 32-char alphanumeric
+    // and `MeResponse.parse` (and every UserProfile boundary) rejects them. Native support:
+    // create-context resolves `advanced.database.generateId === "uuid"` to `crypto.randomUUID()`.
+    advanced: { database: { generateId: "uuid" } },
     plugins: [
       username({
         minUsernameLength: 3,

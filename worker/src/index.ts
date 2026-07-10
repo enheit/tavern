@@ -3,6 +3,8 @@ import type { ErrorCode } from "@tavern/shared";
 import { stripEmail, withAuth } from "./middleware";
 import type { AuthVars } from "./middleware";
 import { registerRoute } from "./routes/register";
+import { meRoute } from "./routes/me";
+import { mediaRoute } from "./routes/media";
 import { ServerRoom } from "./do/ServerRoom";
 
 const app = new Hono<{ Bindings: Env; Variables: AuthVars }>();
@@ -25,6 +27,11 @@ app.on(["GET", "POST"], "/api/auth/*", (c) => c.var.auth.handler(c.req.raw));
 
 // FR-01 register wrapper: POST /api/auth-wrap/register (synthesizes the email → signUpEmail).
 app.route("/api/auth-wrap", registerRoute);
+
+// Account surface (S1.3): /api/me boot call + profile/avatar/settings, and streamed R2 media reads.
+// requireAuth is applied inside each router. /internal/* is NOT routed here — it is DO-stub-only.
+app.route("/api/me", meRoute);
+app.route("/api/media", mediaRoute);
 
 // Hono's default notFound is plain text; the app-wide envelope is { error: ErrorCode }.
 app.notFound((c) => c.json({ error: "not_found" satisfies ErrorCode }, 404));
