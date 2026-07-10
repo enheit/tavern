@@ -95,8 +95,14 @@ export class CostMeter {
   }
 
   // op:'layer' reprice (FR-33): bank the segment at the OLD rid up to `at`, then re-baseline at the new
-  // rid so the meter charges the correct bitrate from the switch point onward.
-  async setRid(viewerId: string, trackName: string, rid: "h" | "l", at: number): Promise<void> {
+  // rid so the meter charges the correct bitrate from the switch point onward. `at` is injected (S3.4
+  // pin) even though the pinned S8.4 signature omits it — the whole meter API takes an explicit clock.
+  async setWatcherLayer(
+    viewerId: string,
+    trackName: string,
+    rid: "h" | "l",
+    at: number,
+  ): Promise<void> {
     const open = await this.readOpen();
     const key = watchKey(viewerId, trackName);
     const entry = open[key];
@@ -104,6 +110,26 @@ export class CostMeter {
     this.addBytes(monthOf(entry.since), segmentBytes(entry.preset, entry.rid, entry.since, at));
     open[key] = { preset: entry.preset, rid, since: at };
     await this.writeOpen(open);
+  }
+
+  // FR-27 publisher preset switch: reprice EVERY open watch of this stream — bank each segment at the
+  // OLD preset up to `at`, then re-baseline at the new preset (rid unchanged). Keeps the meter (G5)
+  // accurate after a live switch; a watcher that STARTS after the switch reads the new preset from the
+  // registry (roomState.rtcRepriceStream), so the two stay consistent. `at` injected (S3.4 pin).
+  async repriceStream(trackName: string, preset: PresetId, at: number): Promise<void> {
+    const open = await this.readOpen();
+    let changed = false;
+    for (const key of Object.keys(open)) {
+      // key = `${viewerId}|${trackName}`; viewerId is a UUID (no '|'), so split on the FIRST '|'.
+      const sep = key.indexOf("|");
+      if (sep < 0 || key.slice(sep + 1) !== trackName) continue;
+      const entry = open[key];
+      if (entry === undefined) continue;
+      this.addBytes(monthOf(entry.since), segmentBytes(entry.preset, entry.rid, entry.since, at));
+      open[key] = { preset, rid: entry.rid, since: at };
+      changed = true;
+    }
+    if (changed) await this.writeOpen(open);
   }
 
   // Closes a metered pull (watch.stop / release): bank the final segment + drop the entry.

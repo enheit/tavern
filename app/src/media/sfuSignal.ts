@@ -26,6 +26,7 @@ export interface SfuSignal {
     serverId: string,
     sessionId: string,
     mid: string,
+    trackName: string,
     preferredRid: "h" | "l",
   ): Promise<void>;
   closeTracks(
@@ -62,9 +63,10 @@ export function createSfuSignal(api: ApiClient): SfuSignal {
         sessionDescription: answer,
       });
     },
-    updateLayer: async (serverId, sessionId, mid, preferredRid) => {
+    updateLayer: async (serverId, sessionId, mid, trackName, preferredRid) => {
+      // trackName lets the Worker/DO reprice this watcher's egress (op:'layer', G5 / FR-33).
       await api.put(`/api/rtc/${serverId}/tracks/update?session=${sessionId}`, voidParser, {
-        tracks: [{ mid, simulcast: { preferredRid } }],
+        tracks: [{ mid, trackName, simulcast: { preferredRid } }],
       });
     },
     closeTracks: async (serverId, sessionId, mids, offer) => {

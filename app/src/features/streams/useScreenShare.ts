@@ -16,6 +16,9 @@ export interface ScreenPublisher {
     audio: MediaStreamTrack | null,
     preset: PresetId,
   ): Promise<{ videoTrackName: string; audioTrackName?: string }>;
+  // FR-27 on-the-fly: applyConstraints + setParameters on the h-encoding (no renegotiation). Owned by
+  // PublishSession (holds the App-D encodings); useScreenShare drives it then broadcasts stream.preset.
+  setPreset(trackName: string, preset: PresetId): Promise<void>;
   unpublish(trackNames: string[]): Promise<void>;
 }
 
@@ -126,6 +129,23 @@ export class ScreenShareController {
         .setShareState({ sharing: false, sharePreset: null, shareTrackName: null });
     }
   }
+
+  // FR-27 on-the-fly preset switch — no restart, no viewer renegotiation. Order (pinned): (a)+(b) the
+  // engine's setPreset does applyConstraints (ideal/max only) + sender.setParameters on the h-encoding,
+  // then (c) the WS `stream.preset` keeps the DO registry + cost meter (G5) accurate. A no-op when not
+  // sharing. The store mirror updates only AFTER a successful local switch so the dropdown never lies.
+  async setPreset(preset: PresetId): Promise<void> {
+    const videoTrackName = this.videoTrackName;
+    const serverId = this.serverId;
+    if (videoTrackName === null || serverId === null) return;
+    const publisher = this.deps.publisher();
+    if (publisher === null) return;
+    await publisher.setPreset(videoTrackName, preset);
+    this.deps.wsFor(serverId).send({ t: "stream.preset", trackName: videoTrackName, preset });
+    useMediaStore
+      .getState()
+      .setShareState({ sharing: true, sharePreset: preset, shareTrackName: videoTrackName });
+  }
 }
 
 function defaultDeps(): ScreenShareDeps {
@@ -155,6 +175,7 @@ export function useScreenShare(): {
   trackName: string | null;
   start(sel: ShareSelection): Promise<void>;
   stop(): Promise<void>;
+  setPreset(preset: PresetId): Promise<void>;
 } {
   const sharing = useMediaStore((s) => s.sharing);
   const preset = useMediaStore((s) => s.sharePreset);
@@ -165,5 +186,6 @@ export function useScreenShare(): {
     trackName,
     start: (sel) => getScreenShareController().start(sel),
     stop: () => getScreenShareController().stop(),
+    setPreset: (p) => getScreenShareController().setPreset(p),
   };
 }

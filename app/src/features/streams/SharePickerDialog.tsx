@@ -25,7 +25,7 @@ import type { ShareSelection } from "./types";
 
 // Preset option labels (technical resolution×fps identifiers, kept as data — like the AppSection
 // language endonyms — so they stay out of the i18n catalog; rendered via {expression}, never JSX text).
-const PRESET_ITEMS: Record<PresetId, string> = {
+export const PRESET_ITEMS: Record<PresetId, string> = {
   "480p15": "480p · 15fps",
   "480p30": "480p · 30fps",
   "480p60": "480p · 60fps",
@@ -40,7 +40,7 @@ const PRESET_ITEMS: Record<PresetId, string> = {
   "1440p60": "1440p · 60fps",
 };
 
-function isPreset(value: unknown): value is PresetId {
+export function isPreset(value: unknown): value is PresetId {
   return typeof value === "string" && PRESET_IDS.some((id) => id === value);
 }
 

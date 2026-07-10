@@ -87,13 +87,13 @@ describe("§6.1 sfuSignal routes", () => {
     });
   });
 
-  it("updateLayer PUTs the tracks/update route with the mid + preferredRid", async () => {
+  it("updateLayer PUTs the tracks/update route with the mid + trackName + preferredRid", async () => {
     const signal = createSfuSignal(apiClient);
-    await signal.updateLayer("srv", "sess", "3", "h");
+    await signal.updateLayer("srv", "sess", "3", "screen:pub:1", "h");
     expect(calls(fetchMock)[0]).toEqual({
       url: "/api/rtc/srv/tracks/update?session=sess",
       method: "PUT",
-      body: { tracks: [{ mid: "3", simulcast: { preferredRid: "h" } }] },
+      body: { tracks: [{ mid: "3", trackName: "screen:pub:1", simulcast: { preferredRid: "h" } }] },
     });
   });
 

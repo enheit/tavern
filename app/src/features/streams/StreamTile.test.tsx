@@ -28,6 +28,18 @@ vi.mock("@/features/voice/voiceController", () => ({
   getVoiceController: () => ({ streamAudioSink: () => sinkMock }),
 }));
 
+// useScreenShare is mocked — the own-tile dropdown reads the live self-share preset + drives setPreset,
+// both exercised for real in useScreenShare.test.ts; here we only assert the dropdown's visibility rules.
+const shareMock = vi.hoisted(() => ({
+  sharing: true,
+  preset: "1080p30" as string | null,
+  trackName: null as string | null,
+  start: vi.fn(),
+  stop: vi.fn(),
+  setPreset: vi.fn(),
+}));
+vi.mock("@/features/streams/useScreenShare", () => ({ useScreenShare: () => shareMock }));
+
 const UID = "22222222-2222-4222-8222-222222222222";
 
 function makeStream(over: Partial<StreamInfo> = {}): StreamInfo {
@@ -55,8 +67,8 @@ beforeEach(() => {
   watchMock.state = "watching";
   watchMock.mediaStream = null;
   vi.clearAllMocks();
-  // Remote-tile default: no self identity, so UID-owned streams are NOT self tiles. The FR-29 self
-  // describe sets a matching profile explicitly.
+  // Default: no self identity, so UID-owned streams are NOT self tiles and the own-tile dropdown is
+  // hidden. The FR-27 tests opt in per case; the FR-29 self describe sets a matching profile explicitly.
   useSessionStore.setState({ status: "unauthed", profile: null });
   useSettingsStore.setState({
     volumes: { v: 1, users: {}, streams: {}, soundboard: 1, mutedUsers: [] },
@@ -135,6 +147,37 @@ function FocusHarness({ stream }: { stream: StreamInfo }) {
     <StreamTile stream={stream} focused={focused} onToggleFocus={() => setFocused((f) => !f)} />
   );
 }
+
+describe("FR-27 own-tile preset dropdown", () => {
+  const self = { userId: UID, username: "me", displayName: "Me", color: "#abcdef" };
+
+  it("dropdown appears on the sharer's OWN screen tile", () => {
+    useSessionStore.setState({ profile: self });
+    const stream = makeStream({ userId: UID, kind: "screen" });
+    render(<StreamTile stream={stream} focused={false} onToggleFocus={vi.fn()} />);
+    expect(screen.getByTestId(`stream-preset-${stream.trackName}`)).not.toBeNull();
+  });
+
+  it("dropdown is absent on the OWN webcam tile (webcam preset is fixed)", () => {
+    useSessionStore.setState({ profile: self });
+    const stream = makeStream({
+      userId: UID,
+      kind: "webcam",
+      trackName: `cam:${UID}`,
+      preset: "720p30",
+    });
+    render(<StreamTile stream={stream} focused={false} onToggleFocus={vi.fn()} />);
+    expect(screen.queryByTestId(`stream-preset-${stream.trackName}`)).toBeNull();
+  });
+
+  it("dropdown is absent on ANOTHER member's screen tile", () => {
+    useSessionStore.setState({ profile: self });
+    const other = "33333333-3333-4333-8333-333333333333";
+    const stream = makeStream({ userId: other, kind: "screen", trackName: `screen:${other}:1` });
+    render(<StreamTile stream={stream} focused={false} onToggleFocus={vi.fn()} />);
+    expect(screen.queryByTestId(`stream-preset-${stream.trackName}`)).toBeNull();
+  });
+});
 
 describe("FR-33 focus layer", () => {
   it("double-click watched tile enters focus and calls setLayer h", () => {

@@ -26,6 +26,7 @@ export interface TavernTestRtc {
   publishState: PublishState;
   pullStates: Record<string, PullState>; // 'voice' + (S8) per-stream trackName keys
   stats(session: "voice"): Promise<VoiceStats>; // inbound-rtp audio summary
+  layerCalls: Array<{ trackName: string; rid: "h" | "l" }>; // FR-33 setLayer switches (S8.4/S8.5)
 }
 
 // The voice controller (the sole holder of the live publish/pull sessions) binds these thunks so the
@@ -46,6 +47,10 @@ declare global {
 // Owned here so S9.2 can push {soundId, at} for the FR-36 cross-client sync assertion without any
 // new plumbing — the array identity is stable across the object's lifetime.
 const soundboardPlays: Array<{ soundId: string; at: number }> = [];
+
+// FR-33 layer switches (S8.4 pushes, S8.5 asserts). Stable array identity across the hook's lifetime,
+// like soundboardPlays — pullSession.setLayer records {trackName, rid} on each grid↔focus switch.
+const layerCalls: Array<{ trackName: string; rid: "h" | "l" }> = [];
 
 // FR-20: the effective per-user gain the graph applies — the stored slider value, or 0 when the user
 // is in VolumesV1.mutedUsers (mute is set-membership, not a gain of 0, so the slider value survives).
@@ -88,6 +93,7 @@ export function installTestHooks(sources: TestHookSources): void {
       return sources.pullStates();
     },
     stats: (_session) => sources.voiceStats(),
+    layerCalls,
   };
   /* oxlint-enable no-underscore-dangle */
 }

@@ -53,7 +53,7 @@ describe("§8 G5 cost meter", () => {
     await runInDurableObject(freshRoom(), async (_i, state) => {
       const meter = new CostMeter(state, {});
       await meter.openWatch(viewer, "screen:pub:1", "1080p30", "h", T0);
-      await meter.setRid(viewer, "screen:pub:1", "l", T0 + 300_000); // 300s at h
+      await meter.setWatcherLayer(viewer, "screen:pub:1", "l", T0 + 300_000); // 300s at h
       await meter.closeWatch(viewer, "screen:pub:1", T0 + 600_000); // 300s at l
       // h: 2000*1000/8*300 = 75,000,000 ; l: 250*1000/8*300 = 9,375,000
       expect(sumEgress(state)).toBe(84_375_000);
