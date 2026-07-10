@@ -1,14 +1,20 @@
-import { LIMITS, serverMessageSchema } from "@tavern/shared";
+import { z } from "zod";
+import { DEFAULT_SCREEN_PRESET, LIMITS, PresetIdSchema, serverMessageSchema } from "@tavern/shared";
 import type {
+  CostStatus,
+  ErrorCode,
   Member,
   MemberInit,
   Presence,
+  PresetId,
   ServerMessage,
+  StreamInfo,
   UserProfile,
   VoiceMember,
   VoiceState,
 } from "@tavern/shared";
 import { rowToMember } from "./sql";
+import type { CostMeter } from "./costMeter";
 
 // The per-connection identity stashed on the hibernatable WebSocket (ids only, 16 KB cap — §A2/§6.2).
 export type ConnAttachment = { userId: string; connId: string; hello: boolean };
@@ -19,6 +25,66 @@ export type RoomMeta = { id: string; nickname: string; adminUserId: string };
 
 // A single-use WS auth ticket record (A4). Stored in ctx.storage KV under `ticket:{uuid}`.
 type TicketRecord = { userId: string; expiresAt: number };
+
+// Track-name grammar kinds (§7.1). `mic`/`screenAudio` are audio-only; `screen`/`cam` are the
+// StreamInfo-representable video kinds that get a stream.added broadcast.
+const rtcKindSchema = z.enum(["mic", "screen", "screenAudio", "cam"]);
+export type RtcKind = z.infer<typeof rtcKindSchema>;
+
+// The `/internal/rtc/authorize` op contract (§6.1, zod-validated at the DO ingress). The Worker route
+// builds this from the client body (deriving `kind` from the track-name grammar); the DO is the sole
+// authority on voice membership (G1), the share cap (G4), and pull grants + the egress kill (G5).
+export const rtcAuthorizeReqSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("session.new"), userId: z.string(), sessionId: z.string() }),
+  z.object({
+    op: z.literal("publish"),
+    userId: z.string(),
+    sessionId: z.string(),
+    tracks: z.array(
+      z.object({ trackName: z.string(), kind: rtcKindSchema, preset: PresetIdSchema.optional() }),
+    ),
+  }),
+  z.object({
+    op: z.literal("pull"),
+    userId: z.string(),
+    tracks: z.array(
+      z.object({ trackName: z.string(), preferredRid: z.enum(["h", "l"]).optional() }),
+    ),
+  }),
+  z.object({
+    op: z.literal("layer"),
+    userId: z.string(),
+    trackName: z.string(),
+    preferredRid: z.enum(["h", "l"]),
+  }),
+  z.object({ op: z.literal("close"), userId: z.string(), trackNames: z.array(z.string()) }),
+]);
+export type RtcAuthorizeReq = z.infer<typeof rtcAuthorizeReqSchema>;
+
+// `publisherSessions` maps each pulled trackName → its publisher's SFU sessionId so the route can build
+// the SFU RemoteTrackReqs — the client never learns another user's sessionId (only what the SFU echoes).
+export type RtcAuthorizeRes =
+  | { ok: true; publisherSessions?: Record<string, string> }
+  | { ok: false; error: ErrorCode };
+
+// One registered SFU track. `preset`/`hasAudio` are set for the video kinds (drive the StreamInfo +
+// the cost meter's per-pull bitrate); mic/screenAudio omit them.
+type RtcTrackReg = {
+  userId: string;
+  sessionId: string;
+  kind: RtcKind;
+  preset?: PresetId;
+  hasAudio?: boolean;
+};
+
+// The per-room RTC registry (KV `rtc`): SFU session ownership, published tracks (for pull resolution +
+// the G4 cap), and viewer watch grants (viewerId → trackName → charged rid; seeded by WS watch.start,
+// S8.2). Read/written on each authorize (no in-memory mirror — it is not in the sync hello snapshot).
+export type RtcRegistry = {
+  sessions: Record<string, string>;
+  tracks: Record<string, RtcTrackReg>;
+  grants: Record<string, Record<string, "h" | "l">>;
+};
 
 type HelloOk = Extract<ServerMessage, { t: "hello.ok" }>;
 
@@ -167,6 +233,198 @@ export class RoomState {
     return this.voice;
   }
 
+  // ---- RTC registry + authorize (§6.1 /internal/rtc/authorize, §8 G1/G4/G5). Persisted in KV `rtc`;
+  // read/written per authorize (not in the sync hello snapshot). Voice membership is re-read from KV
+  // (`voiceMemberIds`) so a test/producer that seeds voice straight into storage is honored.
+
+  private async readRtc(): Promise<RtcRegistry> {
+    const stored = await this.ctx.storage.get<RtcRegistry>("rtc");
+    if (stored === undefined) return { sessions: {}, tracks: {}, grants: {} };
+    return {
+      sessions: { ...stored.sessions },
+      tracks: { ...stored.tracks },
+      grants: { ...stored.grants },
+    };
+  }
+
+  private async writeRtc(reg: RtcRegistry): Promise<void> {
+    await this.ctx.storage.put("rtc", reg);
+  }
+
+  private async voiceMemberIds(): Promise<string[]> {
+    const voice = await this.ctx.storage.get<VoiceState>("voice");
+    return (voice?.members ?? []).map((m) => m.userId);
+  }
+
+  // Read-only registry snapshot (tests + S8.x inspection).
+  async rtcSnapshot(): Promise<RtcRegistry> {
+    return this.readRtc();
+  }
+
+  // Grants a viewer the right to pull a stream (G1) at a charged rid — seeded by WS watch.start (S8.2)
+  // and by tests. The pull authorize checks this; the cost meter charges the recorded rid.
+  async rtcAddGrant(viewerId: string, trackName: string, rid: "h" | "l"): Promise<void> {
+    const reg = await this.readRtc();
+    const grants = reg.grants[viewerId] ?? {};
+    grants[trackName] = rid;
+    reg.grants[viewerId] = grants;
+    await this.writeRtc(reg);
+  }
+
+  // The StreamInfo for a published track, or null for the non-video kinds. mic/screenAudio are NOT
+  // StreamInfo (the pinned schema requires kind ∈ {screen,webcam} + a preset; mics ride voice.state) —
+  // they register for pull resolution but never broadcast stream.added.
+  private streamInfoFor(
+    trackName: string,
+    kind: RtcKind,
+    preset: PresetId | undefined,
+    userId: string,
+    hasScreenAudio: boolean,
+  ): StreamInfo | null {
+    if (kind === "screen") {
+      return {
+        trackName,
+        kind: "screen",
+        userId,
+        hasAudio: hasScreenAudio,
+        preset: preset ?? DEFAULT_SCREEN_PRESET,
+      };
+    }
+    if (kind === "cam") {
+      // Webcam is the fixed 720p30 h-layer (App-D); no stream audio.
+      return { trackName, kind: "webcam", userId, hasAudio: false, preset: "720p30" };
+    }
+    return null;
+  }
+
+  // The single authorize entry (dispatched from ServerRoom's /internal/rtc/authorize). Ordering pins
+  // per §6.1 task 5. `meter` gates the pull kill switch (G5) + reprices on layer.
+  async rtcAuthorize(req: RtcAuthorizeReq, meter: CostMeter, at: number): Promise<RtcAuthorizeRes> {
+    const inVoice = (await this.voiceMemberIds()).includes(req.userId);
+    const reg = await this.readRtc();
+    switch (req.op) {
+      case "session.new": {
+        if (!inVoice) return { ok: false, error: "not_in_voice" };
+        reg.sessions[req.sessionId] = req.userId;
+        await this.writeRtc(reg);
+        return { ok: true };
+      }
+      case "publish": {
+        if (!inVoice) return { ok: false, error: "not_in_voice" };
+        // G4: server-wide concurrent screen-share cap.
+        const currentScreens = Object.values(reg.tracks).filter((t) => t.kind === "screen").length;
+        const newScreens = req.tracks.filter((t) => t.kind === "screen").length;
+        if (currentScreens + newScreens > LIMITS.maxConcurrentScreenShares) {
+          return { ok: false, error: "share_cap" };
+        }
+        const hasScreenAudio = req.tracks.some((t) => t.kind === "screenAudio");
+        for (const t of req.tracks) {
+          const preset =
+            t.preset ??
+            (t.kind === "screen" ? DEFAULT_SCREEN_PRESET : t.kind === "cam" ? "720p30" : undefined);
+          reg.tracks[t.trackName] = {
+            userId: req.userId,
+            sessionId: req.sessionId,
+            kind: t.kind,
+            ...(preset === undefined ? {} : { preset }),
+            ...(t.kind === "screen" || t.kind === "cam"
+              ? { hasAudio: t.kind === "screen" ? hasScreenAudio : false }
+              : {}),
+          };
+        }
+        await this.writeRtc(reg);
+        // Registration success → stream.added for the video kinds (mic broadcasts nothing — peers
+        // learn mics from voice.state). This is how peers learn a video stream is now pullable.
+        for (const t of req.tracks) {
+          const stream = this.streamInfoFor(
+            t.trackName,
+            t.kind,
+            t.preset,
+            req.userId,
+            hasScreenAudio,
+          );
+          if (stream !== null) this.broadcast({ t: "stream.added", stream, at });
+        }
+        return { ok: true };
+      }
+      case "pull": {
+        const publisherSessions: Record<string, string> = {};
+        for (const t of req.tracks) {
+          const reg2 = reg.tracks[t.trackName];
+          if (reg2 === undefined) return { ok: false, error: "pull_denied" };
+          if (reg2.kind === "mic") {
+            // Voice mics auto-subscribe — any voice member may pull them, no grant (G1).
+            if (!inVoice) return { ok: false, error: "not_in_voice" };
+          } else {
+            // Opt-in video: needs an explicit watch grant (G1) and the egress kill (G5) allows it.
+            if (reg.grants[req.userId]?.[t.trackName] === undefined) {
+              return { ok: false, error: "pull_denied" };
+            }
+            if (meter.isBlocked(at)) return { ok: false, error: "cost_cap" };
+          }
+          publisherSessions[t.trackName] = reg2.sessionId;
+        }
+        return { ok: true, publisherSessions };
+      }
+      case "layer": {
+        const grants = reg.grants[req.userId];
+        if (grants !== undefined && grants[req.trackName] !== undefined) {
+          grants[req.trackName] = req.preferredRid;
+          await this.writeRtc(reg);
+          await meter.setRid(req.userId, req.trackName, req.preferredRid, at);
+        }
+        return { ok: true };
+      }
+      case "close": {
+        // Unregister the caller's named tracks + broadcast stream.removed for the video ones (the
+        // compensating undo of a failed publish). Grants + meter for the caller are swept on disconnect
+        // via rtcCleanupFor. Only the owner may close their own tracks.
+        let changed = false;
+        for (const name of req.trackNames) {
+          const reg2 = reg.tracks[name];
+          if (reg2 === undefined || reg2.userId !== req.userId) continue;
+          delete reg.tracks[name];
+          changed = true;
+          if (reg2.kind === "screen" || reg2.kind === "cam") {
+            this.broadcast({ t: "stream.removed", trackName: name, at });
+          }
+        }
+        if (changed) await this.writeRtc(reg);
+        return { ok: true };
+      }
+      default:
+        return { ok: false, error: "bad_request" };
+    }
+  }
+
+  // Disconnect cleanup (§S3.4 leave path): drop the user's SFU sessions + published tracks (broadcast
+  // stream.removed for video), release their watch grants, and flush their open meter watches. The SFU
+  // GCs the dead session on its own (~30s), so no SFU call is needed here.
+  async rtcCleanupFor(userId: string, meter: CostMeter, at: number): Promise<void> {
+    const reg = await this.readRtc();
+    let changed = false;
+    for (const [sessionId, owner] of Object.entries(reg.sessions)) {
+      if (owner === userId) {
+        delete reg.sessions[sessionId];
+        changed = true;
+      }
+    }
+    for (const [name, track] of Object.entries(reg.tracks)) {
+      if (track.userId !== userId) continue;
+      delete reg.tracks[name];
+      changed = true;
+      if (track.kind === "screen" || track.kind === "cam") {
+        this.broadcast({ t: "stream.removed", trackName: name, at });
+      }
+    }
+    if (reg.grants[userId] !== undefined) {
+      delete reg.grants[userId];
+      changed = true;
+    }
+    if (changed) await this.writeRtc(reg);
+    await meter.closeWatchesForViewer(userId, at);
+  }
+
   upsertMember(member: MemberInit): void {
     this.ctx.storage.sql.exec(
       `INSERT INTO members (user_id, username, display_name, color, avatar_key, is_admin, joined_at)
@@ -261,7 +519,7 @@ export class RoomState {
     }
   }
 
-  helloSnapshot(userId: string, lastMessageId: number): HelloOk {
+  helloSnapshot(userId: string, lastMessageId: number, costStatus: CostStatus): HelloOk {
     const meta = invariant(this.meta, "room meta not initialized");
     const members = this.listMembers();
     const selfMember = invariant(
@@ -273,13 +531,13 @@ export class RoomState {
       self: toProfile(selfMember),
       serverMeta: meta,
       members,
-      // Live voice snapshot (S3.4). Remaining stubs filled by later steps: streams (S8), recording
-      // (S9.3), costStatus (S7.1). lastMessageId comes from ChatModule (S3.2 task 7).
+      // Live voice snapshot (S3.4) + live cost meter (S7.1, from CostMeter.status). Remaining stubs
+      // filled by later steps: streams (S8), recording (S9.3). lastMessageId from ChatModule (S3.2).
       voice: this.voice,
       streams: [],
       recording: { active: false },
       lastMessageId,
-      costStatus: { usedGB: 0, capGB: LIMITS.egressKillGB, blocked: false },
+      costStatus,
     };
   }
 

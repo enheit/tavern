@@ -10,11 +10,12 @@ import {
 } from "@tavern/shared";
 import type { ClientMessage, ErrorCode } from "@tavern/shared";
 import { migrate } from "./sql";
-import { RoomState } from "./roomState";
-import type { ConnAttachment, RoomMeta } from "./roomState";
+import { RoomState, rtcAuthorizeReqSchema } from "./roomState";
+import type { ConnAttachment, RoomMeta, RtcAuthorizeRes } from "./roomState";
 import { ChatModule } from "./chat";
 import { ActivityModule } from "./activity";
 import { StatsModule } from "./stats";
+import { CostMeter } from "./costMeter";
 
 // The Worker sets this header on EVERY DO stub call; the DO has no other ingress path, so a missing
 // header on an /internal/* route means the request did not originate from the Worker → 403.
@@ -43,6 +44,9 @@ export class ServerRoom extends DurableObject<Env> {
   // One StatsModule per DO → server-authoritative watch/stream accumulators (FR-40). Fed by the voice
   // leave/alarm sweep now; S8.4 feeds it stream/watch start/stop.
   private readonly stats: StatsModule;
+  // One CostMeter per DO → §8 G5 egress estimate + kill switch. Ticked on the 60s alarm, reprices on
+  // layer, gates non-mic pulls at the cap; snapshotted into hello.ok.costStatus.
+  private readonly costMeter: CostMeter;
   // connId → hello-timeout handle (in-memory; a 5 s pending timer keeps the DO from hibernating, so
   // the same instance handles the hello within the window — negligible cost, §S3.1 task 6).
   private readonly helloTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -60,6 +64,7 @@ export class ServerRoom extends DurableObject<Env> {
     this.chat = new ChatModule(ctx.storage.sql);
     this.activity = new ActivityModule(ctx.storage.sql);
     this.stats = new StatsModule(ctx);
+    this.costMeter = new CostMeter(ctx, env);
     this.routes = {
       hello: (ws, att) => this.handleHello(ws, att),
       "chat.send": (ws, att, msg) => this.handleChatSend(ws, att, msg),
@@ -213,6 +218,17 @@ export class ServerRoom extends DurableObject<Env> {
         });
         return Response.json(page);
       }
+      // POST /internal/rtc/authorize (§6.1) — the SOLE authority on voice membership (G1), the
+      // share cap (G4), pull grants + the egress kill (G5). The Worker route builds the op from the
+      // client body (deriving `kind` from the track-name grammar); the DO decides + registers.
+      case "/internal/rtc/authorize": {
+        const parsed = rtcAuthorizeReqSchema.safeParse(await request.json());
+        if (!parsed.success) {
+          return Response.json({ ok: false, error: "bad_request" } satisfies RtcAuthorizeRes);
+        }
+        const res = await this.room.rtcAuthorize(parsed.data, this.costMeter, at);
+        return Response.json(res);
+      }
       // GET /internal/stats → StatsResponse (§6.1 `GET /api/servers/:id/stats`). perUser unions the
       // member cache + message senders + stream-seconds rows; messages from ChatModule.
       case "/internal/stats": {
@@ -295,7 +311,10 @@ export class ServerRoom extends DurableObject<Env> {
       }
     }
     // Reconnect replays the full snapshot (§6.2 no delta sync); a repeat hello is idempotent.
-    this.room.send(ws, this.room.helloSnapshot(att.userId, this.chat.lastMessageId()));
+    this.room.send(
+      ws,
+      this.room.helloSnapshot(att.userId, this.chat.lastMessageId(), this.costMeter.status(at)),
+    );
     if (firstHello) this.room.presenceOnHello(ws, att.userId, at);
   }
 
@@ -360,6 +379,9 @@ export class ServerRoom extends DurableObject<Env> {
     const { snapshot } = this.room.voiceLeave(userId, now);
     await this.room.persistVoice();
     await this.stats.closeAllFor(userId, now);
+    // Drop the leaver's SFU sessions/tracks/grants + flush their open meter watches (§S3.4 disconnect
+    // cleanup path; the SFU GCs the dead session itself). Broadcasts stream.removed for their video.
+    await this.room.rtcCleanupFor(userId, this.costMeter, now);
     this.room.broadcast({
       t: "activity.new",
       entry: this.activity.append("voice.leave", userId, {}, now),
@@ -400,9 +422,19 @@ export class ServerRoom extends DurableObject<Env> {
     let chain: Promise<void> = Promise.resolve();
     for (const userId of ghostIds) chain = chain.then(() => this.leaveVoice(userId, now));
     await chain;
-    // (b) While voice still has members, bank the accumulators mid-session. S7.1 appends
-    // this.costMeter.tick(now) at this exact seam.
-    if (this.room.voiceState().members.length > 0) await this.stats.flushOpenIntervals(now);
+    // (b) While voice still has members, bank the accumulators mid-session, then tick the egress meter
+    // (§8 G5). A newly-crossed 700 GB warn threshold → broadcast cost.warning once per month-bucket.
+    if (this.room.voiceState().members.length > 0) {
+      await this.stats.flushOpenIntervals(now);
+      if (await this.costMeter.tick(now)) {
+        this.room.broadcast({
+          t: "cost.warning",
+          usedGB: this.costMeter.usedGB(now),
+          capGB: LIMITS.egressKillGB,
+          at: now,
+        });
+      }
+    }
     // (c) Re-arm iff work remains (members or open intervals); otherwise let the alarm lapse.
     const stillActive =
       this.room.voiceState().members.length > 0 || (await this.stats.hasOpenIntervals());
