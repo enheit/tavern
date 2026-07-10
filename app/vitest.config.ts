@@ -14,7 +14,12 @@ export default defineConfig({
       provider: "istanbul",
       include: ["src/**"],
       exclude: ["src/paraglide/**", "src/components/ui/**"],
-      thresholds: { lines: 70 },
+      // Per-glob gate for the media engine (PLAN §10: app/src/media ≥85%), additive to the overall
+      // ≥70% line threshold from S4.2/S4.3. Vitest resolves threshold globs relative to this config's
+      // root (the app package), so the files appear as `src/media/…`; the DoD-pinned `app/src/media/**`
+      // matches nothing here (verified: the gate is then vacuous), so the glob is anchored with `**/`
+      // to actually enforce — the DoD's stated intent ("fail if app/src/media drops below 85%").
+      thresholds: { lines: 70, "**/src/media/**": { lines: 85 } },
     },
   },
 });

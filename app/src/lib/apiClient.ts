@@ -70,8 +70,14 @@ export const apiClient = {
     request(schema, { method: "POST", path, body }),
   patch: <T>(path: string, schema: Parser<T>, body?: unknown) =>
     request(schema, { method: "PATCH", path, body }),
+  put: <T>(path: string, schema: Parser<T>, body?: unknown) =>
+    request(schema, { method: "PUT", path, body }),
   del: <T>(path: string, schema: Parser<T>, body?: unknown) =>
     request(schema, { method: "DELETE", path, body }),
   upload: <T>(path: string, schema: Parser<T>, form: FormData) =>
     request(schema, { method: "POST", path, form }),
 };
+
+// The RTC signaling layer (S7.2) reaches the PUT rtc routes (§6.1) through this same client, so it
+// needs the client's shape as a type — S4.3 exported only the value.
+export type ApiClient = typeof apiClient;

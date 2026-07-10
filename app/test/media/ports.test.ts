@@ -1,0 +1,67 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AudioGraph } from "@/media/audioGraph";
+import { browserAudioPort, browserRtcPort } from "@/media/ports";
+import { VoiceRecorder } from "@/media/recorder";
+import { SoundboardPlayer } from "@/media/soundboardPlayer";
+import {
+  camTrackName,
+  micTrackName,
+  screenAudioTrackName,
+  screenTrackName,
+} from "@/media/trackName";
+import { fakeTrack } from "../fakes/media";
+import { FakeAudioPort } from "../fakes/audio";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("trackName grammar (§7.1)", () => {
+  it("builds each track name", () => {
+    expect(micTrackName("u1")).toBe("mic:u1");
+    expect(camTrackName("u1")).toBe("cam:u1");
+    expect(screenTrackName("u1", 2)).toBe("screen:u1:2");
+    expect(screenAudioTrackName("u1", 2)).toBe("screenAudio:u1:2");
+  });
+});
+
+describe("browser ports (§7.2 constructor site)", () => {
+  it("browserRtcPort constructs an RTCPeerConnection with the given config", () => {
+    const ctor = vi.fn();
+    vi.stubGlobal("RTCPeerConnection", ctor);
+    browserRtcPort.createPeerConnection({ iceServers: [], bundlePolicy: "max-bundle" });
+    expect(ctor).toHaveBeenCalledWith({ iceServers: [], bundlePolicy: "max-bundle" });
+  });
+
+  it("browserAudioPort constructs a 48 kHz AudioContext and a muted-flow audio element", () => {
+    const ctxCtor = vi.fn();
+    const audioCtor = vi.fn();
+    vi.stubGlobal("AudioContext", ctxCtor);
+    vi.stubGlobal("Audio", audioCtor);
+    browserAudioPort.createContext({ sampleRate: 48000 });
+    browserAudioPort.createAudioElement();
+    expect(ctxCtor).toHaveBeenCalledWith({ sampleRate: 48000 });
+    expect(audioCtor).toHaveBeenCalled();
+  });
+});
+
+describe("S9 interface stubs", () => {
+  it("VoiceRecorder throws until S9.3 implements it", () => {
+    const rec = new VoiceRecorder({ graph: new AudioGraph(new FakeAudioPort()) });
+    expect(rec.active).toBe(false);
+    expect(() => rec.start(fakeTrack("audio"), { onPart: async () => undefined })).toThrow(
+      "S9 not implemented",
+    );
+    expect(() => rec.stop()).toThrow("S9 not implemented");
+  });
+
+  it("SoundboardPlayer throws until S9.2 implements it", () => {
+    const player = new SoundboardPlayer({
+      graph: new AudioGraph(new FakeAudioPort()),
+      fetchSound: async () => new ArrayBuffer(0),
+    });
+    expect(() => player.play({ id: "s1", trimStartMs: 0, trimEndMs: 1000 })).toThrow(
+      "S9 not implemented",
+    );
+  });
+});
