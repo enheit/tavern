@@ -2,8 +2,27 @@
   "name": "@tavern/worker",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run --coverage",
+    "types": "wrangler types",
+    "migrate:local": "wrangler d1 migrations apply tavern-db --local",
+    "migrate:remote": "wrangler d1 migrations apply tavern-db --remote"
+  },
+  "dependencies": {
+    "@tavern/shared": "workspace:*",
+    "hono": "4.12.28",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.18.4",
+    "@vitest/coverage-istanbul": "4.1.10",
+    "vitest": "4.1.10",
+    "wrangler": "4.110.0"
   }
 }

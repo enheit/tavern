@@ -5,6 +5,7 @@ coverage/
 .wrangler/
 .dev.vars
 .dev.vars.*
+!.dev.vars.example
 *.local
 .DS_Store
 playwright-report/
