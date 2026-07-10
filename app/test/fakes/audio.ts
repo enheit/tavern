@@ -16,9 +16,16 @@ export class FakeAudioNode {
     return dest;
   }
 
-  disconnect(): void {
-    this.disconnected = true;
-    this.outputs.length = 0;
+  // No arg → drop every output (matches WebAudio `disconnect()`); with a target → drop only that one
+  // edge (WebAudio `disconnect(destinationNode)`), leaving other outputs intact (FR-25 mix release).
+  disconnect(dest?: FakeAudioNode): void {
+    if (dest === undefined) {
+      this.disconnected = true;
+      this.outputs.length = 0;
+      return;
+    }
+    const idx = this.outputs.indexOf(dest);
+    if (idx !== -1) this.outputs.splice(idx, 1);
   }
 }
 

@@ -7,6 +7,7 @@ import type {
   MemberInit,
   Presence,
   PresetId,
+  RecordingState,
   ServerMessage,
   StreamInfo,
   UserProfile,
@@ -164,6 +165,12 @@ export class RoomState {
   async setMeta(meta: RoomMeta): Promise<void> {
     await this.ctx.storage.put("meta", meta);
     this.meta = meta;
+  }
+
+  // The server's stable id (from the cached meta), used by RecordingsModule to build R2 keys
+  // (`recordings/{serverId}/…`, §5.3). Null before the first member-join seeds meta.
+  serverId(): string | null {
+    return this.meta?.id ?? null;
   }
 
   async patchNickname(nickname: string): Promise<void> {
@@ -519,7 +526,12 @@ export class RoomState {
     }
   }
 
-  helloSnapshot(userId: string, lastMessageId: number, costStatus: CostStatus): HelloOk {
+  helloSnapshot(
+    userId: string,
+    lastMessageId: number,
+    costStatus: CostStatus,
+    recording: RecordingState,
+  ): HelloOk {
     const meta = invariant(this.meta, "room meta not initialized");
     const members = this.listMembers();
     const selfMember = invariant(
@@ -531,11 +543,11 @@ export class RoomState {
       self: toProfile(selfMember),
       serverMeta: meta,
       members,
-      // Live voice snapshot (S3.4) + live cost meter (S7.1, from CostMeter.status). Remaining stubs
-      // filled by later steps: streams (S8), recording (S9.3). lastMessageId from ChatModule (S3.2).
+      // Live voice snapshot (S3.4) + live cost meter (S7.1) + live recording pointer (S9.3, from
+      // RecordingsModule.state). Remaining stub: streams (S8). lastMessageId from ChatModule (S3.2).
       voice: this.voice,
       streams: [],
-      recording: { active: false },
+      recording,
       lastMessageId,
       costStatus,
     };

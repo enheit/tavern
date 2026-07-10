@@ -35,6 +35,12 @@ export class AudioGraph {
   private sbGain: GainNode | null = null;
   private localSource: MediaStreamAudioSourceNode | null = null;
   private localAnalyser: AnalyserNode | null = null;
+  // FR-25 recording tap: the nodes fanned into the recording destination (per-user gains + sbGain +
+  // the recorder's own mic source), tracked so `releaseRecordingMix` disconnects exactly them from the
+  // recording dest WITHOUT touching their live connection to deafenGain.
+  private recordingDest: MediaStreamAudioDestinationNode | null = null;
+  private recordingMicSource: MediaStreamAudioSourceNode | null = null;
+  private readonly recordingTaps: AudioNode[] = [];
   private readonly remotes = new Map<string, RemoteMic>();
   private readonly streams = new Map<string, StreamAudio>();
   private readonly userGains = new Map<string, number>();
@@ -171,13 +177,38 @@ export class AudioGraph {
   }
 
   // The recording captures the call as heard: pre-deafen per-user gains + own mic + soundboard tap.
+  // A snapshot at start (late joiners are not re-tapped — pinned, §7.4). `releaseRecordingMix` undoes
+  // exactly these connections on stop/error.
   mixForRecording(localMic: MediaStreamTrack): MediaStream {
     const ctx = this.requireCtx();
+    this.releaseRecordingMix(); // idempotent guard: never leave a prior tap connected
     const dest = ctx.createMediaStreamDestination();
-    for (const r of this.remotes.values()) r.gain.connect(dest);
-    if (this.sbGain) this.sbGain.connect(dest);
-    ctx.createMediaStreamSource(new MediaStream([localMic])).connect(dest);
+    for (const r of this.remotes.values()) {
+      r.gain.connect(dest);
+      this.recordingTaps.push(r.gain);
+    }
+    if (this.sbGain) {
+      this.sbGain.connect(dest);
+      this.recordingTaps.push(this.sbGain);
+    }
+    const micSource = ctx.createMediaStreamSource(new MediaStream([localMic]));
+    micSource.connect(dest);
+    this.recordingMicSource = micSource;
+    this.recordingDest = dest;
     return dest.stream;
+  }
+
+  // Tears down the recording tap (FR-25 stop/error): disconnect every tapped gain from the recording
+  // dest (their live path to deafenGain is untouched) + the recorder's own mic source. Idempotent.
+  releaseRecordingMix(): void {
+    const dest = this.recordingDest;
+    if (dest !== null) {
+      for (const tap of this.recordingTaps) tap.disconnect(dest);
+    }
+    this.recordingMicSource?.disconnect();
+    this.recordingTaps.length = 0;
+    this.recordingMicSource = null;
+    this.recordingDest = null;
   }
 
   getUserAnalyser(userId: string): AnalyserNode | null {
