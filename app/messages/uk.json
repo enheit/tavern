@@ -62,5 +62,18 @@
   "error_bad_trim": "Некоректний діапазон обрізки",
   "error_bad_part_size": "Помилка завантаження — спробуйте ще раз",
   "error_recording_too_long": "Запис задовгий",
-  "error_server_full": "Цей сервер заповнений"
+  "error_server_full": "Цей сервер заповнений",
+  "soundboard_title": "Дошка звуків",
+  "soundboard_upload_title": "Завантажити звук",
+  "soundboard_upload_file": "MP3-файл",
+  "soundboard_upload_file_required": "Виберіть MP3-файл",
+  "soundboard_upload_name": "Назва",
+  "soundboard_upload_name_invalid": "Назва має містити 1–32 символи",
+  "soundboard_upload_too_long": "Звук має бути не довшим за 5 хвилин",
+  "soundboard_upload_submit": "Завантажити",
+  "soundboard_trim_title": "Обрізати звук",
+  "soundboard_trim_preview": "Прослухати",
+  "soundboard_trim_save": "Зберегти",
+  "soundboard_edit": "Редагувати",
+  "soundboard_delete": "Видалити"
 }

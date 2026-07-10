@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import { ChannelsPanel } from "@/features/servers/ChannelsPanel";
 import { PeoplePanel } from "@/features/servers/PeoplePanel";
+import { SoundboardPanel } from "@/features/soundboard/SoundboardPanel";
 import { Header } from "./Header";
 
 // The persistent app shell laid out exactly per §7.6. Pinned CSS grid: header spans all columns; the
@@ -38,7 +39,9 @@ export function AppShell({ serverId }: { serverId: string }) {
       />
       <div style={{ gridArea: "right" }} className="flex min-h-0 flex-col border-l bg-card">
         <div data-testid="slot-tabs" className="min-h-0 flex-1 overflow-hidden" />
-        <div data-testid="slot-soundboard" className="h-[280px] shrink-0 border-t" />
+        <div data-testid="slot-soundboard" className="h-[280px] shrink-0 border-t">
+          <SoundboardPanel serverId={serverId} />
+        </div>
       </div>
     </div>
   );

@@ -6,9 +6,11 @@ import {
   CLOSE_PROTOCOL_VIOLATION,
   LIMITS,
   MemberInit,
+  Sound,
   UserProfile,
 } from "@tavern/shared";
 import type { ClientMessage, ErrorCode } from "@tavern/shared";
+import { z } from "zod";
 import { migrate } from "./sql";
 import { RoomState, rtcAuthorizeReqSchema } from "./roomState";
 import type { ConnAttachment, RoomMeta, RtcAuthorizeRes } from "./roomState";
@@ -16,6 +18,32 @@ import { ChatModule } from "./chat";
 import { ActivityModule } from "./activity";
 import { StatsModule } from "./stats";
 import { CostMeter } from "./costMeter";
+import { createSound, deleteSound, listSounds, patchSound, TavernError } from "./soundboard";
+import type { Actor, SoundPatch } from "./soundboard";
+
+// The `sound.updated` broadcast fires after every create/patch/delete; clients refetch the list (S9.2).
+// The create body carries the not-yet-persisted sound (playCount is derived, so omitted) + its R2 key.
+const createSoundBody = z.object({ sound: Sound.omit({ playCount: true }), r2Key: z.string() });
+const patchSoundBody = z.object({
+  soundId: z.string(),
+  patch: z.object({
+    name: z.string().optional(),
+    trimStartMs: z.number().optional(),
+    trimEndMs: z.number().optional(),
+  }),
+  actor: z.object({ userId: z.string(), isAdmin: z.boolean() }),
+});
+const deleteSoundBody = z.object({
+  soundId: z.string(),
+  actor: z.object({ userId: z.string(), isAdmin: z.boolean() }),
+});
+
+// TavernError code → the HTTP status the Worker route forwards for a soundboard op.
+function soundErrorStatus(code: ErrorCode): 403 | 404 | 422 {
+  if (code === "forbidden") return 403;
+  if (code === "not_found") return 404;
+  return 422; // bad_trim
+}
 
 // The Worker sets this header on EVERY DO stub call; the DO has no other ingress path, so a missing
 // header on an /internal/* route means the request did not originate from the Worker → 403.
@@ -50,6 +78,9 @@ export class ServerRoom extends DurableObject<Env> {
   // connId → hello-timeout handle (in-memory; a 5 s pending timer keeps the DO from hibernating, so
   // the same instance handles the hello within the window — negligible cost, §S3.1 task 6).
   private readonly helloTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // userId → recent upload timestamps (sliding window, §S9.1 task 4). In-memory like the chat bucket:
+  // a DO eviction only ever REFILLS a user's upload budget (never revokes) — acceptable at our scale.
+  private readonly uploadTimes = new Map<string, number[]>();
   // The message router later steps plug domain modules into. This step implements `hello`; every
   // other valid type answers `not_implemented` until S3.2/S3.4/S8/S9 fill the map (S12.4 verifies none
   // remain). `ping` never reaches here — setWebSocketAutoResponse answers it without waking the DO.
@@ -237,6 +268,64 @@ export class ServerRoom extends DurableObject<Env> {
           this.room.listMembers(),
         );
         return Response.json(snapshot);
+      }
+      // GET /internal/sounds → { sounds } (§6.1 `GET /api/servers/:id/sounds`), ordered playCount DESC
+      // then createdAt DESC (FR-37). The Worker route validates against the shared SoundsResponse.
+      case "/internal/sounds":
+        return Response.json({ sounds: listSounds(this.ctx.storage.sql) });
+      // POST /internal/sounds/create (FR-34): rate-limit the uploader (§App-B uploadsPerUserPerHour),
+      // then persist + broadcast `sound.updated`. On a rate-limit reject the Worker deletes the R2
+      // object it already put (task 4). A bad_trim (sub-200ms clip) is likewise a non-2xx the route
+      // treats as a failed create (R2 deleted).
+      case "/internal/sounds/create": {
+        const body = createSoundBody.parse(await request.json());
+        if (!this.allowUpload(body.sound.uploaderId, at)) {
+          return Response.json({ error: "rate_limited" satisfies ErrorCode }, { status: 429 });
+        }
+        try {
+          const sound = createSound(this.ctx.storage.sql, body.sound, body.r2Key);
+          this.recordUpload(body.sound.uploaderId, at);
+          this.room.broadcast({ t: "sound.updated", at });
+          return Response.json({ sound });
+        } catch (err: unknown) {
+          if (err instanceof TavernError) {
+            return Response.json({ error: err.code }, { status: soundErrorStatus(err.code) });
+          }
+          throw err;
+        }
+      }
+      // POST /internal/sounds/patch (FR-35): rename / re-trim; uploader-or-admin (actor). Broadcast
+      // `sound.updated` on success; map TavernError to the status the route forwards.
+      case "/internal/sounds/patch": {
+        const body = patchSoundBody.parse(await request.json());
+        try {
+          const patch: SoundPatch = body.patch;
+          const actor: Actor = body.actor;
+          const sound = patchSound(this.ctx.storage.sql, body.soundId, patch, actor);
+          this.room.broadcast({ t: "sound.updated", at });
+          return Response.json({ sound });
+        } catch (err: unknown) {
+          if (err instanceof TavernError) {
+            return Response.json({ error: err.code }, { status: soundErrorStatus(err.code) });
+          }
+          throw err;
+        }
+      }
+      // POST /internal/sounds/delete (FR-35): uploader-or-admin. Returns the stored R2 key so the
+      // Worker deletes the object; broadcasts `sound.updated`.
+      case "/internal/sounds/delete": {
+        const body = deleteSoundBody.parse(await request.json());
+        try {
+          const actor: Actor = body.actor;
+          const { r2Key } = deleteSound(this.ctx.storage.sql, body.soundId, actor);
+          this.room.broadcast({ t: "sound.updated", at });
+          return Response.json({ r2Key });
+        } catch (err: unknown) {
+          if (err instanceof TavernError) {
+            return Response.json({ error: err.code }, { status: soundErrorStatus(err.code) });
+          }
+          throw err;
+        }
       }
       default:
         return Response.json({ error: "not_found" satisfies ErrorCode }, { status: 404 });
@@ -450,6 +539,22 @@ export class ServerRoom extends DurableObject<Env> {
 
   private alarmIntervalMs(): number {
     return this.env.TAVERN_TEST_FAST_ALARM === "1" ? FAST_ALARM_MS : LIMITS.emptyVoiceCloseMs;
+  }
+
+  // Sliding-window upload gate (FR-34 / §App-B uploadsPerUserPerHour): true when the user has created
+  // fewer than the cap within the last hour. Read-only — the timestamp is recorded only after a
+  // successful create (`recordUpload`), so a rejected create (bad_trim) never consumes budget.
+  private allowUpload(userId: string, now: number): boolean {
+    const cutoff = now - 3_600_000;
+    const recent = (this.uploadTimes.get(userId) ?? []).filter((t) => t > cutoff);
+    this.uploadTimes.set(userId, recent);
+    return recent.length < LIMITS.rateUploadsPerHour;
+  }
+
+  private recordUpload(userId: string, now: number): void {
+    const recent = this.uploadTimes.get(userId) ?? [];
+    recent.push(now);
+    this.uploadTimes.set(userId, recent);
   }
 
   private rejectFrame(ws: WebSocket): void {

@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +12,11 @@ import { toast } from "sonner";
 import { ServerPage } from "@/features/servers/ServerPage";
 import { resetRoomStores, roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
+import { closeAllRooms } from "@/lib/wsClient";
+
+// ServerPage renders the full AppShell for a member, which now mounts SoundboardPanel → useSounds
+// (TanStack Query), so the tree needs a QueryClientProvider (mirrors main.tsx). Retries off.
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 const SID = "11111111-1111-4111-8111-111111111111";
 
@@ -28,12 +34,14 @@ function summary(over: Partial<ServerSummary> = {}): ServerSummary {
 
 function renderAt(path: string): void {
   render(
-    <MemoryRouter initialEntries={[path]}>
-      <Routes>
-        <Route path="/s/:serverId" element={<ServerPage />} />
-        <Route path="/join" element={<div data-testid="join-marker" />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/s/:serverId" element={<ServerPage />} />
+          <Route path="/join" element={<div data-testid="join-marker" />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -45,6 +53,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // SoundboardPanel opens a per-server WS via connectRoom; close it so no reconnect timer leaks.
+  closeAllRooms();
+  queryClient.clear();
 });
 
 describe("FR-11 kicked handling", () => {
