@@ -30,3 +30,57 @@ jobs:
       - run: pnpm test:coverage
       - run: pnpm build
       - run: node scripts/check-fr-traceability.mjs
+
+  # PR e2e (S4.4, PLAN §10/§11): mocked-SFU-free smoke against the real local wrangler-dev + Vite
+  # stack. The worker's assets binding needs app/dist to exist to boot, and register needs a migrated
+  # local D1 + a dev auth secret — all prepared before Playwright starts the webServers (globalSetup
+  # runs AFTER the webServer, so prep must precede `playwright test`).
+  e2e-web:
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @tavern/app exec paraglide-js compile --project ./project.inlang --outdir ./src/paraglide --strategy localStorage baseLocale --emit-ts-declarations
+      - run: pnpm -F @tavern/app build
+      - run: cp worker/.dev.vars.example worker/.dev.vars
+      - run: pnpm -F @tavern/worker run migrate:local
+      - run: pnpm -F @tavern/e2e exec playwright install --with-deps chromium
+      - run: pnpm -F @tavern/e2e test --project=web
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-web
+          path: e2e/playwright-report
+          retention-days: 7
+
+  e2e-desktop:
+    runs-on: ubuntu-latest
+    needs: ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @tavern/app exec paraglide-js compile --project ./project.inlang --outdir ./src/paraglide --strategy localStorage baseLocale --emit-ts-declarations
+      - run: pnpm -F @tavern/app build
+      - run: pnpm -F @tavern/desktop build
+      - run: cp worker/.dev.vars.example worker/.dev.vars
+      - run: pnpm -F @tavern/worker run migrate:local
+      # --with-deps chromium also installs xvfb + the shared Chromium system libs Electron needs.
+      - run: pnpm -F @tavern/e2e exec playwright install --with-deps chromium
+      - run: xvfb-run --auto-servernum -- pnpm -F @tavern/e2e test --project=desktop
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-desktop
+          path: e2e/playwright-report
+          retention-days: 7
