@@ -59,6 +59,7 @@ export class FakeMediaStreamSourceNode extends FakeAudioNode {
 export class FakeAudioBufferSourceNode extends FakeAudioNode {
   buffer: AudioBuffer | null = null;
   readonly startArgs: number[][] = [];
+  stopped = 0;
   private readonly endedListeners = new Set<() => void>();
 
   constructor() {
@@ -71,7 +72,18 @@ export class FakeAudioBufferSourceNode extends FakeAudioNode {
 
   start(when = 0, offset = 0, duration = 0): void {
     this.startArgs.push([when, offset, duration]);
-    for (const cb of this.endedListeners) cb(); // end synchronously so playSoundboard resolves
+    // Real sources end asynchronously — schedule `ended` on a microtask so a synchronous
+    // stopSoundboard() still sees the source live in the graph before playSoundboard resolves.
+    queueMicrotask(() => this.fireEnded());
+  }
+
+  stop(): void {
+    this.stopped += 1;
+    this.fireEnded(); // stopping a source dispatches `ended` (real behavior)
+  }
+
+  private fireEnded(): void {
+    for (const cb of this.endedListeners) cb();
   }
 }
 
@@ -117,6 +129,7 @@ export class FakeAudioContext {
   readonly analysers: FakeAnalyserNode[] = [];
   readonly bufferSources: FakeAudioBufferSourceNode[] = [];
   readonly destinations: FakeMediaStreamDestinationNode[] = [];
+  readonly decoded: ArrayBuffer[] = [];
 
   createGain(): FakeGainNode {
     const node = new FakeGainNode();
@@ -147,6 +160,16 @@ export class FakeAudioContext {
     const node = new FakeMediaStreamDestinationNode(marker as unknown as MediaStream);
     this.destinations.push(node);
     return node;
+  }
+
+  decodeAudioData(bytes: ArrayBuffer): Promise<AudioBuffer> {
+    this.decoded.push(bytes);
+    return Promise.resolve({
+      duration: 1,
+      length: 48000,
+      numberOfChannels: 2,
+      sampleRate: 48000,
+    } as unknown as AudioBuffer);
   }
 
   resume(): Promise<void> {

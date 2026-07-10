@@ -18,7 +18,15 @@ import { ChatModule } from "./chat";
 import { ActivityModule } from "./activity";
 import { StatsModule } from "./stats";
 import { CostMeter } from "./costMeter";
-import { createSound, deleteSound, listSounds, patchSound, TavernError } from "./soundboard";
+import {
+  createSound,
+  deleteSound,
+  listSounds,
+  patchSound,
+  recordPlay,
+  soundExists,
+  TavernError,
+} from "./soundboard";
 import type { Actor, SoundPatch } from "./soundboard";
 
 // The `sound.updated` broadcast fires after every create/patch/delete; clients refetch the list (S9.2).
@@ -53,6 +61,10 @@ const INTERNAL_HEADER = "X-Tavern-Internal";
 // that opt in via the env flag (set only in .dev.vars / test env, never production config — §S3.4 task 5).
 const FAST_ALARM_MS = 5_000;
 
+// Minimum gap between accepted `sound.play` frames from one user (FR-36 rate limit, §App-B
+// rateSoundPlayPerSec = 1/s → 1000 ms). Token bucket of capacity 1 = a per-user last-accepted stamp.
+const SOUND_PLAY_MIN_GAP_MS = 1000 / LIMITS.rateSoundPlayPerSec;
+
 declare global {
   // Test-only flag: '1' shortens the voice alarm interval to 5 s. Optional — absent in production.
   interface Env {
@@ -81,6 +93,9 @@ export class ServerRoom extends DurableObject<Env> {
   // userId → recent upload timestamps (sliding window, §S9.1 task 4). In-memory like the chat bucket:
   // a DO eviction only ever REFILLS a user's upload budget (never revokes) — acceptable at our scale.
   private readonly uploadTimes = new Map<string, number[]>();
+  // userId → last accepted sound.play timestamp (FR-36 per-user rate limit; in-memory per DO like the
+  // upload/chat buckets — a DO eviction only ever refills the budget, never revokes, fine at our scale).
+  private readonly soundPlayTimes = new Map<string, number>();
   // The message router later steps plug domain modules into. This step implements `hello`; every
   // other valid type answers `not_implemented` until S3.2/S3.4/S8/S9 fill the map (S12.4 verifies none
   // remain). `ping` never reaches here — setWebSocketAutoResponse answers it without waking the DO.
@@ -108,7 +123,7 @@ export class ServerRoom extends DurableObject<Env> {
       "stream.stop": (ws) => this.notImplemented(ws),
       "watch.start": (ws) => this.notImplemented(ws),
       "watch.stop": (ws) => this.notImplemented(ws),
-      "sound.play": (ws) => this.notImplemented(ws),
+      "sound.play": (ws, att, msg) => this.handleSoundPlay(ws, att, msg),
       "rec.start": (ws) => this.notImplemented(ws),
       "rec.stop": (ws) => this.notImplemented(ws),
       ping: (ws) => this.notImplemented(ws),
@@ -436,6 +451,28 @@ export class ServerRoom extends DurableObject<Env> {
       limit: msg.limit,
     });
     this.room.send(ws, { t: "chat.page", messages: page.messages, hasMore: page.hasMore });
+  }
+
+  // sound.play (FR-36): token-bucket rate-limit the caller (LIMITS.rateSoundPlayPerSec, per user,
+  // in-memory per DO) → over-limit `rate_limited`; unknown soundId → `not_found`; else append a
+  // `sound_plays` row (FR-37 stats) and broadcast `sound.played` to ALL sockets — the sender included,
+  // so it plays on its own broadcast receipt (single code path, tight cross-client sync). Errors reply
+  // on the caller's socket only and never consume the rate budget (recorded only on a full success).
+  private handleSoundPlay(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): void {
+    if (msg.t !== "sound.play") return;
+    const at = Date.now();
+    const last = this.soundPlayTimes.get(att.userId);
+    if (last !== undefined && at - last < SOUND_PLAY_MIN_GAP_MS) {
+      this.room.send(ws, { t: "error", code: "rate_limited" });
+      return;
+    }
+    if (!soundExists(this.ctx.storage.sql, msg.soundId)) {
+      this.room.send(ws, { t: "error", code: "not_found" });
+      return;
+    }
+    this.soundPlayTimes.set(att.userId, at);
+    recordPlay(this.ctx.storage.sql, msg.soundId, att.userId, at);
+    this.room.broadcast({ t: "sound.played", soundId: msg.soundId, byUserId: att.userId, at });
   }
 
   // voice.join (FR-18/24): idempotent. A genuinely new join appends the member, opens the session on

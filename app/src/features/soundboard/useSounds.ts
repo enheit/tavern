@@ -5,6 +5,7 @@ import { ApiErrorBody, Sound as SoundSchema, SoundsResponse } from "@tavern/shar
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { authTransport } from "@/lib/authTransport";
 import { connectRoom } from "@/lib/wsClient";
+import { getVoiceController } from "@/features/voice/voiceController";
 
 // FR-34/35/37 soundboard data hook: TanStack Query over the list GET, invalidated on the DO's
 // `sound.updated` broadcast (any client's create/patch/delete), plus upload/patch/delete mutations.
@@ -15,6 +16,21 @@ export interface UseSounds {
   uploadSound(input: { file: File; name: string; durationMs: number }): Promise<Sound>;
   patchSound(soundId: string, patch: PatchSoundRequest): Promise<Sound>;
   deleteSound(soundId: string): Promise<void>;
+  // FR-36: broadcast a play to every voice member (the DO rate-limits + records + fans out).
+  sendPlay(soundId: string): void;
+}
+
+// FR-37 live badge: bump the played sound's count IN PLACE (no reorder — reordering happens only on
+// the sound.updated refetch, which re-sorts by playCount). Returns a NEW response so React Query
+// notifies subscribers.
+function bumpPlayCount(
+  prev: SoundsResponse | undefined,
+  soundId: string,
+): SoundsResponse | undefined {
+  if (prev === undefined) return prev;
+  return {
+    sounds: prev.sounds.map((s) => (s.id === soundId ? { ...s, playCount: s.playCount + 1 } : s)),
+  };
 }
 
 const API_BASE: string = import.meta.env.VITE_API_URL ?? "";
@@ -76,6 +92,21 @@ export function useSounds(serverId: string): UseSounds {
     return conn.on("sound.updated", invalidate);
   }, [serverId, invalidate]);
 
+  // FR-36/37: on a `sound.played` broadcast, always bump the badge (no reorder), then play locally —
+  // the controller guards on inVoice && !deafened, so non-voice/deafened members only see the badge.
+  useEffect(() => {
+    const conn = connectRoom(serverId);
+    return conn.on("sound.played", (msg) => {
+      queryClient.setQueryData<SoundsResponse>(soundsKey(serverId), (prev) =>
+        bumpPlayCount(prev, msg.soundId),
+      );
+      const sound = queryClient
+        .getQueryData<SoundsResponse>(soundsKey(serverId))
+        ?.sounds.find((s) => s.id === msg.soundId);
+      if (sound !== undefined) void getVoiceController().playSoundboard(serverId, sound);
+    });
+  }, [serverId, queryClient]);
+
   const uploadMutation = useMutation({
     mutationFn: async (input: { file: File; name: string; durationMs: number }): Promise<Sound> => {
       const form = new FormData();
@@ -118,11 +149,25 @@ export function useSounds(serverId: string): UseSounds {
     [deleteMutation],
   );
 
+  // FR-36: pressing a sound broadcasts `sound.play`; every in-voice client (this one included) plays it
+  // on the resulting `sound.played` receipt. Requires an open socket — a closed socket drops the press.
+  const sendPlay = useCallback(
+    (soundId: string): void => {
+      try {
+        connectRoom(serverId).send({ t: "sound.play", soundId });
+      } catch {
+        // WS not open — the press is dropped (a play needs a live socket).
+      }
+    },
+    [serverId],
+  );
+
   return {
     sounds: query.data?.sounds ?? [],
     isLoading: query.isLoading,
     uploadSound,
     patchSound,
     deleteSound,
+    sendPlay,
   };
 }
