@@ -1,3 +1,15 @@
 {
-  "ignorePatterns": ["**/*.md", "**/*.json", "**/*.jsonc", "**/worker-configuration.d.ts"]
+  "sortTailwindcss": {
+    "stylesheet": "app/src/styles/app.css",
+    "functions": ["cn"]
+  },
+  "ignorePatterns": [
+    "**/*.md",
+    "**/*.json",
+    "**/*.jsonc",
+    "**/*.css",
+    "**/*.yaml",
+    "**/*.yml",
+    "**/worker-configuration.d.ts"
+  ]
 }

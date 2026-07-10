@@ -1,0 +1,4 @@
+# i18n literal-gate allowlist (§9.6, scripts/check-i18n-literals.mjs).
+# One entry per line: <repo-relative-path>:<line> — that JSX text / attribute literal is exempt.
+# Blank lines and lines starting with `#` are ignored. Empty by design: all user-visible copy
+# must go through Paraglide (`m.*()`).
