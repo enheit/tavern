@@ -47,8 +47,13 @@ interface PublishLike {
     audio: MediaStreamTrack | null,
     preset: PresetId,
   ): Promise<{ videoTrackName: string; audioTrackName?: string }>;
+  // FR-29: the webcam publishes on the SAME publishPC (§7.1 one-publisher rule); useWebcam publishes
+  // through this session (exposed via `webcamPublisher()`), which owns the `cam:{userId}` name + the
+  // App-D webcam encodings. `camSender()` backs the pinned mid-publish device switch (replaceTrack).
+  publishCam(track: MediaStreamTrack): Promise<{ trackName: string }>;
   unpublish(trackNames: string[]): Promise<void>;
   micSender(): RTCRtpSender | null;
+  camSender(): RTCRtpSender | null;
   setTrackEnabled(trackName: string, enabled: boolean): void;
   close(): Promise<void>;
   // Optional so unit-test fakes need not implement it; the real PublishSession exposes it. Surfaced
@@ -333,6 +338,12 @@ export class VoiceController {
   // S8.1 screen share publishes on the SAME publishPC as the mic (§7.1 one-publisher rule). Returns
   // the shared session (null before voice is joined) so useScreenShare never creates a second one.
   screenPublisher(): PublishLike | null {
+    return this.publish;
+  }
+
+  // S8.3 webcam publishes on that same shared publishPC (§7.1 one-publisher rule) — returns the live
+  // session (null before voice is joined) so useWebcam never creates a second PublishSession.
+  webcamPublisher(): PublishLike | null {
     return this.publish;
   }
 

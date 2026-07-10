@@ -37,10 +37,18 @@ class FakePublish {
     this.log.push("publish.publishStream");
     return { videoTrackName: `screen:${this.userId}:1` };
   }
+  // Webcam (S8.3) publishes on this shared session; unused by the voice-only tests here.
+  async publishCam(_track: MediaStreamTrack): Promise<{ trackName: string }> {
+    this.log.push("publish.publishCam");
+    return { trackName: `cam:${this.userId}` };
+  }
   async unpublish(names: string[]): Promise<void> {
     this.log.push(`publish.unpublish:${names.join(",")}`);
   }
   micSender(): RTCRtpSender | null {
+    return this.sender;
+  }
+  camSender(): RTCRtpSender | null {
     return this.sender;
   }
   setTrackEnabled(name: string, enabled: boolean): void {

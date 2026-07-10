@@ -244,6 +244,13 @@ export class PublishSession {
     return this.senders.get(micTrackName(this.userId)) ?? null;
   }
 
+  // Read-only accessor for the webcam's sender so the pinned FR-29 device switch (`current.stop()` →
+  // getCam(newDeviceId) → `sender.replaceTrack(newTrack)`) can swap the camera mid-publish without a
+  // renegotiation. Created in `publishCam`; returns null before the webcam is published.
+  camSender(): RTCRtpSender | null {
+    return this.senders.get(camTrackName(this.userId)) ?? null;
+  }
+
   async unpublish(trackNames: string[]): Promise<void> {
     await this.enqueue(async () => {
       const sessionId = this.requireSession();

@@ -7,6 +7,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { getWebcamController } from "@/features/streams/useWebcam";
 import { m } from "@/paraglide/messages.js";
 import { useMediaStore } from "@/stores/media";
 import { type DeviceSettingsV1, useSettingsStore } from "@/stores/settings";
@@ -24,6 +25,7 @@ function toItems(devices: MediaDeviceInfo[]): Record<string, string> {
 export function VoiceSettingsSection() {
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
   const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([]);
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const deviceSettings = useSettingsStore((s) => s.deviceSettings);
   const inVoice = useMediaStore((s) => s.inVoiceServerId !== null);
 
@@ -37,6 +39,7 @@ export function VoiceSettingsSection() {
         if (cancelled) return;
         setInputs(devices.filter((d) => d.kind === "audioinput"));
         setOutputs(devices.filter((d) => d.kind === "audiooutput"));
+        setCameras(devices.filter((d) => d.kind === "videoinput"));
       })
       .catch(() => undefined);
     return () => {
@@ -54,6 +57,15 @@ export function VoiceSettingsSection() {
     } else {
       void controller.retoggleMic();
     }
+  };
+
+  // FR-29 camera switch: persist the selection, then — if the webcam is publishing — swap the camera
+  // mid-publish (stop → getCam → replaceTrack, no renegotiation). Idle → the next start uses the new id.
+  const applyCamera = (cameraDeviceId: string): void => {
+    const next = { ...deviceSettings, cameraDeviceId };
+    useSettingsStore.getState().setDeviceSettings(next);
+    useMediaStore.getState().setDeviceSelection(next);
+    void getWebcamController().switchDevice(cameraDeviceId);
   };
 
   return (
@@ -96,6 +108,28 @@ export function VoiceSettingsSection() {
           <SelectContent>
             {outputs.map((d) => (
               <SelectItem key={d.deviceId} value={d.deviceId} data-testid={`output-${d.deviceId}`}>
+                {d.label || d.deviceId}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex flex-col gap-2">
+        <span className="text-sm font-medium">{m.settings_voice_camera()}</span>
+        <Select
+          value={deviceSettings.cameraDeviceId ?? ""}
+          items={toItems(cameras)}
+          onValueChange={(value) => {
+            if (typeof value !== "string") return;
+            applyCamera(value);
+          }}
+        >
+          <SelectTrigger data-testid="settings-voice-camera" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {cameras.map((d) => (
+              <SelectItem key={d.deviceId} value={d.deviceId} data-testid={`camera-${d.deviceId}`}>
                 {d.label || d.deviceId}
               </SelectItem>
             ))}
