@@ -1,28 +1,22 @@
+import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ActivityTab } from "@/features/activity/ActivityTab";
 import { RecordingsTab } from "@/features/recordings/RecordingsTab";
+import { StatsTab } from "@/features/stats/StatsTab";
 import { m } from "@/paraglide/messages.js";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 
-// The right-column tabs slot (§7.6, order Chat·Activity·Stats·Recordings). Chat + Activity + Recordings
-// render content; Stats stays a placeholder until S10.2.
-function ComingSoon() {
-  return (
-    <div
-      data-testid="coming-soon"
-      className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground"
-    >
-      {m.common_coming_soon()}
-    </div>
-  );
-}
-
+// The right-column tabs slot (§7.6, order Chat·Activity·Stats·Recordings). Controlled so the Stats
+// pane can gate its query on activeness: its panel stays mounted (`keepMounted`) and `StatsTab`'s
+// query is `enabled` only while `stats` is the active tab (FR-40 refetch-on-activation, S10.2).
 export function ChatTabs({ serverId }: { serverId: string }) {
+  const [tab, setTab] = useState("chat");
   return (
     <Tabs
       data-testid="chat-tabs"
-      defaultValue="chat"
+      value={tab}
+      onValueChange={(value) => setTab(String(value))}
       className="flex h-full min-h-0 flex-col gap-0"
     >
       <TabsList variant="line" className="h-9 shrink-0 justify-start gap-1 px-2 pt-2">
@@ -46,8 +40,8 @@ export function ChatTabs({ serverId }: { serverId: string }) {
       <TabsContent value="activity" className="min-h-0 flex-1">
         <ActivityTab serverId={serverId} />
       </TabsContent>
-      <TabsContent value="stats" className="min-h-0 flex-1">
-        <ComingSoon />
+      <TabsContent value="stats" className="min-h-0 flex-1" keepMounted>
+        <StatsTab serverId={serverId} active={tab === "stats"} />
       </TabsContent>
       <TabsContent value="recordings" className="min-h-0 flex-1">
         <RecordingsTab serverId={serverId} />
