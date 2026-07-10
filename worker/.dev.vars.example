@@ -3,3 +3,5 @@ REALTIME_APP_ID=
 REALTIME_APP_SECRET=
 TURN_KEY_ID=
 TURN_KEY_API_TOKEN=
+# Test/dev only: '1' shortens the empty-voice alarm to 5s. NEVER set in production config.
+TAVERN_TEST_FAST_ALARM=

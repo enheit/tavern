@@ -1,5 +1,13 @@
 import { LIMITS, serverMessageSchema } from "@tavern/shared";
-import type { Member, MemberInit, Presence, ServerMessage, UserProfile } from "@tavern/shared";
+import type {
+  Member,
+  MemberInit,
+  Presence,
+  ServerMessage,
+  UserProfile,
+  VoiceMember,
+  VoiceState,
+} from "@tavern/shared";
 import { rowToMember } from "./sql";
 
 // The per-connection identity stashed on the hibernatable WebSocket (ids only, 16 KB cap — §A2/§6.2).
@@ -38,14 +46,36 @@ export class RoomState {
   // blockConcurrencyWhile) so `helloSnapshot` stays synchronous. Kept in sync on every meta write.
   private meta: RoomMeta | null = null;
 
+  // In-memory cache of the ctx.storage KV `voice` value — hibernation-safe truth lives in KV (§S3.4
+  // task 1, STOP: never in-memory only), this mirror keeps `helloSnapshot`/`voiceState` synchronous.
+  // Loaded in `load()`, re-read by `loadVoice()` (the alarm calls it to pick up external writes), and
+  // replaced on every voice mutation (each mutator then persisted via `persistVoice()` by the caller).
+  private voice: VoiceState = { members: [], sessionStartedAt: null };
+
   constructor(
     private readonly ctx: DurableObjectState,
     private readonly env: Env,
   ) {}
 
-  // Loads the persisted room meta into memory (call once from the DO constructor's blockConcurrencyWhile).
+  // Loads the persisted room meta + voice state into memory (call once from blockConcurrencyWhile).
   async load(): Promise<void> {
     this.meta = (await this.ctx.storage.get<RoomMeta>("meta")) ?? null;
+    await this.loadVoice();
+  }
+
+  // Re-reads the persisted voice state into the in-memory mirror. Called from `load()` and from the
+  // alarm (so a crash-leftover seeded straight into KV is reconciled from KV, not a stale mirror).
+  async loadVoice(): Promise<void> {
+    this.voice = (await this.ctx.storage.get<VoiceState>("voice")) ?? {
+      members: [],
+      sessionStartedAt: null,
+    };
+  }
+
+  // Persists the current in-memory voice state to KV. Callers of a voice mutator await this next (the
+  // mutators stay synchronous per the pinned signatures; the DO output gate makes the write durable).
+  async persistVoice(): Promise<void> {
+    await this.ctx.storage.put("voice", this.voice);
   }
 
   async createTicket(userId: string): Promise<string> {
@@ -76,6 +106,65 @@ export class RoomState {
     const next: RoomMeta = { ...current, nickname };
     await this.ctx.storage.put("meta", next);
     this.meta = next;
+  }
+
+  // ---- Voice (FR-18/24/26). Mutators are synchronous (in-memory mirror + SQLite); the caller awaits
+  // `persistVoice()` right after. `voice_sessions` records history rows (§5.2, FR-13 `channel_id='main'`).
+
+  voiceState(): VoiceState {
+    return this.voice;
+  }
+
+  // Idempotent join: a repeat from the same user returns the current snapshot unchanged. The first
+  // member opens a `voice_sessions` row + starts the session timer (FR-24).
+  voiceJoin(userId: string, now: number): VoiceState {
+    if (this.voice.members.some((m) => m.userId === userId)) return this.voice;
+    const wasEmpty = this.voice.members.length === 0;
+    const member: VoiceMember = { userId, muted: false, deafened: false };
+    this.voice = {
+      members: [...this.voice.members, member],
+      sessionStartedAt: wasEmpty ? now : this.voice.sessionStartedAt,
+    };
+    if (wasEmpty) {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO voice_sessions (channel_id, started_at) VALUES ('main', ?)`,
+        now,
+      );
+    }
+    return this.voice;
+  }
+
+  // Removes a member; when the room empties, closes the open `voice_sessions` row and stops the timer.
+  // `closedSession` tells the caller the session just ended (last member left).
+  voiceLeave(userId: string, now: number): { snapshot: VoiceState; closedSession: boolean } {
+    if (!this.voice.members.some((m) => m.userId === userId)) {
+      return { snapshot: this.voice, closedSession: false };
+    }
+    const members = this.voice.members.filter((m) => m.userId !== userId);
+    const nowEmpty = members.length === 0;
+    this.voice = { members, sessionStartedAt: nowEmpty ? null : this.voice.sessionStartedAt };
+    if (nowEmpty) {
+      this.ctx.storage.sql.exec(
+        `UPDATE voice_sessions SET ended_at = ? WHERE ended_at IS NULL`,
+        now,
+      );
+    }
+    return { snapshot: this.voice, closedSession: nowEmpty };
+  }
+
+  // Relays a member's self mute/deafen flags (FR-26; no server-side audio semantics). No-op if the
+  // user is not currently in voice.
+  setVoiceFlags(userId: string, flags: { muted: boolean; deafened: boolean }): VoiceState {
+    if (!this.voice.members.some((m) => m.userId === userId)) return this.voice;
+    this.voice = {
+      ...this.voice,
+      members: this.voice.members.map((m) =>
+        m.userId === userId
+          ? { userId: m.userId, muted: flags.muted, deafened: flags.deafened }
+          : m,
+      ),
+    };
+    return this.voice;
   }
 
   upsertMember(member: MemberInit): void {
@@ -184,9 +273,9 @@ export class RoomState {
       self: toProfile(selfMember),
       serverMeta: meta,
       members,
-      // Pinned stubs filled by later steps: voice (S3.4), streams (S8), recording (S9.3),
-      // costStatus (S7.1). lastMessageId now comes from ChatModule (S3.2 task 7).
-      voice: { members: [], sessionStartedAt: null },
+      // Live voice snapshot (S3.4). Remaining stubs filled by later steps: streams (S8), recording
+      // (S9.3), costStatus (S7.1). lastMessageId comes from ChatModule (S3.2 task 7).
+      voice: this.voice,
       streams: [],
       recording: { active: false },
       lastMessageId,

@@ -10,7 +10,14 @@ export default defineConfig({
   plugins: [
     cloudflareTest(async () => ({
       wrangler: { configPath: "./wrangler.jsonc" },
-      miniflare: { bindings: { TEST_MIGRATIONS: await readD1Migrations("./migrations") } },
+      // TAVERN_TEST_FAST_ALARM=1 pins the fast (5s) voice alarm for the FR-24 tests (§S3.4 task 5);
+      // it belongs only in the test env, never production wrangler config.
+      miniflare: {
+        bindings: {
+          TEST_MIGRATIONS: await readD1Migrations("./migrations"),
+          TAVERN_TEST_FAST_ALARM: "1",
+        },
+      },
     })),
   ],
   test: {

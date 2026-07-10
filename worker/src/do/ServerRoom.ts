@@ -14,10 +14,22 @@ import { RoomState } from "./roomState";
 import type { ConnAttachment, RoomMeta } from "./roomState";
 import { ChatModule } from "./chat";
 import { ActivityModule } from "./activity";
+import { StatsModule } from "./stats";
 
 // The Worker sets this header on EVERY DO stub call; the DO has no other ingress path, so a missing
 // header on an /internal/* route means the request did not originate from the Worker → 403.
 const INTERNAL_HEADER = "X-Tavern-Internal";
+
+// The empty-voice alarm interval (ghost lifetime ≤ this = the FR-24 crash-safety close). 5 s in tests
+// that opt in via the env flag (set only in .dev.vars / test env, never production config — §S3.4 task 5).
+const FAST_ALARM_MS = 5_000;
+
+declare global {
+  // Test-only flag: '1' shortens the voice alarm interval to 5 s. Optional — absent in production.
+  interface Env {
+    TAVERN_TEST_FAST_ALARM?: string;
+  }
+}
 
 // The per-server Durable Object: WebSocket lifecycle + internal-route dispatch + message router ONLY.
 // All state logic lives in RoomState; all schema/migration in sql.ts.
@@ -25,9 +37,12 @@ export class ServerRoom extends DurableObject<Env> {
   private readonly room: RoomState;
   // One ChatModule per DO → its rate-limit buckets are per-server (§S3.2 task 3).
   private readonly chat: ChatModule;
-  // One ActivityModule per DO → the append-and-broadcast producer for every event (§S3.3). v1 wires
-  // member.join/member.kick here; voice/stream/recording producers arrive with S3.4/S8/S9.
+  // One ActivityModule per DO → the append-and-broadcast producer for every event (§S3.3). Voice
+  // producers (voice.join/voice.leave) are wired here in S3.4; stream/recording producers in S8/S9.
   private readonly activity: ActivityModule;
+  // One StatsModule per DO → server-authoritative watch/stream accumulators (FR-40). Fed by the voice
+  // leave/alarm sweep now; S8.4 feeds it stream/watch start/stop.
+  private readonly stats: StatsModule;
   // connId → hello-timeout handle (in-memory; a 5 s pending timer keeps the DO from hibernating, so
   // the same instance handles the hello within the window — negligible cost, §S3.1 task 6).
   private readonly helloTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -36,7 +51,7 @@ export class ServerRoom extends DurableObject<Env> {
   // remain). `ping` never reaches here — setWebSocketAutoResponse answers it without waking the DO.
   private readonly routes: Record<
     ClientMessage["t"],
-    (ws: WebSocket, att: ConnAttachment, msg: ClientMessage) => void
+    (ws: WebSocket, att: ConnAttachment, msg: ClientMessage) => void | Promise<void>
   >;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -44,13 +59,14 @@ export class ServerRoom extends DurableObject<Env> {
     this.room = new RoomState(ctx, env);
     this.chat = new ChatModule(ctx.storage.sql);
     this.activity = new ActivityModule(ctx.storage.sql);
+    this.stats = new StatsModule(ctx);
     this.routes = {
       hello: (ws, att) => this.handleHello(ws, att),
       "chat.send": (ws, att, msg) => this.handleChatSend(ws, att, msg),
       "chat.history": (ws, att, msg) => this.handleChatHistory(ws, att, msg),
-      "voice.join": (ws) => this.notImplemented(ws),
-      "voice.leave": (ws) => this.notImplemented(ws),
-      "voice.state": (ws) => this.notImplemented(ws),
+      "voice.join": (ws, att) => this.handleVoiceJoin(ws, att),
+      "voice.leave": (_ws, att) => this.leaveVoice(att.userId, Date.now()),
+      "voice.state": (ws, att, msg) => this.handleVoiceState(ws, att, msg),
       "stream.start": (ws) => this.notImplemented(ws),
       "stream.preset": (ws) => this.notImplemented(ws),
       "stream.stop": (ws) => this.notImplemented(ws),
@@ -178,6 +194,15 @@ export class ServerRoom extends DurableObject<Env> {
         });
         return Response.json(page);
       }
+      // GET /internal/stats → StatsResponse (§6.1 `GET /api/servers/:id/stats`). perUser unions the
+      // member cache + message senders + stream-seconds rows; messages from ChatModule.
+      case "/internal/stats": {
+        const snapshot = this.stats.snapshot(
+          this.chat.messageCountByUser(),
+          this.room.listMembers(),
+        );
+        return Response.json(snapshot);
+      }
       default:
         return Response.json({ error: "not_found" satisfies ErrorCode }, { status: 404 });
     }
@@ -211,18 +236,18 @@ export class ServerRoom extends DurableObject<Env> {
       this.rejectFrame(ws);
       return;
     }
-    this.routes[msg.t](ws, att, msg);
+    await this.routes[msg.t](ws, att, msg);
   }
 
-  webSocketClose(ws: WebSocket): void {
-    this.handleDisconnect(ws);
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    await this.handleDisconnect(ws);
   }
 
-  webSocketError(ws: WebSocket): void {
-    this.handleDisconnect(ws);
+  async webSocketError(ws: WebSocket): Promise<void> {
+    await this.handleDisconnect(ws);
   }
 
-  private handleDisconnect(ws: WebSocket): void {
+  private async handleDisconnect(ws: WebSocket): Promise<void> {
     const att: ConnAttachment | null = ws.deserializeAttachment();
     if (att === null) return;
     const timer = this.helloTimers.get(att.connId);
@@ -230,7 +255,12 @@ export class ServerRoom extends DurableObject<Env> {
       clearTimeout(timer);
       this.helloTimers.delete(att.connId);
     }
-    this.room.presenceOnClose(ws, att, Date.now());
+    const now = Date.now();
+    this.room.presenceOnClose(ws, att, now);
+    // Implicit voice leave when the user's LAST socket goes away (§S3.4 task 3). Exclude the closing
+    // socket; if no other socket for the user remains, they are fully gone → leave voice.
+    const otherLive = this.room.socketsOf(att.userId).some((sock) => sock !== ws);
+    if (!otherLive) await this.leaveVoice(att.userId, now);
   }
 
   private handleHello(ws: WebSocket, att: ConnAttachment): void {
@@ -279,6 +309,96 @@ export class ServerRoom extends DurableObject<Env> {
       limit: msg.limit,
     });
     this.room.send(ws, { t: "chat.page", messages: page.messages, hasMore: page.hasMore });
+  }
+
+  // voice.join (FR-18/24): idempotent. A genuinely new join appends the member, opens the session on
+  // the first member, appends a `voice.join` activity, broadcasts the full snapshot to ALL sockets
+  // (FR-24: non-voice members see the timer), and ensures the crash-safety alarm is armed. A repeat
+  // join is a no-op that just re-sends the current snapshot to the requester.
+  private async handleVoiceJoin(ws: WebSocket, att: ConnAttachment): Promise<void> {
+    const at = Date.now();
+    const already = this.room.voiceState().members.some((m) => m.userId === att.userId);
+    const snapshot = this.room.voiceJoin(att.userId, at);
+    await this.room.persistVoice();
+    if (already) {
+      this.room.send(ws, { t: "voice.state", voice: snapshot, at });
+      return;
+    }
+    this.room.broadcast({
+      t: "activity.new",
+      entry: this.activity.append("voice.join", att.userId, {}, at),
+    });
+    this.room.broadcast({ t: "voice.state", voice: snapshot, at });
+    await this.ensureAlarmArmed(at);
+  }
+
+  // voice.leave path — shared by the client `voice.leave`, the last-socket disconnect, and the alarm's
+  // ghost reconciliation. Idempotent: a user not in voice is a no-op (so a double alarm never double-
+  // closes). Closes the leaver's open stream/watch intervals, appends a `voice.leave` activity, and
+  // broadcasts the new snapshot to all remaining sockets.
+  private async leaveVoice(userId: string, now: number): Promise<void> {
+    if (!this.room.voiceState().members.some((m) => m.userId === userId)) return;
+    const { snapshot } = this.room.voiceLeave(userId, now);
+    await this.room.persistVoice();
+    await this.stats.closeAllFor(userId, now);
+    this.room.broadcast({
+      t: "activity.new",
+      entry: this.activity.append("voice.leave", userId, {}, now),
+    });
+    this.room.broadcast({ t: "voice.state", voice: snapshot, at: now });
+  }
+
+  // voice.state (FR-26): relay the caller's self mute/deafen flags into the snapshot; broadcast to all.
+  private async handleVoiceState(
+    ws: WebSocket,
+    att: ConnAttachment,
+    msg: ClientMessage,
+  ): Promise<void> {
+    if (msg.t !== "voice.state") return;
+    const snapshot = this.room.setVoiceFlags(att.userId, {
+      muted: msg.muted,
+      deafened: msg.deafened,
+    });
+    await this.room.persistVoice();
+    this.room.broadcast({ t: "voice.state", voice: snapshot, at: Date.now() });
+  }
+
+  // Single, multiplexed, idempotent alarm (DO alarms are at-least-once). (a) Reconcile ghosts — any
+  // voice member with zero live sockets goes through the leave path. (b) While voice still has members,
+  // flush the stat accumulators (S7.1 appends costMeter.tick(now) at this exact seam). (c) Re-arm iff
+  // members remain or open intervals exist, else let the alarm lapse.
+  async alarm(): Promise<void> {
+    const now = Date.now();
+    // KV is the source of truth; re-read it so a crash-leftover seeded straight into storage is seen.
+    await this.room.loadVoice();
+    // (a) Reconcile ghosts (voice members with zero live sockets) through the leave path. Sequential —
+    // each leaveVoice mutates shared voice + stats state, so they must not overlap (no Promise.all);
+    // a `.then` chain keeps them ordered without an await inside the loop.
+    const ghostIds = this.room
+      .voiceState()
+      .members.filter((m) => this.room.socketsOf(m.userId).length === 0)
+      .map((m) => m.userId);
+    let chain: Promise<void> = Promise.resolve();
+    for (const userId of ghostIds) chain = chain.then(() => this.leaveVoice(userId, now));
+    await chain;
+    // (b) While voice still has members, bank the accumulators mid-session. S7.1 appends
+    // this.costMeter.tick(now) at this exact seam.
+    if (this.room.voiceState().members.length > 0) await this.stats.flushOpenIntervals(now);
+    // (c) Re-arm iff work remains (members or open intervals); otherwise let the alarm lapse.
+    const stillActive =
+      this.room.voiceState().members.length > 0 || (await this.stats.hasOpenIntervals());
+    if (stillActive) await this.ctx.storage.setAlarm(now + this.alarmIntervalMs());
+  }
+
+  // Arms the alarm only if none is scheduled (never pushes an in-flight ghost-close window forward).
+  private async ensureAlarmArmed(now: number): Promise<void> {
+    if ((await this.ctx.storage.getAlarm()) === null) {
+      await this.ctx.storage.setAlarm(now + this.alarmIntervalMs());
+    }
+  }
+
+  private alarmIntervalMs(): number {
+    return this.env.TAVERN_TEST_FAST_ALARM === "1" ? FAST_ALARM_MS : LIMITS.emptyVoiceCloseMs;
   }
 
   private rejectFrame(ws: WebSocket): void {

@@ -1,6 +1,12 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { ActivityPage, CreateServerRequest, JoinServerRequest, LIMITS } from "@tavern/shared";
+import {
+  ActivityPage,
+  CreateServerRequest,
+  JoinServerRequest,
+  LIMITS,
+  StatsResponse,
+} from "@tavern/shared";
 import type { ErrorCode, MemberInit, ServerSummary, UserProfile } from "@tavern/shared";
 import { requireAuth, requireMember, zodJson } from "../middleware";
 import type { MemberVars } from "../middleware";
@@ -292,4 +298,16 @@ serversRoute.get("/:id/activity", requireMember, async (c) => {
   });
   const page: unknown = await res.json();
   return c.json(ActivityPage.parse(page));
+});
+
+// GET /api/servers/:id/stats (FR-40): member-gated snapshot proxied to the DO. The DO computes the
+// server-authoritative stats (§6.1); the Worker validates the DO→Worker boundary against the shared
+// `StatsResponse` schema (§9.8).
+serversRoute.get("/:id/stats", requireMember, async (c) => {
+  const stub = c.env.SERVER_ROOM.get(c.env.SERVER_ROOM.idFromName(c.var.serverId));
+  const res = await stub.fetch("https://do.internal/internal/stats", {
+    headers: { "X-Tavern-Internal": "1" },
+  });
+  const stats: unknown = await res.json();
+  return c.json(StatsResponse.parse(stats));
 });
