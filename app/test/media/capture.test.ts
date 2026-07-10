@@ -1,7 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PlatformBridge } from "@/platform/types";
-import { getCam, getMic, getScreen, retoggleMic } from "@/media/capture";
+import { captureScreen, getCam, getMic, getScreen, retoggleMic } from "@/media/capture";
 import { fakeStream, fakeTrack } from "../fakes/media";
+
+// captureScreen (S8.1) reads the platform singleton (getScreen keeps DI), so the singleton is mocked
+// here; the getScreen tests pass their own bridge and are unaffected.
+const platformMock = vi.hoisted(() => ({
+  kind: "desktop" as "desktop" | "web",
+  capture: {
+    getScreenSources: vi.fn(async () => []),
+    selectSource: vi.fn(async () => undefined),
+    loopbackAudioSupported: vi.fn(async () => true),
+  },
+}));
+vi.mock("@/platform/types", () => ({ platform: platformMock }));
 
 let getUserMedia: ReturnType<typeof vi.fn>;
 let getDisplayMedia: ReturnType<typeof vi.fn>;
@@ -116,6 +128,46 @@ describe("FR-27 screen constraints", () => {
       fakeStream({ video: [fakeTrack("video")], audio: [audioTrack] }),
     );
     const result = await getScreen(platformWithLoopback(true), "1080p30", true);
+    expect(result.audio).toBe(audioTrack);
+  });
+});
+
+describe("FR-27 captureScreen", () => {
+  beforeEach(() => {
+    platformMock.kind = "desktop";
+    platformMock.capture.selectSource.mockClear();
+  });
+
+  it("desktop: arms selectSource then getDisplayMedia (ideal/max-only video + requested audio)", async () => {
+    const result = await captureScreen({ sourceId: "screen:2", preset: "720p30", withAudio: true });
+
+    expect(platformMock.capture.selectSource).toHaveBeenCalledWith("screen:2");
+    const constraints = nthConstraints(getDisplayMedia, 0);
+    expect(constraints.video).toEqual({
+      width: { ideal: 1280, max: 1280 },
+      height: { ideal: 720, max: 720 },
+      frameRate: { ideal: 30, max: 30 },
+    });
+    assertNoKeys(constraints.video, ["min", "exact"]);
+    expect(constraints.audio).toBe(true);
+    expect(result.video.kind).toBe("video");
+    expect(result.audio).toBeNull();
+  });
+
+  it("web: calls getDisplayMedia directly without arming a source", async () => {
+    platformMock.kind = "web";
+    await captureScreen({ sourceId: null, preset: "1080p30", withAudio: false });
+
+    expect(platformMock.capture.selectSource).not.toHaveBeenCalled();
+    expect(nthConstraints(getDisplayMedia, 0).audio).toBe(false);
+  });
+
+  it("surfaces the audio track when the picker returns one", async () => {
+    const audioTrack = fakeTrack("audio");
+    getDisplayMedia.mockResolvedValueOnce(
+      fakeStream({ video: [fakeTrack("video")], audio: [audioTrack] }),
+    );
+    const result = await captureScreen({ sourceId: "screen:0", preset: "480p15", withAudio: true });
     expect(result.audio).toBe(audioTrack);
   });
 });

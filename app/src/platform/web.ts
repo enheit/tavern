@@ -18,6 +18,7 @@ export function createWebPlatform(): PlatformBridge {
 
   return {
     kind: "web",
+    os: "web",
     secrets: {
       // Same-origin cookies carry the session; there is no client-held bearer token to read.
       getToken: async () => null,

@@ -32,6 +32,14 @@ class FakePublish {
     this.log.push("publish.publishMic");
     return { trackName: `mic:${this.userId}` };
   }
+  // Screen share (S8.1) publishes on this shared session; unused by the voice-only tests here.
+  async publishStream(): Promise<{ videoTrackName: string; audioTrackName?: string }> {
+    this.log.push("publish.publishStream");
+    return { videoTrackName: `screen:${this.userId}:1` };
+  }
+  async unpublish(names: string[]): Promise<void> {
+    this.log.push(`publish.unpublish:${names.join(",")}`);
+  }
   micSender(): RTCRtpSender | null {
     return this.sender;
   }

@@ -45,6 +45,7 @@ export function createElectronPlatform(ipc: TavernIpc): PlatformBridge {
 
   return {
     kind: "desktop",
+    os: ipc.platform,
     secrets: {
       getToken: () => ipc.secrets.getToken(),
       setToken: (t) => ipc.secrets.setToken(setTokenArgSchema.parse(t)),

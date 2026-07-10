@@ -134,5 +134,16 @@
   "settings_tabs_voice": "Voice",
   "settings_voice_input": "Input device",
   "settings_voice_output": "Output device",
-  "settings_voice_noise": "Noise suppression"
+  "settings_voice_noise": "Noise suppression",
+  "streams_self_audio_caveat": "Shared audio includes all system sound — Tavern voices and soundboard will be heard in your stream.",
+  "streams_share_title": "Share your screen",
+  "streams_share_web_hint": "Your browser will ask which screen or window to share. Audio depends on that dialog.",
+  "streams_share_tab_screens": "Screens",
+  "streams_share_tab_windows": "Windows",
+  "streams_share_quality": "Quality",
+  "streams_share_audio": "Share audio",
+  "streams_share_no_sources": "No sources available",
+  "streams_share_start": "Share",
+  "streams_share_open": "Share screen",
+  "streams_share_stop": "Stop sharing"
 }

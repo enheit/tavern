@@ -6,6 +6,9 @@ import { createWebPlatform } from "./web";
 // (`platform` and `PlatformBridge`) — never the raw desktop bridge, never a raw `if (isElectron)`.
 export interface PlatformBridge {
   kind: "desktop" | "web";
+  // The concrete OS on desktop (from window.tavern.platform), or "web" in the browser. Features must
+  // read this only through the bridge (A1) — e.g. FR-28 hides the loopback-audio switch on Linux v1.
+  os: "win32" | "darwin" | "linux" | "web";
   secrets: { getToken(): Promise<string | null>; setToken(t: string | null): Promise<void> };
   capture: {
     getScreenSources(): Promise<ScreenSource[]>;

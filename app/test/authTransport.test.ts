@@ -9,6 +9,7 @@ function makeBridge(
 ): PlatformBridge {
   return {
     kind,
+    os: kind === "web" ? "web" : "darwin",
     secrets,
     capture: {
       getScreenSources: async () => [],

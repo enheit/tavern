@@ -1,3 +1,4 @@
+import type { PresetId } from "@tavern/shared";
 import { create } from "zustand";
 import { type DeviceSettingsV1, loadDeviceSettings } from "@/stores/settings";
 
@@ -23,6 +24,11 @@ interface MediaState {
   deafened: boolean;
   // FR-23 speaking ring — the set of userIds currently over the speaking threshold (self + remotes).
   speakingUserIds: ReadonlySet<string>;
+  // FR-27 self screen-share state (mirrored from the ScreenShareController) — the ControlsBar reads
+  // it for the idle↔sharing button; `sharePreset`/`shareTrackName` are the active share's identity.
+  sharing: boolean;
+  sharePreset: PresetId | null;
+  shareTrackName: string | null;
   // FR-21/22 selected device prefs (runtime mirror of the persisted settings row).
   deviceSelection: DeviceSettingsV1;
   setDevices: (devices: MediaDeviceInfo[]) => void;
@@ -36,6 +42,11 @@ interface MediaState {
   setSpeaking: (userId: string, speaking: boolean) => void;
   clearSpeaking: () => void;
   setDeviceSelection: (deviceSelection: DeviceSettingsV1) => void;
+  setShareState: (share: {
+    sharing: boolean;
+    sharePreset: PresetId | null;
+    shareTrackName: string | null;
+  }) => void;
 }
 
 export const useMediaStore = create<MediaState>((set) => ({
@@ -48,6 +59,9 @@ export const useMediaStore = create<MediaState>((set) => ({
   muted: false,
   deafened: false,
   speakingUserIds: new Set<string>(),
+  sharing: false,
+  sharePreset: null,
+  shareTrackName: null,
   deviceSelection: loadDeviceSettings(),
   setDevices: (devices) => set({ devices }),
   setSelectedMic: (selectedMicId) => set({ selectedMicId }),
@@ -68,4 +82,6 @@ export const useMediaStore = create<MediaState>((set) => ({
     }),
   clearSpeaking: () => set({ speakingUserIds: new Set<string>() }),
   setDeviceSelection: (deviceSelection) => set({ deviceSelection }),
+  setShareState: ({ sharing, sharePreset, shareTrackName }) =>
+    set({ sharing, sharePreset, shareTrackName }),
 }));
