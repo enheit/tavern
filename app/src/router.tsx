@@ -48,11 +48,15 @@ export const routes: RouteObject[] = [
       },
       {
         path: "join",
-        lazy: async () => ({ Component: (await import("@/features/servers/JoinPage")).JoinPage }),
+        lazy: async () => ({
+          Component: (await import("@/features/servers/JoinOrCreatePage")).JoinOrCreatePage,
+        }),
       },
       {
         path: "s/:serverId",
-        lazy: async () => ({ Component: (await import("@/features/shell/ServerPage")).ServerPage }),
+        lazy: async () => ({
+          Component: (await import("@/features/servers/ServerPage")).ServerPage,
+        }),
       },
       { path: "*", loader: () => redirect("/login") },
     ],
