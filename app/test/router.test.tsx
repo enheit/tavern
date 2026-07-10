@@ -1,17 +1,27 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { BootLoader } from "@/features/boot/BootLoader";
 import { createAppRouter, routes } from "@/router";
+import { useServersStore } from "@/stores/servers";
 
 afterEach(() => {
   cleanup();
   Reflect.deleteProperty(window, "tavern");
+  useServersStore.setState({ servers: [], activeServerId: null, connState: {} });
 });
 
+// The /join page (JoinOrCreatePage) drives TanStack Query mutations, so the tree needs a QueryClient —
+// mirrors the provider main.tsx mounts at the app root.
 function renderAt(path: string): void {
   const router = createMemoryRouter(routes, { initialEntries: [path] });
-  render(<RouterProvider router={router} />);
+  const queryClient = new QueryClient();
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
 }
 
 describe("§7.6 routes", () => {
@@ -34,8 +44,23 @@ describe("§7.6 routes", () => {
     expect(await screen.findByTestId("page-join")).toBeDefined();
     cleanup();
 
+    // The server route guards membership: seed the store with a joined server so it renders the shell
+    // (an unknown id redirects to /join — covered in ServerPage.test).
+    useServersStore.setState({
+      servers: [
+        {
+          id: "demo",
+          nickname: "demo",
+          adminUserId: "admin",
+          hasPassword: false,
+          createdAt: 1,
+          joinedAt: 1,
+        },
+      ],
+      activeServerId: "demo",
+    });
     renderAt("/s/demo");
-    expect(await screen.findByTestId("page-server")).toBeDefined();
+    expect(await screen.findByTestId("app-shell")).toBeDefined();
   });
 
   it("renders the boot loader fallback", () => {
