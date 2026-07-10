@@ -92,6 +92,9 @@ export function initNotifications(): () => void {
 
   const attach = (serverId: string): void => {
     if (listeners.has(serverId)) return;
+    // Claim the slot BEFORE connecting: connectRoom's first status write synchronously re-enters this
+    // servers-store subscriber, so without the claim the same server would be subscribed twice.
+    listeners.set(serverId, () => {});
     const off = connectRoom(serverId).on("chat.new", (frame) => {
       handleChatNew(serverId, frame.message);
     });

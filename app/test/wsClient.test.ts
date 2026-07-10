@@ -238,4 +238,21 @@ describe("§6.2 wsClient", () => {
     expect(pingCount()).toBe(2);
     conn.close();
   });
+
+  it("is re-entrancy safe: a servers-store subscriber reconnecting the same server spawns one socket", async () => {
+    // Mirrors the notifications layer (A6): a servers-store subscriber calls connectRoom for the same
+    // server on every store change. The first connect writes connState synchronously (setStatus →
+    // setConnState), which re-enters this subscriber DURING construction — so the cache must already
+    // hold the instance, otherwise an unbounded number of connections is spawned for one server.
+    const unsub = useServersStore.subscribe(() => {
+      connectRoom(serverId);
+    });
+    const conn = connectRoom(serverId);
+    await flush();
+    unsub();
+    expect(MockWebSocket.instances).toHaveLength(1);
+    // Same cached instance is returned to every caller (one socket per server).
+    expect(connectRoom(serverId)).toBe(conn);
+    conn.close();
+  });
 });

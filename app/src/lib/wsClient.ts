@@ -51,7 +51,12 @@ class RoomConnection implements WsConnection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly listeners = new Set<(m: ServerMessage) => void>();
 
-  constructor(private readonly serverId: string) {
+  constructor(private readonly serverId: string) {}
+
+  // Kicks off the first connect. Called by connectRoom AFTER the instance is cached, so the
+  // synchronous store write inside openOnce (setStatus → setConnState) cannot cause a re-entrant
+  // connectRoom to build a second connection for the same server.
+  start(): void {
     void this.openOnce();
   }
 
@@ -200,12 +205,17 @@ class RoomConnection implements WsConnection {
 
 const rooms = new Map<string, RoomConnection>();
 
-// A6 — one cached connection per server; features reuse the same socket.
+// A6 — one cached connection per server; features reuse the same socket. The instance is registered
+// in `rooms` BEFORE it starts connecting, because the first connect synchronously writes the servers
+// store (setStatus → setConnState) and a subscriber of that store (e.g. notifications) re-enters
+// connectRoom during construction — so the cache must already hold this instance or an unbounded
+// number of connections would be created for the same server.
 export function connectRoom(serverId: string): WsConnection {
   const existing = rooms.get(serverId);
   if (existing) return existing;
   const conn = new RoomConnection(serverId);
   rooms.set(serverId, conn);
+  conn.start();
   return conn;
 }
 
