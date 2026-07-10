@@ -133,6 +133,10 @@ class FakeGraph {
     this.log.push(`graph.setDeafened:${deafened}`);
     this.deafened = deafened;
   }
+  soundboardGain = 1;
+  setSoundboardGain(gain: number): void {
+    this.soundboardGain = gain;
+  }
   async setSink(deviceId: string): Promise<void> {
     this.log.push(`graph.setSink:${deviceId}`);
     this.sink = deviceId;

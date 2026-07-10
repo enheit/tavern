@@ -149,3 +149,19 @@ export function deleteSound(sql: SqlStorage, soundId: string, actor: Actor): { r
   sql.exec(`DELETE FROM sounds WHERE id = ?`, soundId);
   return { r2Key: owner.r2Key };
 }
+
+// True when a sound row with this id exists (FR-36 `sound.play` guard: unknown soundId → not_found).
+export function soundExists(sql: SqlStorage, soundId: string): boolean {
+  return sql.exec(`SELECT 1 FROM sounds WHERE id = ? LIMIT 1`, soundId).toArray().length > 0;
+}
+
+// Records one play (FR-36/37): appends a `sound_plays` detail row (who/when RETAINED per §5.2). The
+// surfaced `playCount` is derived (COUNT of sound_plays), so this row is what bumps the ordering/badge.
+export function recordPlay(sql: SqlStorage, soundId: string, userId: string, at: number): void {
+  sql.exec(
+    `INSERT INTO sound_plays (sound_id, user_id, created_at) VALUES (?, ?, ?)`,
+    soundId,
+    userId,
+    at,
+  );
+}

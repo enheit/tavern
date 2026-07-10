@@ -162,6 +162,25 @@ describe("AudioGraph lifecycle", () => {
     expect(src?.startArgs[0]).toEqual([0, 0.5, 2]); // offset 0.5s, duration 2s
   });
 
+  it("decode() decodes fetched bytes through the single app context", async () => {
+    const bytes = new ArrayBuffer(8);
+    const buffer = await graph.decode(bytes);
+    expect(port.last().decoded).toContain(bytes);
+    expect(buffer.sampleRate).toBe(48000);
+  });
+
+  it("stopSoundboard() cuts every live soundboard source", async () => {
+    const buffer = {} as unknown as AudioBuffer;
+    // Do NOT await — the source is live (its `ended` is scheduled on a microtask).
+    const playing = graph.playSoundboard(buffer, 0, 1000);
+    const src = port.last().bufferSources[0];
+    graph.stopSoundboard();
+    expect(src?.stopped).toBe(1);
+    await playing; // stop() dispatched `ended`, resolving the play
+    // A second call with no live sources is a harmless no-op (covers the empty path).
+    graph.stopSoundboard();
+  });
+
   it("close() closes the context and clears the graph", async () => {
     graph.attachRemoteMic("u1", fakeStream());
     await graph.close();

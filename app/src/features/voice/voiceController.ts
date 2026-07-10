@@ -12,6 +12,7 @@ import type { PublishState } from "@/media/rtc/publishSession";
 import { PullSession } from "@/media/rtc/pullSession";
 import type { PullState } from "@/media/rtc/pullSession";
 import { createSfuSignal } from "@/media/sfuSignal";
+import { createSoundFetcher, SoundboardPlayer } from "@/media/soundboardPlayer";
 import { micTrackName } from "@/media/trackName";
 import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
@@ -84,10 +85,18 @@ interface GraphLike extends StreamAudioSink {
   detachRemoteMic(userId: string): void;
   setUserGain(userId: string, gain: number): void;
   setDeafened(deafened: boolean): void;
+  // FR-38: soundboard output gain (0..2), independent of user/stream gains and deafen routing.
+  setSoundboardGain(gain: number): void;
   setSink(deviceId: string): Promise<void>;
   getUserAnalyser(userId: string): AnalyserNode | null;
   getLocalAnalyser(): AnalyserNode | null;
   close(): Promise<void>;
+}
+// FR-36 soundboard player (the real SoundboardPlayer satisfies it) — built per voice server with a
+// Cache-API fetcher bound to that serverId. Optional in VoiceDeps so unit-test harnesses omit it.
+interface SoundboardLike {
+  play(sound: { id: string; trimStartMs: number; trimEndMs: number }): Promise<void>;
+  stopAll(): void;
 }
 interface WsLike {
   send(msg: ClientMessage): void;
@@ -109,6 +118,9 @@ export interface VoiceDeps {
     opts: MicOpts,
   ): Promise<MediaStreamTrack>;
   watchSpeaking(analyser: AnalyserNode, cb: (speaking: boolean) => void): () => void;
+  // FR-36: builds the soundboard player for one server (Cache-API fetcher bound to serverId + the app
+  // graph). Optional — omitted by unit-test harnesses, so playSoundboard is a no-op there.
+  createSoundboardPlayer?(serverId: string): SoundboardLike;
 }
 
 const MIC_PREFIX = "mic:";
@@ -130,6 +142,9 @@ export class VoiceController {
   private graphReady = false;
   private readonly pulledMics = new Set<string>();
   private readonly speakingSubs = new Map<string, () => void>();
+  // FR-36 soundboard player for the CURRENT voice server (single-voice-at-a-time); rebuilt lazily when
+  // the voice server changes, torn down on leave.
+  private soundboard: { serverId: string; player: SoundboardLike } | null = null;
   private unsubVoiceState: (() => void) | null = null;
   private unsubReconnect: (() => void) | null = null;
   private unsubTrack: (() => void) | null = null;
@@ -166,11 +181,13 @@ export class VoiceController {
       ws.send({ t: "voice.join" });
       await ack;
 
-      // ② graph init + resume (same user gesture).
+      // ② graph init + resume (same user gesture). Apply the persisted soundboard gain (FR-38) now so
+      // the freshly-created sbGain node starts at the user's saved level.
       const prefs = useMediaStore.getState().deviceSelection;
       await this.deps.graph.init(prefs.sinkId);
       await this.deps.graph.resume();
       this.graphReady = true;
+      this.deps.graph.setSoundboardGain(useSettingsStore.getState().volumes.soundboard);
 
       // ③ acquire mic.
       const mic = await this.deps.getMic(this.micOpts());
@@ -250,11 +267,41 @@ export class VoiceController {
   setDeafened(deafened: boolean): void {
     this.deafened = deafened;
     this.deps.graph.setDeafened(deafened);
+    // FR-36 pinned: deafen stops in-flight soundboard audio (and suppresses new plays until undeafened
+    // — the play guard checks `this.deafened`). stopAll cuts the live sources via graph.stopSoundboard.
+    if (deafened) this.soundboard?.player.stopAll();
     this.applyMuteState();
     this.sendVoiceState();
     const media = useMediaStore.getState();
     media.setDeafened(deafened);
     media.setMuted(this.effectiveMuted());
+  }
+
+  // FR-38 soundboard volume: applies the gain (0..2) to the app graph's soundboard node. The panel
+  // persists the value to settings.volumes.v1; this only routes it to the live audio graph.
+  setSoundboardGain(gain: number): void {
+    this.deps.graph.setSoundboardGain(gain);
+  }
+
+  // FR-36: play a sound locally ONLY when in voice on THIS server and not deafened (non-voice members
+  // and deafened members never hear it — they only bump the badge, done by the sounds hook). The player
+  // is built lazily per voice server; a test harness without the factory makes this a no-op.
+  async playSoundboard(
+    serverId: string,
+    sound: { id: string; trimStartMs: number; trimEndMs: number },
+  ): Promise<void> {
+    const media = useMediaStore.getState();
+    if (media.inVoiceServerId !== serverId || media.voiceStatus !== "joined") return;
+    if (this.deafened) return;
+    const player = this.ensureSoundboard(serverId);
+    if (player) await player.play(sound);
+  }
+
+  private ensureSoundboard(serverId: string): SoundboardLike | null {
+    if (this.soundboard?.serverId === serverId) return this.soundboard.player;
+    const player = this.deps.createSoundboardPlayer?.(serverId);
+    this.soundboard = player ? { serverId, player } : null;
+    return player ?? null;
   }
 
   // FR-20 per-user local volume (stored gain float 0..2) + per-user mute (set membership).
@@ -374,6 +421,9 @@ export class VoiceController {
   }
 
   private async teardown(): Promise<void> {
+    // FR-36: cut any in-flight soundboard audio on voice leave, then drop the per-server player.
+    this.soundboard?.player.stopAll();
+    this.soundboard = null;
     this.unsubVoiceState?.();
     this.unsubReconnect?.();
     this.unsubTrack?.();
@@ -435,8 +485,11 @@ let singleton: VoiceController | null = null;
 export function getVoiceController(): VoiceController {
   if (singleton) return singleton;
   const signal = createSfuSignal(apiClient);
+  // ONE app AudioGraph — shared by voice (deps.graph) and the soundboard players (same output sink,
+  // deafen routing, and sbGain node). §7.3 one AudioContext for the whole app.
+  const graph = new AudioGraph(browserAudioPort);
   const controller = new VoiceController({
-    graph: new AudioGraph(browserAudioPort),
+    graph,
     createPublish: (serverId, userId) =>
       new PublishSession({ rtc: browserRtcPort, signal, serverId, userId }),
     createPull: (serverId) => new PullSession({ rtc: browserRtcPort, signal, serverId }),
@@ -444,6 +497,8 @@ export function getVoiceController(): VoiceController {
     getMic: browserGetMic,
     retoggleMic: browserRetoggleMic,
     watchSpeaking: browserWatchSpeaking,
+    createSoundboardPlayer: (serverId) =>
+      new SoundboardPlayer({ graph, fetchSound: createSoundFetcher(serverId) }),
   });
   singleton = controller;
   // §10: installs window.__tavernTestAudio / __tavernTestRtc when platform.isE2E — the SOLE wiring

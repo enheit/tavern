@@ -55,13 +55,17 @@ describe("S9 interface stubs", () => {
     expect(() => rec.stop()).toThrow("S9 not implemented");
   });
 
-  it("SoundboardPlayer throws until S9.2 implements it", () => {
+  it("SoundboardPlayer is implemented in S9.2 (play runs the fetch→decode path via the graph)", async () => {
     const player = new SoundboardPlayer({
       graph: new AudioGraph(new FakeAudioPort()),
-      fetchSound: async () => new ArrayBuffer(0),
+      fetchSound: async () => new ArrayBuffer(8),
     });
-    expect(() => player.play({ id: "s1", trimStartMs: 0, trimEndMs: 1000 })).toThrow(
-      "S9 not implemented",
+    // stopAll is safe with no live sources.
+    expect(() => player.stopAll()).not.toThrow();
+    // play now reaches the graph (full behavior covered in soundboardPlayer.test.ts); against an
+    // un-init graph the decode step rejects — proving it no longer throws the old "S9 not implemented".
+    await expect(player.play({ id: "s1", trimStartMs: 0, trimEndMs: 1000 })).rejects.toThrow(
+      "not initialized",
     );
   });
 });

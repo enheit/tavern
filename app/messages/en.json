@@ -74,6 +74,7 @@
   "chat_emoji_label": "Emoji",
   "chat_history_loading": "Loading…",
   "soundboard_title": "Soundboard",
+  "soundboard_volume": "Soundboard volume",
   "soundboard_upload_title": "Upload sound",
   "soundboard_upload_file": "MP3 file",
   "soundboard_upload_file_required": "Choose an MP3 file",

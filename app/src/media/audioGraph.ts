@@ -40,6 +40,9 @@ export class AudioGraph {
   private readonly userGains = new Map<string, number>();
   private readonly streamGains = new Map<string, number>();
   private soundboardGain = 1;
+  // Live soundboard BufferSourceNodes (FR-36: overlapping/concurrent plays are allowed — Discord-style).
+  // `stopSoundboard` cuts them all (deafen-on, voice leave); each source drops itself on `ended`.
+  private readonly liveSources = new Set<AudioBufferSourceNode>();
 
   constructor(port: AudioPort) {
     this.port = port;
@@ -154,20 +157,42 @@ export class AudioGraph {
     await this.requireCtx().setSinkId(deviceId);
   }
 
+  // Decodes fetched mp3 bytes into an AudioBuffer through the single app context (§7.3). The soundboard
+  // player decodes PER play and releases the buffer after (§7.4 — a 5-min stereo buffer ≈ 110 MB, so
+  // decoded buffers are never cached). This is the only decode home — features never build a context.
+  async decode(bytes: ArrayBuffer): Promise<AudioBuffer> {
+    return this.requireCtx().decodeAudioData(bytes);
+  }
+
   async playSoundboard(buffer: AudioBuffer, trimStartMs: number, trimEndMs: number): Promise<void> {
     const ctx = this.requireCtx();
     if (!this.sbGain) throw new Error("AudioGraph not initialized");
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(this.sbGain);
+    this.liveSources.add(src);
     const offset = trimStartMs / 1000;
     const duration = (trimEndMs - trimStartMs) / 1000; // trim is metadata-only; slice at playback
     await new Promise<void>((resolve) => {
       src.addEventListener("ended", () => {
+        this.liveSources.delete(src);
         resolve();
       });
       src.start(0, offset, duration);
     });
+  }
+
+  // Cuts every live soundboard source (FR-36: deafen stops in-flight soundboard audio; voice leave
+  // stops it too). A stopped source fires `ended`, which also removes it from the set (harmless double).
+  stopSoundboard(): void {
+    for (const src of this.liveSources) {
+      try {
+        src.stop();
+      } catch {
+        // Source already stopped/ended — it is being cleared anyway.
+      }
+    }
+    this.liveSources.clear();
   }
 
   // The recording captures the call as heard: pre-deafen per-user gains + own mic + soundboard tap.
