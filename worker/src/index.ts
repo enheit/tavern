@@ -6,6 +6,7 @@ import { registerRoute } from "./routes/register";
 import { meRoute } from "./routes/me";
 import { mediaRoute } from "./routes/media";
 import { serversRoute } from "./routes/servers";
+import { wsTicketRoute } from "./routes/wsTicket";
 import { ServerRoom } from "./do/ServerRoom";
 
 const app = new Hono<{ Bindings: Env; Variables: AuthVars }>();
@@ -37,6 +38,10 @@ app.route("/api/media", mediaRoute);
 // Server catalog (S2.1): create / join / list members. requireAuth + requireMember are applied
 // inside the router per-route.
 app.route("/api/servers", serversRoute);
+
+// WS ticket issuance + upgrade forwarding (S3.1, A4). Mounted at /api so it owns both
+// POST /api/ws-ticket and GET /api/servers/:id/ws (distinct from serversRoute's paths — no overlap).
+app.route("/api", wsTicketRoute);
 
 // Hono's default notFound is plain text; the app-wide envelope is { error: ErrorCode }.
 app.notFound((c) => c.json({ error: "not_found" satisfies ErrorCode }, 404));

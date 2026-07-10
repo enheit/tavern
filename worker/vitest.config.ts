@@ -17,6 +17,11 @@ export default defineConfig({
     coverage: {
       provider: "istanbul",
       include: ["src/**"],
+      // The ServerRoom DO + its WS-ticket routes are exercised by the dedicated serial WS project
+      // (test:ws, vitest.config.ws.ts) which PLAN §10 excludes from the coverage gate — the default
+      // project owns ≥80%. They are not reachable from this project's isolated-storage tests (DO
+      // WebSockets are unsupported there), so they are excluded here rather than reported near-zero.
+      exclude: ["src/do/**", "src/routes/wsTicket.ts"],
       thresholds: { lines: 80 },
     },
   },

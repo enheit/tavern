@@ -25,7 +25,8 @@ export async function notifyJoinedServers(
       const stub = env.SERVER_ROOM.get(env.SERVER_ROOM.idFromName(row.server_id));
       return stub.fetch("https://do.internal/internal/member-update", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        // S3.1 guards every /internal/* route on this header (the DO's only ingress is Worker stubs).
+        headers: { "content-type": "application/json", "X-Tavern-Internal": "1" },
         body,
       });
     }),

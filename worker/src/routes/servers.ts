@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { CreateServerRequest, JoinServerRequest, LIMITS } from "@tavern/shared";
-import type { ErrorCode, ServerSummary, UserProfile } from "@tavern/shared";
+import type { ErrorCode, MemberInit, ServerSummary, UserProfile } from "@tavern/shared";
 import { requireAuth, requireMember, zodJson } from "../middleware";
 import type { MemberVars } from "../middleware";
 import { hashServerPassword, verifyServerPassword } from "../lib/passwords";
@@ -66,16 +66,57 @@ async function membershipCount(env: Env, userId: string): Promise<number> {
   return row.n;
 }
 
-// Fire-and-forget notice to the server's ServerRoom DO that a member joined (FR-03 boot wiring).
-// The DO's `/internal/*` handler lands in S3.1; until then the placeholder answers 501 (a Response,
-// not a throw), so the catch only guards a genuine transport failure (§9.5 — logged, never swallowed).
-function notifyMemberJoined(env: Env, serverId: string, userId: string): Promise<Response> {
-  const stub = env.SERVER_ROOM.get(env.SERVER_ROOM.idFromName(serverId));
-  return stub.fetch("https://do.internal/internal/member-joined", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ t: "member.joined", userId }),
-  });
+// The DO member-profile cache seed (S3.1 /internal/member-join). id/nickname/adminUserId are the
+// `serverMeta` the DO serves in `hello.ok`; the DO overwrites `meta` on every join (idempotent).
+type RoomMeta = { id: string; nickname: string; adminUserId: string };
+
+// Reads the caller's profile columns from the auth `user` row (no email selected) and packs a
+// MemberInit for the DO cache. avatarKey omitted when NULL (exactOptionalPropertyTypes).
+async function readMemberInit(
+  env: Env,
+  userId: string,
+  isAdmin: boolean,
+  joinedAt: number,
+): Promise<MemberInit> {
+  const row = invariant(
+    await env.DB.prepare(
+      "SELECT id, username, display_name, color, avatar_key FROM user WHERE id = ?",
+    )
+      .bind(userId)
+      .first<MemberRow>(),
+    "member user row missing",
+  );
+  return {
+    userId: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    color: row.color,
+    ...(row.avatar_key !== null ? { avatarKey: row.avatar_key } : {}),
+    isAdmin,
+    joinedAt,
+  };
+}
+
+// Seeds the server's ServerRoom DO member-profile cache + serverMeta and broadcasts `member.joined`
+// (S3.1 /internal/member-join). Awaited so the cache is warm before the caller returns; a DO failure
+// is logged, never fatal — D1 is the source of truth and the cache rebuilds on the next join/hello
+// (§9.5 — surfaced to Workers telemetry, never swallowed silently).
+async function notifyMemberJoin(
+  env: Env,
+  serverId: string,
+  member: MemberInit,
+  serverMeta: RoomMeta,
+): Promise<void> {
+  try {
+    const stub = env.SERVER_ROOM.get(env.SERVER_ROOM.idFromName(serverId));
+    await stub.fetch("https://do.internal/internal/member-join", {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Tavern-Internal": "1" },
+      body: JSON.stringify({ member, serverMeta }),
+    });
+  } catch (err: unknown) {
+    console.error("member-join DO notify failed", err);
+  }
 }
 
 export const serversRoute = new Hono<{ Bindings: Env; Variables: MemberVars }>();
@@ -118,6 +159,15 @@ serversRoute.post("/", requireAuth, zodJson(CreateServerRequest), async (c) => {
       "INSERT INTO memberships (user_id, server_id, joined_at) VALUES (?, ?, ?)",
     ).bind(userId, serverId, now),
   ]);
+
+  // Seed the DO cache: the creator is the admin + first member (FR-08). serverMeta carries the full
+  // {id, nickname, adminUserId} the DO serves in hello.ok.
+  const member = await readMemberInit(c.env, userId, true, now);
+  await notifyMemberJoin(c.env, serverId, member, {
+    id: serverId,
+    nickname: body.nickname,
+    adminUserId: userId,
+  });
 
   const summary = toSummary(
     {
@@ -187,11 +237,13 @@ serversRoute.post("/join", requireAuth, zodJson(JoinServerRequest), async (c) =>
     .bind(userId, server.id, now)
     .run();
 
-  c.executionCtx.waitUntil(
-    notifyMemberJoined(c.env, server.id, userId).catch((err: unknown) => {
-      console.error("member.joined DO notify failed", err);
-    }),
-  );
+  // Seed the DO cache for the new member (FR-09). isAdmin only if the joiner IS the server admin.
+  const member = await readMemberInit(c.env, userId, userId === server.admin_user_id, now);
+  await notifyMemberJoin(c.env, server.id, member, {
+    id: server.id,
+    nickname: server.nickname,
+    adminUserId: server.admin_user_id,
+  });
 
   return c.json(toSummary(server, now));
 });
