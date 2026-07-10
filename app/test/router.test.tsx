@@ -60,8 +60,11 @@ describe("§7.6 routes", () => {
       activeServerId: "demo",
     });
     renderAt("/s/demo");
-    expect(await screen.findByTestId("app-shell")).toBeDefined();
-  });
+    // ServerPage is the heaviest lazy route (shell + panels + room store); under full-suite parallel
+    // load its dynamic-import chain can resolve past testing-library's default 1000ms findBy window,
+    // so give the async boundary explicit headroom. findBy polls, so a fast success is unaffected.
+    expect(await screen.findByTestId("app-shell", {}, { timeout: 10000 })).toBeDefined();
+  }, 15000);
 
   it("renders the boot loader fallback", () => {
     render(<BootLoader />);
