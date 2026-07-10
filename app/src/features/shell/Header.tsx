@@ -7,6 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { ServerSettingsDialog } from "@/features/admin/ServerSettingsDialog";
 import { useAuth } from "@/features/auth/useAuth";
 import { ServerSwitcher } from "@/features/servers/ServerSwitcher";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
@@ -26,10 +27,19 @@ export function Header() {
     >
       <ServerSwitcher />
       <div className="flex-1" />
+      <AdminSettings />
       <ConnectionDot />
       <UserMenu />
     </header>
   );
+}
+
+// FR-10/11/12 admin entry: renders the gear + ServerSettingsDialog for the active server; the dialog
+// self-gates on admin (returns null for non-admins), so this just supplies the active serverId.
+function AdminSettings() {
+  const activeServerId = useServersStore((s) => s.activeServerId);
+  if (activeServerId === null) return null;
+  return <ServerSettingsDialog serverId={activeServerId} />;
 }
 
 // Connection state → pinned dot color + label (the label is the dot's title). Static record, no dynamic

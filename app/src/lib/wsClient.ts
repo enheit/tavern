@@ -153,7 +153,14 @@ class RoomConnection implements WsConnection {
       this.setStatus("open");
       this.startPing();
     }
-    roomStore(this.serverId).getState().apply(msg);
+    if (msg.t === "server.updated") {
+      // FR-12: route the live rename through the servers store so the header dropdown list AND the
+      // room's serverMeta both update; applyServerUpdated re-applies the frame to this room store,
+      // so it stands in for the blanket apply here (no double dispatch).
+      useServersStore.getState().applyServerUpdated(this.serverId, msg.nickname);
+    } else {
+      roomStore(this.serverId).getState().apply(msg);
+    }
     for (const listener of this.listeners) listener(msg);
   }
 

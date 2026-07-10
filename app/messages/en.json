@@ -134,5 +134,20 @@
   "settings_tabs_voice": "Voice",
   "settings_voice_input": "Input device",
   "settings_voice_output": "Output device",
-  "settings_voice_noise": "Noise suppression"
+  "settings_voice_noise": "Noise suppression",
+  "admin_title": "Server settings",
+  "admin_rename_label": "Server nickname",
+  "admin_nickname_taken": "This nickname is already taken",
+  "admin_renamed": "Server renamed",
+  "admin_password_label": "Server password",
+  "admin_password_set": "Set password",
+  "admin_password_clear": "Remove password",
+  "admin_password_clear_confirm": "Remove the server password? Anyone will be able to join.",
+  "admin_password_updated": "Password updated",
+  "admin_members_title": "Members",
+  "admin_kick": "Kick",
+  "admin_kick_confirm": "Kick {name} from the server?",
+  "admin_kicked": "{name} was kicked",
+  "common_cancel": "Cancel",
+  "common_confirm": "Confirm"
 }

@@ -134,5 +134,20 @@
   "settings_tabs_voice": "Голос",
   "settings_voice_input": "Пристрій вводу",
   "settings_voice_output": "Пристрій виводу",
-  "settings_voice_noise": "Придушення шуму"
+  "settings_voice_noise": "Придушення шуму",
+  "admin_title": "Налаштування сервера",
+  "admin_rename_label": "Нікнейм сервера",
+  "admin_nickname_taken": "Цей нікнейм уже зайнятий",
+  "admin_renamed": "Сервер перейменовано",
+  "admin_password_label": "Пароль сервера",
+  "admin_password_set": "Встановити пароль",
+  "admin_password_clear": "Прибрати пароль",
+  "admin_password_clear_confirm": "Прибрати пароль сервера? Будь-хто зможе приєднатися.",
+  "admin_password_updated": "Пароль оновлено",
+  "admin_members_title": "Учасники",
+  "admin_kick": "Виключити",
+  "admin_kick_confirm": "Виключити {name} із сервера?",
+  "admin_kicked": "{name} виключено",
+  "common_cancel": "Скасувати",
+  "common_confirm": "Підтвердити"
 }
