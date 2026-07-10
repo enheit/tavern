@@ -3,6 +3,7 @@ import { ChatTabs } from "@/features/chat/ChatTabs";
 import { ChannelsPanel } from "@/features/servers/ChannelsPanel";
 import { PeoplePanel } from "@/features/servers/PeoplePanel";
 import { SoundboardPanel } from "@/features/soundboard/SoundboardPanel";
+import { ControlsBar } from "./ControlsBar";
 import { Header } from "./Header";
 
 // The persistent app shell laid out exactly per §7.6. Pinned CSS grid: header spans all columns; the
@@ -25,7 +26,7 @@ export function AppShell({ serverId }: { serverId: string }) {
     <div data-testid="app-shell" style={GRID} className="h-screen w-screen overflow-hidden">
       <Header />
       <div style={{ gridArea: "left" }} className="flex min-h-0 flex-col border-r bg-card">
-        <ChannelsPanel />
+        <ChannelsPanel serverId={serverId} />
         <PeoplePanel serverId={serverId} />
       </div>
       <div
@@ -37,7 +38,9 @@ export function AppShell({ serverId }: { serverId: string }) {
         data-testid="slot-controls"
         style={{ gridArea: "controls" }}
         className="border-t bg-card"
-      />
+      >
+        <ControlsBar serverId={serverId} />
+      </div>
       <div style={{ gridArea: "right" }} className="flex min-h-0 flex-col border-l bg-card">
         <div data-testid="slot-tabs" className="min-h-0 flex-1 overflow-hidden">
           <ChatTabs serverId={serverId} />
