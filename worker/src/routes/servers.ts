@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { CreateServerRequest, JoinServerRequest, LIMITS } from "@tavern/shared";
+import { z } from "zod";
+import { ActivityPage, CreateServerRequest, JoinServerRequest, LIMITS } from "@tavern/shared";
 import type { ErrorCode, MemberInit, ServerSummary, UserProfile } from "@tavern/shared";
 import { requireAuth, requireMember, zodJson } from "../middleware";
 import type { MemberVars } from "../middleware";
@@ -260,4 +261,35 @@ serversRoute.get("/:id/members", requireMember, async (c) => {
     .all<MemberRow>();
   const members: UserProfile[] = rows.results.map(toProfile);
   return c.json({ members });
+});
+
+// Pagination query for the activity read (§6.1 `?before&limit`). Both optional positive ints; a
+// coercion failure is a client bug → 400 bad_request. `limit` is NOT capped here — the DO's page()
+// clamps it to LIMITS.historyPageSize (one clamp, two callers, mirrors chat).
+const ActivityQuery = z.object({
+  before: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().positive().optional(),
+});
+
+// GET /api/servers/:id/activity?before&limit (FR-39): member-gated read proxied to the DO (reads that
+// don't need a push are HTTP, §6.1). The DO owns pagination; the Worker validates the response against
+// the shared `ActivityPage` schema (§9.8: parse at the receiving side of the DO→Worker boundary).
+serversRoute.get("/:id/activity", requireMember, async (c) => {
+  const query = ActivityQuery.safeParse({
+    before: c.req.query("before"),
+    limit: c.req.query("limit"),
+  });
+  if (!query.success) {
+    return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  }
+  const params = new URLSearchParams();
+  if (query.data.before !== undefined) params.set("before", String(query.data.before));
+  if (query.data.limit !== undefined) params.set("limit", String(query.data.limit));
+
+  const stub = c.env.SERVER_ROOM.get(c.env.SERVER_ROOM.idFromName(c.var.serverId));
+  const res = await stub.fetch(`https://do.internal/internal/activity?${params.toString()}`, {
+    headers: { "X-Tavern-Internal": "1" },
+  });
+  const page: unknown = await res.json();
+  return c.json(ActivityPage.parse(page));
 });

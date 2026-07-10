@@ -13,6 +13,7 @@ import { migrate } from "./sql";
 import { RoomState } from "./roomState";
 import type { ConnAttachment, RoomMeta } from "./roomState";
 import { ChatModule } from "./chat";
+import { ActivityModule } from "./activity";
 
 // The Worker sets this header on EVERY DO stub call; the DO has no other ingress path, so a missing
 // header on an /internal/* route means the request did not originate from the Worker → 403.
@@ -24,6 +25,9 @@ export class ServerRoom extends DurableObject<Env> {
   private readonly room: RoomState;
   // One ChatModule per DO → its rate-limit buckets are per-server (§S3.2 task 3).
   private readonly chat: ChatModule;
+  // One ActivityModule per DO → the append-and-broadcast producer for every event (§S3.3). v1 wires
+  // member.join/member.kick here; voice/stream/recording producers arrive with S3.4/S8/S9.
+  private readonly activity: ActivityModule;
   // connId → hello-timeout handle (in-memory; a 5 s pending timer keeps the DO from hibernating, so
   // the same instance handles the hello within the window — negligible cost, §S3.1 task 6).
   private readonly helloTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -39,6 +43,7 @@ export class ServerRoom extends DurableObject<Env> {
     super(ctx, env);
     this.room = new RoomState(ctx, env);
     this.chat = new ChatModule(ctx.storage.sql);
+    this.activity = new ActivityModule(ctx.storage.sql);
     this.routes = {
       hello: (ws, att) => this.handleHello(ws, att),
       "chat.send": (ws, att, msg) => this.handleChatSend(ws, att, msg),
@@ -73,7 +78,7 @@ export class ServerRoom extends DurableObject<Env> {
       if (request.headers.get(INTERNAL_HEADER) !== "1") {
         return Response.json({ error: "forbidden" satisfies ErrorCode }, { status: 403 });
       }
-      return this.handleInternal(request, url.pathname);
+      return this.handleInternal(request, url);
     }
     return Response.json({ error: "not_implemented" satisfies ErrorCode }, { status: 501 });
   }
@@ -110,9 +115,9 @@ export class ServerRoom extends DurableObject<Env> {
   }
 
   // Worker-only ingress (header-guarded by fetch). Each route is a Worker→DO plumbing call.
-  private async handleInternal(request: Request, pathname: string): Promise<Response> {
+  private async handleInternal(request: Request, url: URL): Promise<Response> {
     const at = Date.now();
-    switch (pathname) {
+    switch (url.pathname) {
       case "/internal/ticket": {
         const body: { userId: string } = await request.json();
         return Response.json({ ticket: await this.room.createTicket(body.userId) });
@@ -127,6 +132,12 @@ export class ServerRoom extends DurableObject<Env> {
           member: { ...member, presence: this.room.presenceOf(member.userId) },
           at,
         });
+        // FR-39 producer: a genuinely new membership (the join route skips this call for a re-join, so
+        // one entry per join) → append `member.join` and broadcast `activity.new` to live UIs.
+        this.room.broadcast({
+          t: "activity.new",
+          entry: this.activity.append("member.join", member.userId, {}, at),
+        });
         return new Response(null, { status: 204 });
       }
       case "/internal/member-update": {
@@ -138,9 +149,16 @@ export class ServerRoom extends DurableObject<Env> {
       }
       case "/internal/kick": {
         const body: { userId: string } = await request.json();
+        const kickedSockets = this.room.socketsOf(body.userId);
         this.room.removeMember(body.userId);
         this.room.broadcast({ t: "member.left", userId: body.userId, at });
-        for (const ws of this.room.socketsOf(body.userId)) ws.close(CLOSE_KICKED, "kicked");
+        // FR-39 producer: append `member.kick` and broadcast `activity.new` to the survivors (the kicked
+        // user's own sockets are excluded — their UI returns to the join screen, FR-11).
+        this.room.broadcast(
+          { t: "activity.new", entry: this.activity.append("member.kick", body.userId, {}, at) },
+          { except: kickedSockets },
+        );
+        for (const ws of kickedSockets) ws.close(CLOSE_KICKED, "kicked");
         return new Response(null, { status: 204 });
       }
       case "/internal/server-updated": {
@@ -148,6 +166,17 @@ export class ServerRoom extends DurableObject<Env> {
         await this.room.patchNickname(body.nickname);
         this.room.broadcast({ t: "server.updated", nickname: body.nickname, at });
         return new Response(null, { status: 204 });
+      }
+      // GET /internal/activity?before&limit → { entries, hasMore } (§6.1). The Worker route validates
+      // and forwards clean numeric params; a missing `limit` defaults to the page size (page() clamps).
+      case "/internal/activity": {
+        const before = url.searchParams.get("before");
+        const limit = url.searchParams.get("limit");
+        const page = this.activity.page({
+          ...(before === null ? {} : { before: Number(before) }),
+          limit: limit === null ? LIMITS.historyPageSize : Number(limit),
+        });
+        return Response.json(page);
       }
       default:
         return Response.json({ error: "not_found" satisfies ErrorCode }, { status: 404 });
