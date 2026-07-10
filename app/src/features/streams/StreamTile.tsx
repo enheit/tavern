@@ -1,0 +1,166 @@
+import type { StreamInfo } from "@tavern/shared";
+import { MonitorIcon, VideoIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useStore } from "zustand";
+import { Button } from "@/components/ui/button";
+import { Slider } from "@/components/ui/slider";
+import { getVoiceController } from "@/features/voice/voiceController";
+import { m } from "@/paraglide/messages.js";
+import { roomStore } from "@/stores/room";
+import { useServersStore } from "@/stores/servers";
+import { useSettingsStore } from "@/stores/settings";
+import { useWatch } from "./useWatch";
+
+// FR-31: apply the tile's per-stream gain to the shared graph AND persist it under
+// settings.volumes.streams (keyed by the opaque userId:kind). Sliders map 0–200% → gain 0–2.
+function setStreamVolume(streamKey: string, gain: number): void {
+  getVoiceController().streamAudioSink()?.setStreamGain(streamKey, gain);
+  const s = useSettingsStore.getState();
+  s.setVolumes({ ...s.volumes, streams: { ...s.volumes.streams, [streamKey]: gain } });
+}
+
+// FR-30/31/33 canvas tile: a placeholder (Watch, FR-30) until the viewer opts in, then the live
+// video (letterboxed 16:9, muted — audio flows through the gain node) with an unwatch button and,
+// when the stream carries audio, an independent volume slider. Double-click toggles focus (FR-33).
+export function StreamTile({
+  stream,
+  focused,
+  onToggleFocus,
+}: {
+  stream: StreamInfo;
+  focused: boolean;
+  onToggleFocus: () => void;
+}) {
+  const { state, mediaStream, watch, unwatch, setLayer } = useWatch(stream);
+  const watching = state !== "idle";
+  const streamKey = `${stream.userId}:${stream.kind}`;
+
+  // FR-33: a focused (double-clicked) tile pulls the high simulcast layer; a grid tile the low one.
+  useEffect(() => {
+    if (state === "watching") setLayer(focused ? "h" : "l");
+  }, [focused, state, setLayer]);
+
+  return (
+    <div
+      data-testid={`stream-tile-${stream.trackName}`}
+      data-watching={watching}
+      onDoubleClick={watching ? onToggleFocus : undefined}
+      className="group relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden rounded-lg bg-black/90"
+    >
+      {watching ? (
+        <WatchingView
+          stream={stream}
+          streamKey={streamKey}
+          mediaStream={mediaStream}
+          onUnwatch={unwatch}
+        />
+      ) : (
+        <Placeholder stream={stream} onWatch={watch} />
+      )}
+    </div>
+  );
+}
+
+function WatchingView({
+  stream,
+  streamKey,
+  mediaStream,
+  onUnwatch,
+}: {
+  stream: StreamInfo;
+  streamKey: string;
+  mediaStream: MediaStream | null;
+  onUnwatch: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el) el.srcObject = mediaStream;
+  }, [mediaStream]);
+  return (
+    <>
+      <video
+        ref={videoRef}
+        autoPlay
+        muted
+        playsInline
+        data-testid={`stream-video-${stream.trackName}`}
+        className="h-full w-full object-contain"
+      />
+      <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100">
+        <Button
+          size="xs"
+          variant="secondary"
+          data-testid={`stream-unwatch-${stream.trackName}`}
+          onClick={onUnwatch}
+        >
+          {m.streams_unwatch()}
+        </Button>
+        {stream.hasAudio && <StreamVolume streamKey={streamKey} />}
+      </div>
+    </>
+  );
+}
+
+function StreamVolume({ streamKey }: { streamKey: string }) {
+  const gain = useSettingsStore((s) => s.volumes.streams[streamKey] ?? 1);
+  const percent = Math.round(gain * 100);
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2" title={m.streams_volume()}>
+      <Slider
+        value={[percent]}
+        min={0}
+        max={200}
+        step={5}
+        data-testid={`stream-volume-${streamKey}`}
+        onValueChange={(value) => {
+          const next = Array.isArray(value) ? (value[0] ?? 0) : value;
+          setStreamVolume(streamKey, next / 100);
+        }}
+      />
+      <span className="w-9 shrink-0 text-right text-xs text-white/80 tabular-nums">{percent}%</span>
+    </div>
+  );
+}
+
+function Placeholder({ stream, onWatch }: { stream: StreamInfo; onWatch: () => void }) {
+  const serverId = useServersStore((s) => s.activeServerId) ?? "";
+  const member = useStore(roomStore(serverId), (s) =>
+    s.members.find((mm) => mm.userId === stream.userId),
+  );
+  const name = member?.displayName ?? stream.userId.slice(0, 8);
+  const color = member?.color ?? "#888888";
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const KindIcon = stream.kind === "screen" ? MonitorIcon : VideoIcon;
+  return (
+    <div className="flex flex-col items-center gap-3 p-4 text-center">
+      <span className="relative">
+        {avatarFailed || !member ? (
+          <span
+            data-testid={`stream-avatar-${stream.trackName}`}
+            className="flex size-14 items-center justify-center rounded-full text-lg font-medium text-white"
+            style={{ backgroundColor: color }}
+          >
+            {name.charAt(0)}
+          </span>
+        ) : (
+          <img
+            src={`/api/media/avatars/${stream.userId}.webp`}
+            alt={name}
+            onError={() => setAvatarFailed(true)}
+            className="size-14 rounded-full bg-muted object-cover"
+          />
+        )}
+        <span className="absolute -right-1 -bottom-1 rounded-full bg-background p-1 text-foreground">
+          <KindIcon data-testid={`stream-kind-${stream.trackName}`} className="size-3.5" />
+        </span>
+      </span>
+      <span className="text-sm font-medium" style={{ color }}>
+        {name}
+      </span>
+      <Button size="sm" data-testid={`stream-watch-${stream.trackName}`} onClick={onWatch}>
+        {m.streams_watch()}
+      </Button>
+    </div>
+  );
+}

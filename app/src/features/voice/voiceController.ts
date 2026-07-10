@@ -66,7 +66,17 @@ interface PullLike {
   readonly state?: PullState;
   inboundAudioStats?(): Promise<VoiceStats>;
 }
-interface GraphLike {
+// The subset of the S7.2 AudioGraph that watched-stream tiles route their audio + volume through
+// (FR-31). Streams share the ONE app AudioContext (§7.3) — a watcher is always in voice (pulling a
+// stream needs an SFU session, S7.1), so the graph is initialized whenever `streamAudioSink()` is
+// non-null. Exposed so `useWatch` / `StreamTile` never construct a second AudioContext.
+export interface StreamAudioSink {
+  attachStreamAudio(streamKey: string, stream: MediaStream): void;
+  detachStreamAudio(streamKey: string): void;
+  setStreamGain(streamKey: string, gain: number): void;
+}
+
+interface GraphLike extends StreamAudioSink {
   init(sinkId?: string): Promise<void>;
   resume(): Promise<void>;
   attachLocalMic(track: MediaStreamTrack): void;
@@ -116,6 +126,8 @@ export class VoiceController {
   private micTrackName: string | null = null;
   private userMuted = false;
   private deafened = false;
+  // True once graph.init() has run (voice joined) and false after teardown — gates streamAudioSink().
+  private graphReady = false;
   private readonly pulledMics = new Set<string>();
   private readonly speakingSubs = new Map<string, () => void>();
   private unsubVoiceState: (() => void) | null = null;
@@ -158,6 +170,7 @@ export class VoiceController {
       const prefs = useMediaStore.getState().deviceSelection;
       await this.deps.graph.init(prefs.sinkId);
       await this.deps.graph.resume();
+      this.graphReady = true;
 
       // ③ acquire mic.
       const mic = await this.deps.getMic(this.micOpts());
@@ -376,9 +389,18 @@ export class VoiceController {
     await this.publish?.close();
     this.publish = null;
     await this.deps.graph.close();
+    this.graphReady = false;
     this.localMic?.stop();
     this.localMic = null;
     this.micTrackName = null;
+  }
+
+  // S8.2: watched-stream tiles route their audio (attach) + volume (setStreamGain) through the SAME
+  // AudioGraph as voice (one AudioContext, §7.3). Returns the graph as a narrow sink while voice is
+  // joined, else null (no context yet). A watcher is always in voice — pulling a stream needs an SFU
+  // session, which S7.1 authorizes only for in-voice users.
+  streamAudioSink(): StreamAudioSink | null {
+    return this.graphReady ? this.deps.graph : null;
   }
 
   // Read-only live views for the §10 e2e test hooks (installTestHooks). Product-neutral — they only

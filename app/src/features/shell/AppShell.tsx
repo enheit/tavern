@@ -3,6 +3,7 @@ import { ChatTabs } from "@/features/chat/ChatTabs";
 import { ChannelsPanel } from "@/features/servers/ChannelsPanel";
 import { PeoplePanel } from "@/features/servers/PeoplePanel";
 import { SoundboardPanel } from "@/features/soundboard/SoundboardPanel";
+import { Canvas } from "@/features/streams/Canvas";
 import { ControlsBar } from "./ControlsBar";
 import { Header } from "./Header";
 
@@ -33,7 +34,9 @@ export function AppShell({ serverId }: { serverId: string }) {
         data-testid="slot-canvas"
         style={{ gridArea: "canvas" }}
         className="min-h-0 overflow-hidden"
-      />
+      >
+        <Canvas />
+      </div>
       <div
         data-testid="slot-controls"
         style={{ gridArea: "controls" }}

@@ -92,6 +92,7 @@ class FakeGraph {
   sink: string | null = null;
   localAttachCount = 0;
   readonly userGains = new Map<string, number>();
+  readonly streamGains = new Map<string, number>();
   readonly detached: string[] = [];
   private readonly attached = new Set<string>();
   constructor(log: string[]) {
@@ -117,6 +118,16 @@ class FakeGraph {
   }
   setUserGain(userId: string, gain: number): void {
     this.userGains.set(userId, gain);
+  }
+  // S8.2 stream-audio sink (widened GraphLike) — watched-stream audio + volume route through here.
+  attachStreamAudio(streamKey: string, _stream: MediaStream): void {
+    this.log.push(`graph.attachStream:${streamKey}`);
+  }
+  detachStreamAudio(streamKey: string): void {
+    this.log.push(`graph.detachStream:${streamKey}`);
+  }
+  setStreamGain(streamKey: string, gain: number): void {
+    this.streamGains.set(streamKey, gain);
   }
   setDeafened(deafened: boolean): void {
     this.log.push(`graph.setDeafened:${deafened}`);
@@ -293,6 +304,22 @@ describe("FR-18 join/leave", () => {
 
     expect(h.log.indexOf("publish.publishMic")).toBeLessThan(h.log.indexOf("pull.addRemoteTracks"));
     expect(h.pulls[0]?.added).toEqual([[{ trackName: `mic:${REMOTE}` }]]);
+  });
+
+  it("streamAudioSink is null until joined, the graph while joined, null after leave (S8.2)", async () => {
+    const h = makeHarness();
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", []);
+
+    expect(controller.streamAudioSink()).toBeNull();
+    await controller.join("A");
+    expect(controller.streamAudioSink()).toBe(h.graph);
+    // The sink routes a watched-stream gain to the SAME graph (FR-31).
+    controller.streamAudioSink()?.setStreamGain("uuu:screen", 2);
+    expect(h.graph.streamGains.get("uuu:screen")).toBe(2);
+
+    await controller.leave();
+    expect(controller.streamAudioSink()).toBeNull();
   });
 
   it("leave tears down sessions, graph detaches, sends voice.leave", async () => {
