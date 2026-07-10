@@ -145,5 +145,20 @@
   "streams_share_no_sources": "Немає доступних джерел",
   "streams_share_start": "Поділитися",
   "streams_share_open": "Поділитися екраном",
-  "streams_share_stop": "Зупинити трансляцію"
+  "streams_share_stop": "Зупинити трансляцію",
+  "admin_title": "Налаштування сервера",
+  "admin_rename_label": "Нікнейм сервера",
+  "admin_nickname_taken": "Цей нікнейм уже зайнятий",
+  "admin_renamed": "Сервер перейменовано",
+  "admin_password_label": "Пароль сервера",
+  "admin_password_set": "Встановити пароль",
+  "admin_password_clear": "Прибрати пароль",
+  "admin_password_clear_confirm": "Прибрати пароль сервера? Будь-хто зможе приєднатися.",
+  "admin_password_updated": "Пароль оновлено",
+  "admin_members_title": "Учасники",
+  "admin_kick": "Виключити",
+  "admin_kick_confirm": "Виключити {name} із сервера?",
+  "admin_kicked": "{name} виключено",
+  "common_cancel": "Скасувати",
+  "common_confirm": "Підтвердити"
 }
