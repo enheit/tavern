@@ -18,6 +18,7 @@ function makeBridge(
     notifications: {
       show: async () => undefined,
       onClick: () => () => undefined,
+      requestPermission: async () => true,
     },
     updates: {
       onUpdateReady: () => () => undefined,

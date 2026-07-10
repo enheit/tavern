@@ -15,6 +15,11 @@ export interface PlatformBridge {
   notifications: {
     show(n: { title: string; body: string; tag: string }): Promise<void>;
     onClick(cb: (tag: string) => void): () => void;
+    // FR-16: request OS/browser permission on the user gesture of enabling a notification toggle.
+    // Resolves true when notifications may be shown (desktop is always allowed; web reflects the
+    // Notification permission). The renderer never touches the raw Notification API — this stays the
+    // only route (A1/A10).
+    requestPermission(): Promise<boolean>;
   };
   updates: { onUpdateReady(cb: () => void): () => void; restartToUpdate(): void };
   shell: { setBadge(count: number | null): void; focusWindow(): void };

@@ -55,7 +55,17 @@ export function createElectronPlatform(ipc: TavernIpc): PlatformBridge {
       loopbackAudioSupported: () => ipc.capture.loopbackAudioSupported(),
     },
     notifications: {
-      show: (n) => ipc.notifications.show(notificationArgSchema.parse(n)),
+      show: (n) => {
+        // Same §10 test hook as the web bridge: under TAVERN_E2E the renderer records notifications
+        // in the injected sink instead of routing to the main-process Notification.
+        // oxlint-disable-next-line no-underscore-dangle -- pinned S6.2 e2e notification test-hook global
+        const sink = typeof window === "undefined" ? undefined : window.__tavernTestNotifications;
+        if (sink !== undefined) {
+          sink.push({ title: n.title, body: n.body, serverId: n.tag });
+          return Promise.resolve();
+        }
+        return ipc.notifications.show(notificationArgSchema.parse(n));
+      },
       onClick: (cb) => {
         wireClick();
         clickCallbacks.add(cb);
@@ -63,6 +73,9 @@ export function createElectronPlatform(ipc: TavernIpc): PlatformBridge {
           clickCallbacks.delete(cb);
         };
       },
+      // Desktop notifications are shown by the main process at the OS level — no browser permission
+      // gate — so enabling a toggle is always allowed.
+      requestPermission: () => Promise.resolve(true),
     },
     updates: {
       onUpdateReady: (cb) => {
