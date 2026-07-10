@@ -2,8 +2,13 @@
   "name": "@tavern/e2e",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@tavern/shared": "workspace:*",
+    "@types/node": "24.7.0"
   }
 }
