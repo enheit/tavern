@@ -5,7 +5,9 @@ export default defineConfig({
   resolve: { alias: { "@": path.resolve(__dirname, "./src") } },
   test: {
     environment: "jsdom",
-    include: ["test/**/*.test.{ts,tsx}"],
+    // S10.1 pins its unit tests colocated in `src/` (so their `describe('FR-39 …')` strings count in
+    // the `grep app/src e2e` traceability gate); earlier steps colocate under `test/`. Scan both.
+    include: ["test/**/*.test.{ts,tsx}", "src/**/*.test.{ts,tsx}"],
     coverage: {
       // enabled so the verbatim DoD command `pnpm -F @tavern/app test -- --coverage` (which pnpm
       // expands to `vitest run -- --coverage`, making `--coverage` a positional) still runs
@@ -13,7 +15,7 @@ export default defineConfig({
       enabled: true,
       provider: "istanbul",
       include: ["src/**"],
-      exclude: ["src/paraglide/**", "src/components/ui/**"],
+      exclude: ["src/paraglide/**", "src/components/ui/**", "src/**/*.test.{ts,tsx}"],
       // Per-glob gate for the media engine (PLAN §10: app/src/media ≥85%), additive to the overall
       // ≥70% line threshold from S4.2/S4.3. Vitest resolves threshold globs relative to this config's
       // root (the app package), so the files appear as `src/media/…`; the DoD-pinned `app/src/media/**`

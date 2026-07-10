@@ -85,5 +85,15 @@
   "soundboard_trim_preview": "Прослухати",
   "soundboard_trim_save": "Зберегти",
   "soundboard_edit": "Редагувати",
-  "soundboard_delete": "Видалити"
+  "soundboard_delete": "Видалити",
+  "activity_voice_join": "{name} приєднався до голосового чату",
+  "activity_voice_leave": "{name} покинув голосовий чат",
+  "activity_stream_start": "{name} почав стрім",
+  "activity_stream_stop": "{name} зупинив стрім",
+  "activity_rec_start": "{name} почав запис голосу",
+  "activity_rec_stop": "{name} зупинив запис голосу",
+  "activity_member_join": "{name} приєднався до сервера",
+  "activity_member_kick": "{name} виключено з сервера",
+  "activity_former_member": "Колишній учасник",
+  "activity_empty": "Поки що немає активності"
 }

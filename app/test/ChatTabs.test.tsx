@@ -9,6 +9,11 @@ vi.mock("@/features/chat/MessageList", () => ({
 vi.mock("@/features/chat/Composer", () => ({
   Composer: () => <div data-testid="composer-stub" />,
 }));
+// Activity is now a live pane (S10.1) with its own suite + data deps (query client, room store); stub
+// it here so this suite stays focused on the tab shell and the remaining coming-soon placeholders.
+vi.mock("@/features/activity/ActivityTab", () => ({
+  ActivityTab: () => <div data-testid="activity-tab-stub" />,
+}));
 
 import { ChatTabs } from "@/features/chat/ChatTabs";
 
@@ -38,9 +43,16 @@ describe("FR-14 chat tabs", () => {
     expect(screen.queryByTestId("coming-soon")).toBeNull();
   });
 
-  it("shows a coming-soon placeholder for the other panes", async () => {
+  it("renders the Activity pane (not a placeholder) on the Activity tab", async () => {
     render(<ChatTabs serverId="s1" />);
     fireEvent.click(screen.getByTestId("tab-activity"));
+    await waitFor(() => expect(screen.getByTestId("activity-tab-stub")).toBeDefined());
+    expect(screen.queryByTestId("coming-soon")).toBeNull();
+  });
+
+  it("shows a coming-soon placeholder for the not-yet-built panes", async () => {
+    render(<ChatTabs serverId="s1" />);
+    fireEvent.click(screen.getByTestId("tab-stats"));
     await waitFor(() => expect(screen.getByTestId("coming-soon")).toBeDefined());
   });
 });

@@ -37,6 +37,9 @@ export interface RoomState {
   kicked: boolean;
   lastProtocolError: string | null;
   apply: (msg: ServerMessage) => void;
+  // FR-39 live activity: append an `activity.new` entry, deduped by id (an entry can arrive both via
+  // the live tail and via an Activity-tab query refetch), capping the tail at ACTIVITY_TAIL_MAX.
+  appendActivity: (entry: ActivityEntry) => void;
   setProtocolError: (message: string) => void;
   // FR-14: trim + length-guard, append a pending row, and fire `chat.send { body, nonce }`.
   sendMessage: (body: string) => void;
@@ -44,7 +47,7 @@ export interface RoomState {
   loadOlder: () => Promise<void>;
 }
 
-const ACTIVITY_TAIL_MAX = 50;
+const ACTIVITY_TAIL_MAX = 200;
 
 function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
   switch (msg.t) {
@@ -101,8 +104,7 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
       };
     case "stream.removed":
       return { streams: state.streams.filter((s) => s.trackName !== msg.trackName) };
-    case "activity.new":
-      return { activityTail: [...state.activityTail, msg.entry].slice(-ACTIVITY_TAIL_MAX) };
+    // `activity.new` is handled in `apply` via `appendActivity` (dedup by id) — never reaches here.
     case "rec.state":
       return { recording: msg.recording };
     case "server.updated":
@@ -144,6 +146,10 @@ export function createRoomStore(serverId: string) {
         set((state) => reduce(state, msg));
         return;
       }
+      if (msg.t === "activity.new") {
+        get().appendActivity(msg.entry);
+        return;
+      }
       if (msg.t === "chat.new" && msg.nonce !== undefined) {
         const nonce = msg.nonce;
         const tempId = nonceToId.get(nonce);
@@ -164,6 +170,11 @@ export function createRoomStore(serverId: string) {
       }
       set((state) => reduce(state, msg));
     },
+    appendActivity: (entry) =>
+      set((state) => {
+        if (state.activityTail.some((e) => e.id === entry.id)) return {};
+        return { activityTail: [...state.activityTail, entry].slice(-ACTIVITY_TAIL_MAX) };
+      }),
     setProtocolError: (message) => set({ lastProtocolError: message }),
     sendMessage: (body) => {
       const trimmed = body.trim();
