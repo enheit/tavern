@@ -146,6 +146,31 @@ export class PullSession {
     await this.signal.updateLayer(this.serverId, this.requireSession(), mid, rid);
   }
 
+  // Read-only inbound-rtp audio summary of this pull PC — the source for the pinned §10 e2e
+  // voice-stats hook (see app/src/lib/testHooks.ts; FR-19's real-SFU getStats AC). Reads existing
+  // WebRTC stats only;
+  // adds no engine capability (mirrors S7.3's read-only `micSender()` on PublishSession). Fields are
+  // narrowed with `in`/`typeof` because the RTCStats base type does not declare the audio members
+  // (no `as`-casts, §9.1).
+  async inboundAudioStats(): Promise<{ bytesReceived: number; audioLevel: number | null }> {
+    const pc = this.pc;
+    if (!pc) return { bytesReceived: 0, audioLevel: null };
+    const report = await pc.getStats();
+    let bytesReceived = 0;
+    let audioLevel: number | null = null;
+    report.forEach((stat) => {
+      if (stat.type !== "inbound-rtp") return;
+      if (!("kind" in stat) || stat.kind !== "audio") return;
+      if ("bytesReceived" in stat && typeof stat.bytesReceived === "number") {
+        bytesReceived += stat.bytesReceived;
+      }
+      if ("audioLevel" in stat && typeof stat.audioLevel === "number") {
+        audioLevel = stat.audioLevel;
+      }
+    });
+    return { bytesReceived, audioLevel };
+  }
+
   async close(): Promise<void> {
     await this.enqueue(async () => {
       this.pc?.close();

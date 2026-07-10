@@ -18,6 +18,9 @@ export function createWebPlatform(): PlatformBridge {
 
   return {
     kind: "web",
+    // Web e2e signals the mode with a `?e2e=1` query param on every opened page (the renderer cannot
+    // read process env). Guarded for non-browser (SSR/test) contexts where `location` is absent.
+    isE2E: typeof location !== "undefined" && new URLSearchParams(location.search).has("e2e"),
     secrets: {
       // Same-origin cookies carry the session; there is no client-held bearer token to read.
       getToken: async () => null,

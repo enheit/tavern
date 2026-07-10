@@ -6,6 +6,9 @@ import { createWebPlatform } from "./web";
 // (`platform` and `PlatformBridge`) — never the raw desktop bridge, never a raw `if (isElectron)`.
 export interface PlatformBridge {
   kind: "desktop" | "web";
+  // §10 hermeticity: true under the e2e harness (desktop reads window.tavern.isE2E; web reads the
+  // `?e2e=1` query param). The voice controller installs the test hooks only when this is set.
+  isE2E: boolean;
   secrets: { getToken(): Promise<string | null>; setToken(t: string | null): Promise<void> };
   capture: {
     getScreenSources(): Promise<ScreenSource[]>;

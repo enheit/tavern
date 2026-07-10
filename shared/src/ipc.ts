@@ -25,6 +25,10 @@ export const setBadgeArgSchema = z.union([z.number(), z.null()]);
 
 export interface TavernIpc {
   platform: "win32" | "darwin" | "linux";
+  // Static e2e flag (§10 hermeticity): the desktop main sets it from TAVERN_E2E so the renderer can
+  // install the test hooks (testHooks.ts). Like `platform`, it is a value read once at preload load,
+  // not an IPC channel — so it adds no invoke/push channel to the frozen S4.1 surface.
+  isE2E: boolean;
   secrets: { getToken(): Promise<string | null>; setToken(t: string | null): Promise<void> };
   capture: {
     getScreenSources(): Promise<ScreenSource[]>;

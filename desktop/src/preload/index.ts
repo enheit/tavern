@@ -16,6 +16,9 @@ const tagSchema = z.string();
 
 const api: TavernIpc = {
   platform: platformSchema.parse(process.platform),
+  // §10: the e2e harness launches with TAVERN_E2E=1; the renderer reads this static flag (via the
+  // platform bridge) to install the test hooks. Sandboxed preloads still expose process.env.
+  isE2E: process.env.TAVERN_E2E === "1",
   secrets: {
     async getToken() {
       const value: unknown = await ipcRenderer.invoke("secrets:getToken");
