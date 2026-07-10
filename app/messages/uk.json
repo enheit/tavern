@@ -62,5 +62,15 @@
   "error_bad_trim": "Некоректний діапазон обрізки",
   "error_bad_part_size": "Помилка завантаження — спробуйте ще раз",
   "error_recording_too_long": "Запис задовгий",
-  "error_server_full": "Цей сервер заповнений"
+  "error_server_full": "Цей сервер заповнений",
+  "tabs_chat": "Чат",
+  "tabs_activity": "Активність",
+  "tabs_stats": "Статистика",
+  "tabs_recordings": "Записи",
+  "common_coming_soon": "Незабаром",
+  "chat_composer_placeholder": "Повідомлення в #general",
+  "chat_composer_send": "Надіслати",
+  "chat_composer_counter": "{n} / 2000",
+  "chat_emoji_label": "Емодзі",
+  "chat_history_loading": "Завантаження…"
 }
