@@ -14,3 +14,14 @@ minimumReleaseAgeExclude:
   - miniflare@4.20260708.1
   - wrangler@4.110.0
   - '@inlang/paraglide-js@2.21.0'
+packageExtensions:
+  # @hookform/resolvers imports 'zod/v4/core' and 'zod/v3' but declares zod as
+  # neither a dependency nor a peer (phantom dep). Two zod versions exist in the
+  # graph (shared/worker's 4.4.3 and shadcn's transitive 3.25.76); without this,
+  # pnpm's public-hoist non-deterministically picks which one the resolver's
+  # types resolve against — 3.25.76 (reports zod version minor 0) mismatches the
+  # 4.4.3 schemas from @tavern/shared (minor 4) and breaks zodResolver typing.
+  # Pin the resolver to 4.4.3 so its types always match the app's real schemas.
+  "@hookform/resolvers":
+    dependencies:
+      zod: 4.4.3

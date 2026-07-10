@@ -4,6 +4,8 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+packageExtensionsChecksum: sha256-hvjo28yQo+oaeKDaYZg60g+GF2p/nGvbq0y3/oWihtI=
+
 importers:
 
   .:
@@ -5094,6 +5096,7 @@ snapshots:
     dependencies:
       '@standard-schema/utils': 0.3.0
       react-hook-form: 7.81.0(react@19.2.7)
+      zod: 4.4.3
 
   '@img/colour@1.1.0': {}
 
