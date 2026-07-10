@@ -302,6 +302,27 @@ export class RoomState {
     return true;
   }
 
+  // Test-only (S8.5, reachable ONLY via the mock-SFU-gated /api/__test route): register `count`
+  // synthetic active SCREEN shares in the registry so an e2e can exercise the G4 concurrent-share cap
+  // (§8 G4) without publishing real media. Each synthetic share gets a unique owner/session/track name;
+  // none broadcasts stream.added (no live UI depends on them — only the publish cap counts reg.tracks
+  // screens). Returns the resulting total registered screen count.
+  async rtcSeedShares(count: number): Promise<number> {
+    const reg = await this.readRtc();
+    for (let i = 0; i < count; i += 1) {
+      const id = crypto.randomUUID();
+      reg.tracks[`screen:seed-${id}:1`] = {
+        userId: `seed-${id}`,
+        sessionId: `seed-session-${id}`,
+        kind: "screen",
+        preset: DEFAULT_SCREEN_PRESET,
+        hasAudio: false,
+      };
+    }
+    await this.writeRtc(reg);
+    return Object.values(reg.tracks).filter((t) => t.kind === "screen").length;
+  }
+
   // Resolve a watchable video track (screen/cam) → its publisher + current preset, for watch.start's
   // grant seed + meter openWatch. Null for an unknown track or a non-video kind (mic/screenAudio).
   async rtcWatchable(trackName: string): Promise<{ streamerId: string; preset: PresetId } | null> {
@@ -396,8 +417,14 @@ export class RoomState {
             // Voice mics auto-subscribe — any voice member may pull them, no grant (G1).
             if (!inVoice) return { ok: false, error: "not_in_voice" };
           } else {
-            // Opt-in video: needs an explicit watch grant (G1) and the egress kill (G5) allows it.
-            if (reg.grants[req.userId]?.[t.trackName] === undefined) {
+            // Opt-in media: needs an explicit watch grant (G1) and the egress kill (G5) allows it. A
+            // screen loopback-audio companion (screenAudio:{uid}:{n}) rides its video's grant — you
+            // watch the screen, you hear it (§7.1); watch.start only grants the video track name.
+            const grantTrack =
+              reg2.kind === "screenAudio"
+                ? t.trackName.replace(/^screenAudio:/, "screen:")
+                : t.trackName;
+            if (reg.grants[req.userId]?.[grantTrack] === undefined) {
               return { ok: false, error: "pull_denied" };
             }
             if (meter.isBlocked(at)) return { ok: false, error: "cost_cap" };

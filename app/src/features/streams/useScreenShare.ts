@@ -1,5 +1,7 @@
 import type { ClientMessage, PresetId } from "@tavern/shared";
 import { toast } from "sonner";
+import { ApiError } from "@/lib/apiClient";
+import { errorMessage } from "@/lib/errorMessage";
 import { connectRoom } from "@/lib/wsClient";
 import { captureScreen } from "@/media/capture";
 import { m } from "@/paraglide/messages.js";
@@ -73,9 +75,12 @@ export class ScreenShareController {
     try {
       names = await publisher.publishStream(video, audio, sel.preset);
     } catch (err) {
-      // Publish failed — stop the captured tracks and leave the share state idle.
+      // Publish failed — stop the captured tracks and leave the share state idle. A typed publish
+      // rejection (G4 share_cap, G5 cost_cap, …) surfaces as an i18n toast (§9.5); a capture-cancel or
+      // other non-ApiError rejection is not toasted (the user closed the picker themselves).
       video.stop();
       audio?.stop();
+      if (err instanceof ApiError) toast.error(errorMessage(err.code));
       throw err;
     }
     this.serverId = serverId;

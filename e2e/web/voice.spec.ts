@@ -26,6 +26,9 @@ declare global {
       publishState: string;
       pullStates: Record<string, string>;
       stats(session: "voice"): Promise<{ bytesReceived: number; audioLevel: number | null }>;
+      // Extends the S7.4 hook (S8.4 populates it; S8.5's streams specs assert it). Declared here so the
+      // ambient window type stays a single source for every spec — voice.spec does not read it.
+      layerCalls: Array<{ trackName: string; rid: "h" | "l" }>;
     };
   }
 }

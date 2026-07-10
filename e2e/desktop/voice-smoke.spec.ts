@@ -16,7 +16,11 @@ import { WEB_URL } from "../playwright.config";
 // voice.spec.ts.
 declare global {
   interface Window {
-    tavern?: { secrets: { setToken(t: string): Promise<void> } };
+    // Kept identical to share-smoke.spec's block (interface-merge requires it); `capture` unused here.
+    tavern?: {
+      secrets: { setToken(t: string): Promise<void> };
+      capture: { getScreenSources(): Promise<Array<{ id: string; name: string }>> };
+    };
   }
 }
 

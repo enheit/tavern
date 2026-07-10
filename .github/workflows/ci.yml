@@ -51,7 +51,11 @@ jobs:
       - run: cp worker/.dev.vars.example worker/.dev.vars
       - run: pnpm -F @tavern/worker run migrate:local
       - run: pnpm -F @tavern/e2e exec playwright install --with-deps chromium
-      - run: pnpm -F @tavern/e2e test --project=web
+      # The @realtime specs (streams-realtime, voice-realtime) need the real Cloudflare Realtime SFU —
+      # they run only in nightly.yml's web-realtime project. --grep-invert @realtime keeps the PR web
+      # job on the mock SFU (§10 hermeticity split). The `web` project also grep-inverts them, so this
+      # is belt-and-suspenders + the greppable job-invocation marker S8.5's DoD asserts.
+      - run: pnpm -F @tavern/e2e test --project=web --grep-invert @realtime
       - if: failure()
         uses: actions/upload-artifact@v4
         with:

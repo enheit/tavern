@@ -3,7 +3,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { ApiError } from "@/lib/apiClient";
-import { useWatch, WatchController } from "@/features/streams/useWatch";
+import { resetWatchRegistry, useWatch, WatchController } from "@/features/streams/useWatch";
 import type { WatchDeps } from "@/features/streams/useWatch";
 import { useServersStore } from "@/stores/servers";
 import { fakeTrack } from "../../../test/fakes/media";
@@ -136,6 +136,9 @@ async function flush(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The per-stream WatchController registry (used by the useWatch hook) is module-level — clear it so a
+  // controller from one test never leaks into the next (the deferred teardown is timer-based).
+  resetWatchRegistry();
 });
 
 describe("FR-30 opt-in watching", () => {
