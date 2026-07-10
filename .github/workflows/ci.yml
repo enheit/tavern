@@ -1,181 +1,25 @@
-name: CI
-
+name: ci
 on:
-  push:
-    branches: [main]
   pull_request:
-
+  push:
+    branches: [feat/electron, main]
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  web-test:
-    name: web-test (ubuntu)
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v4 # reads packageManager from package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm -r lint
-      - run: pnpm -r build
-      # Chromium for the app project's vitest browser-mode tests.
-      - run: pnpm --filter tavern-app exec playwright install --with-deps chromium
-      # Test + coverage gates enforced from S2.1: worker lines >=85% (worker
-      # vitest.config threshold). App lines >=70% flips on at S3.1 when app code
-      # + component tests land (app coverage is ~12% now; no threshold yet).
-      - run: pnpm -r test:cov
-
-  rust-test:
-    name: rust-test (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Linux system deps
-        if: runner.os == 'Linux'
-        # libglib2.0-dev: webrtc-sys needs glib/gobject/gio headers to build libwebrtc.
-        # libasound2-dev: cpal's ALSA backend. Both are required now that the libwebrtc-backed
-        # tavern-engine is a workspace member (S4.1 — cargo test/clippy/llvm-cov build it here).
-        run: |
-          sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev libasound2-dev clang lld
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.93.1
-          components: rustfmt, clippy
-      - name: libwebrtc clang_rt link path (macOS)
-        if: runner.os == 'macOS'
-        # webrtc-sys links `clang_rt.osx` and bakes its -L dir (an absolute Xcode path from
-        # `cc --print-search-dirs`) into its cached build-script output. rust-cache restores
-        # that output across runners with a different Xcode, and cargo never re-runs the build
-        # script (its fingerprint tracks package files, not the toolchain) → stale path →
-        # `ld: library 'clang_rt.osx' not found` (S4.1 CI runs 2–3; run 3 searched an
-        # Xcode_26.5 path on a macos-15 image that doesn't have it). Inject a fresh -L for
-        # THIS runner's toolchain via env RUSTFLAGS — it also feeds cargo's fingerprints and
-        # rust-cache's key, so caches stop crossing toolchains. Env RUSTFLAGS replaces the
-        # config-file rustflags, so it must re-carry -ObjC (see .cargo/config.toml).
-        run: |
-          RT=$(find "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang" -name libclang_rt.osx.a -print -quit 2>/dev/null || true)
-          echo "clang_rt: ${RT:-<not found>}"
-          FLAGS="-C link-args=-ObjC"
-          if [ -n "$RT" ]; then FLAGS="$FLAGS -L $(dirname "$RT")"; fi
-          echo "RUSTFLAGS=$FLAGS" >> "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - name: Protocol types in sync (ts-rs → git diff)
-        if: runner.os == 'Linux'
-        # §1: protocol types are defined once in crates/protocol and ts-rs-
-        # generated into worker + app. Regenerate and fail if the committed TS
-        # drifted from the Rust source.
-        run: |
-          TS_RS_EXPORT_DIR=../../worker/src/protocol cargo test -p tavern-protocol --quiet
-          TS_RS_EXPORT_DIR=../../app/src/lib/protocol cargo test -p tavern-protocol --quiet
-          git diff --exit-code worker/src/protocol app/src/lib/protocol
-      - name: Coverage (ubuntu only)
-        if: runner.os == 'Linux'
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - name: cargo llvm-cov (crates lines >=70%, device/GUI glue excluded)
-        if: runner.os == 'Linux'
-        # Enforced from S2.1 (PLAN §1 Coverage: Rust crates >=70%). Excluded, all
-        # 0%-covered non-unit-testable glue validated elsewhere: the src-tauri GUI
-        # shell (S0.2), the engine's device/PeerConnection/live-SFU orchestration
-        # (engine.rs, audio.rs) — exercised end-to-end at S4.3 (P6), not by unit tests —
-        # and the capture crate's device glue (screen.rs, webcam.rs) — exercised by the
-        # S5.1 P4 re-run + S5.5 manual webcam QA on real hardware. The testable cores
-        # (engine: apm/mixer/pipeline/remote/signaling/state; capture: config/frame/fake)
-        # are covered here and locally on macOS.
-        run: cargo llvm-cov --workspace --summary-only --ignore-filename-regex 'src-tauri|crates/engine/src/(engine|audio)\.rs|crates/capture/src/(screen|webcam)\.rs' --fail-under-lines 70
-
-  bundle:
-    name: bundle (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Linux system deps
-        if: runner.os == 'Linux'
-        # From S4.2 src-tauri links the engine (libwebrtc + cpal): same extra deps
-        # as rust-test (libglib2.0-dev, libasound2-dev, clang, lld).
-        run: |
-          sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libglib2.0-dev libasound2-dev clang lld
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.93.1
-      - name: libwebrtc clang_rt link path (macOS)
-        if: runner.os == 'macOS'
-        # Same fix as rust-test (see that job's comment): fresh -L for this runner's
-        # clang_rt so cached webrtc-sys output can't poison the link across Xcodes.
-        run: |
-          RT=$(find "$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang" -name libclang_rt.osx.a -print -quit 2>/dev/null || true)
-          echo "clang_rt: ${RT:-<not found>}"
-          FLAGS="-C link-args=-ObjC"
-          if [ -n "$RT" ]; then FLAGS="$FLAGS -L $(dirname "$RT")"; fi
-          echo "RUSTFLAGS=$FLAGS" >> "$GITHUB_ENV"
-      - uses: Swatinem/rust-cache@v2
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm tauri build
-        env:
-          # S6.3: createUpdaterArtifacts needs the minisign key to emit .sig files.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tavern-${{ matrix.os }}
-          path: |
-            target/release/bundle/**
-          if-no-files-found: error
-
-  # Boot the Ubuntu-built AppImage on a different distro (Void) to catch
-  # missing-lib / loader / startup crashes that only show off-Ubuntu. Runs
-  # headless (Xvfb + llvmpipe), so GPU-driver-specific failures (e.g. the
-  # NVIDIA DMA-BUF EGL abort) still need real hardware — this is a floor,
-  # not full runtime QA.
-  smoke-void:
-    name: smoke (void linux)
-    needs: bundle
-    runs-on: ubuntu-latest
-    container: ghcr.io/void-linux/void-glibc-full
-    steps:
-      - name: Install runtime deps
-        run: |
-          xbps-install -Syu xbps
-          # bash: AppImage AppRun shebangs `#!/usr/bin/env bash`; void-glibc-full omits it.
-          xbps-install -y bash xorg-server-xvfb dbus mesa-dri
-      - uses: actions/download-artifact@v4
-        with:
-          name: tavern-ubuntu-latest
-          path: bundle
-      - name: Boot AppImage under Xvfb
-        run: |
-          APPIMAGE=$(ls bundle/appimage/*.AppImage)
-          chmod +x "$APPIMAGE"
-          # No FUSE in containers: extract instead of mounting.
-          "$APPIMAGE" --appimage-extract >/dev/null
-          Xvfb :99 -screen 0 1280x800x24 &
-          export DISPLAY=:99
-          dbus-run-session -- sh -c '
-            ./squashfs-root/AppRun >app.log 2>&1 &
-            APP=$!
-            sleep 15
-            if ! kill -0 $APP 2>/dev/null; then
-              echo "::error::Tavern exited within 15s on Void Linux"
-              cat app.log
-              exit 1
-            fi
-            kill $APP
-          '
-          echo "--- app.log ---"
-          cat app.log
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm test:coverage
+      - run: pnpm build
+      - run: node scripts/check-fr-traceability.mjs
