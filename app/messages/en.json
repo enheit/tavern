@@ -107,5 +107,15 @@
   "common_save": "Save",
   "common_saved": "Saved",
   "errors_avatar_too_large": "Image too large (max 2 MB)",
-  "errors_color_invalid": "Use #rrggbb"
+  "errors_color_invalid": "Use #rrggbb",
+  "activity_voice_join": "{name} joined voice",
+  "activity_voice_leave": "{name} left voice",
+  "activity_stream_start": "{name} started streaming",
+  "activity_stream_stop": "{name} stopped streaming",
+  "activity_rec_start": "{name} started a voice recording",
+  "activity_rec_stop": "{name} stopped the voice recording",
+  "activity_member_join": "{name} joined the server",
+  "activity_member_kick": "{name} was kicked",
+  "activity_former_member": "Former member",
+  "activity_empty": "No activity yet"
 }

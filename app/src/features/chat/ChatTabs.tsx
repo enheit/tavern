@@ -1,10 +1,11 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ActivityTab } from "@/features/activity/ActivityTab";
 import { m } from "@/paraglide/messages.js";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 
-// The right-column tabs slot (§7.6). Pinned tab ids; only Chat renders content in v1 — the other
-// three panes are placeholders replaced by S10.x (activity/stats) and S9.3 (recordings).
+// The right-column tabs slot (§7.6, order Chat·Activity·Stats·Recordings). Chat + Activity render
+// content; Stats/Recordings stay placeholders until S10.2 / S9.3.
 function ComingSoon() {
   return (
     <div
@@ -42,7 +43,7 @@ export function ChatTabs({ serverId }: { serverId: string }) {
         <Composer serverId={serverId} />
       </TabsContent>
       <TabsContent value="activity" className="min-h-0 flex-1">
-        <ComingSoon />
+        <ActivityTab serverId={serverId} />
       </TabsContent>
       <TabsContent value="stats" className="min-h-0 flex-1">
         <ComingSoon />

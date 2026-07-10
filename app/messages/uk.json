@@ -107,5 +107,15 @@
   "common_save": "Зберегти",
   "common_saved": "Збережено",
   "errors_avatar_too_large": "Зображення завелике (макс. 2 МБ)",
-  "errors_color_invalid": "Формат #rrggbb"
+  "errors_color_invalid": "Формат #rrggbb",
+  "activity_voice_join": "{name} приєднався до голосового чату",
+  "activity_voice_leave": "{name} покинув голосовий чат",
+  "activity_stream_start": "{name} почав стрім",
+  "activity_stream_stop": "{name} зупинив стрім",
+  "activity_rec_start": "{name} почав запис голосу",
+  "activity_rec_stop": "{name} зупинив запис голосу",
+  "activity_member_join": "{name} приєднався до сервера",
+  "activity_member_kick": "{name} виключено з сервера",
+  "activity_former_member": "Колишній учасник",
+  "activity_empty": "Поки що немає активності"
 }
