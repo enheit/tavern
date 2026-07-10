@@ -47,3 +47,14 @@
 - Notes for dependents: import contract types/schemas from `@tavern/shared` (single barrel). Preset zod enum is
   `PresetIdSchema` (domain). Error zod enum is `errorCodeSchema` (errors). WS parse entrypoints:
   `parseClientMessage`/`parseServerMessage`. `ScreenSource` is both a type and `ScreenSourceSchema`.
+
+## S0.3 — CI skeleton — 2026-07-10
+- Agent: claude-opus-4-8[1m] (orchestrator, inline — needs git/gh + CI integrator judgment)
+- DoD results:
+  - `node scripts/check-fr-traceability.mjs` → exit 0, prints `covered 1/45` (FR-32 from S0.2)
+  - `STRICT=1 node scripts/check-fr-traceability.mjs` → exit 1 (strict fails while FRs missing)
+  - `ls .github/workflows/` → exactly `ci.yml` (old Tauri workflow replaced)
+  - CI run GREEN: https://github.com/enheit/tavern/actions/runs/29063828011 (job `ci` 16s — install→lint→format:check→typecheck→test:coverage→build→check-fr all ✓)
+- Files created/modified: .github/workflows/ci.yml (rewritten), scripts/check-fr-traceability.mjs, package.json (+check:fr script)
+- Deviations: S0.3 landed as TWO commits (code `feat(S0.3)` = b094cc1, then this progress record) instead of one — the env's git guard blocks amend+force-push of already-pushed commits, and the green run URL is only known after pushing. Append-only, non-destructive; the recorded run is the S0.3 CI run watched green on the code.
+- Notes for dependents: CI runs on every push to feat/electron. Node-20-deprecation annotation on checkout/setup-node/pnpm actions is cosmetic (forced to node24, non-blocking). Later steps ADD jobs to ci.yml (§11), never restructure it. Traceability STRICT flips in S12.4.
