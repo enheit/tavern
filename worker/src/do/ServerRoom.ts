@@ -12,6 +12,7 @@ import type { ClientMessage, ErrorCode } from "@tavern/shared";
 import { migrate } from "./sql";
 import { RoomState } from "./roomState";
 import type { ConnAttachment, RoomMeta } from "./roomState";
+import { ChatModule } from "./chat";
 
 // The Worker sets this header on EVERY DO stub call; the DO has no other ingress path, so a missing
 // header on an /internal/* route means the request did not originate from the Worker → 403.
@@ -21,6 +22,8 @@ const INTERNAL_HEADER = "X-Tavern-Internal";
 // All state logic lives in RoomState; all schema/migration in sql.ts.
 export class ServerRoom extends DurableObject<Env> {
   private readonly room: RoomState;
+  // One ChatModule per DO → its rate-limit buckets are per-server (§S3.2 task 3).
+  private readonly chat: ChatModule;
   // connId → hello-timeout handle (in-memory; a 5 s pending timer keeps the DO from hibernating, so
   // the same instance handles the hello within the window — negligible cost, §S3.1 task 6).
   private readonly helloTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -35,10 +38,11 @@ export class ServerRoom extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.room = new RoomState(ctx, env);
+    this.chat = new ChatModule(ctx.storage.sql);
     this.routes = {
       hello: (ws, att) => this.handleHello(ws, att),
-      "chat.send": (ws) => this.notImplemented(ws),
-      "chat.history": (ws) => this.notImplemented(ws),
+      "chat.send": (ws, att, msg) => this.handleChatSend(ws, att, msg),
+      "chat.history": (ws, att, msg) => this.handleChatHistory(ws, att, msg),
       "voice.join": (ws) => this.notImplemented(ws),
       "voice.leave": (ws) => this.notImplemented(ws),
       "voice.state": (ws) => this.notImplemented(ws),
@@ -213,8 +217,39 @@ export class ServerRoom extends DurableObject<Env> {
       }
     }
     // Reconnect replays the full snapshot (§6.2 no delta sync); a repeat hello is idempotent.
-    this.room.send(ws, this.room.helloSnapshot(att.userId));
+    this.room.send(ws, this.room.helloSnapshot(att.userId, this.chat.lastMessageId()));
     if (firstHello) this.room.presenceOnHello(ws, att.userId, at);
+  }
+
+  // chat.send: validate + rate-limit + extract mentions + persist (ChatModule), then broadcast
+  // `chat.new` — the sender's copies carry the echoed nonce, every other socket's copy omits it.
+  private handleChatSend(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): void {
+    if (msg.t !== "chat.send") return;
+    const result = this.chat.send({
+      userId: att.userId,
+      body: msg.body,
+      nonce: msg.nonce,
+      members: this.room.listMembers(),
+      now: Date.now(),
+    });
+    if (!result.ok) {
+      // rate_limited (and the defense-in-depth bad_message) reply on this socket only; it stays open.
+      this.room.send(ws, { t: "error", code: result.code });
+      return;
+    }
+    const message = result.message;
+    this.room.broadcast({ t: "chat.new", message, nonce: msg.nonce }, { toUserId: att.userId });
+    this.room.broadcast({ t: "chat.new", message }, { except: this.room.socketsOf(att.userId) });
+  }
+
+  // chat.history: paginated read (ChatModule), replied only to the requesting socket.
+  private handleChatHistory(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): void {
+    if (msg.t !== "chat.history") return;
+    const page = this.chat.history({
+      ...(msg.beforeId === undefined ? {} : { beforeId: msg.beforeId }),
+      limit: msg.limit,
+    });
+    this.room.send(ws, { t: "chat.page", messages: page.messages, hasMore: page.hasMore });
   }
 
   private rejectFrame(ws: WebSocket): void {

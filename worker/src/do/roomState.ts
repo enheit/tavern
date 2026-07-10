@@ -172,7 +172,7 @@ export class RoomState {
     }
   }
 
-  helloSnapshot(userId: string): HelloOk {
+  helloSnapshot(userId: string, lastMessageId: number): HelloOk {
     const meta = invariant(this.meta, "room meta not initialized");
     const members = this.listMembers();
     const selfMember = invariant(
@@ -185,11 +185,11 @@ export class RoomState {
       serverMeta: meta,
       members,
       // Pinned stubs filled by later steps: voice (S3.4), streams (S8), recording (S9.3),
-      // lastMessageId (S3.2), costStatus (S7.1).
+      // costStatus (S7.1). lastMessageId now comes from ChatModule (S3.2 task 7).
       voice: { members: [], sessionStartedAt: null },
       streams: [],
       recording: { active: false },
-      lastMessageId: 0,
+      lastMessageId,
       costStatus: { usedGB: 0, capGB: LIMITS.egressKillGB, blocked: false },
     };
   }
