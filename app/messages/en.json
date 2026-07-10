@@ -117,5 +117,22 @@
   "activity_member_join": "{name} joined the server",
   "activity_member_kick": "{name} was kicked",
   "activity_former_member": "Former member",
-  "activity_empty": "No activity yet"
+  "activity_empty": "No activity yet",
+  "voice_join": "Join voice",
+  "voice_leave": "Leave",
+  "voice_mute": "Mute",
+  "voice_unmute": "Unmute",
+  "voice_deafen": "Deafen",
+  "voice_undeafen": "Undeafen",
+  "voice_volume": "Volume",
+  "voice_reset": "Reset",
+  "voice_mute_user": "Mute {name}",
+  "voice_elsewhere_title": "Already in voice",
+  "voice_elsewhere_body": "Leave that voice channel and join here?",
+  "voice_elsewhere_confirm": "Switch",
+  "voice_elsewhere_cancel": "Cancel",
+  "settings_tabs_voice": "Voice",
+  "settings_voice_input": "Input device",
+  "settings_voice_output": "Output device",
+  "settings_voice_noise": "Noise suppression"
 }

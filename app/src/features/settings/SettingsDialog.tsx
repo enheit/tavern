@@ -1,6 +1,7 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { m } from "@/paraglide/messages.js";
+import { VoiceSettingsSection } from "@/features/voice/VoiceSettingsSection";
 import { AccountSection } from "./AccountSection";
 import { AppSection } from "./AppSection";
 import { NotificationsSection } from "./NotificationsSection";
@@ -31,6 +32,9 @@ export function SettingsDialog({
             <TabsTrigger value="notifications" data-testid="settings-tab-notifications">
               {m.settings_tabs_notifications()}
             </TabsTrigger>
+            <TabsTrigger value="voice" data-testid="settings-tab-voice">
+              {m.settings_tabs_voice()}
+            </TabsTrigger>
           </TabsList>
           <TabsContent value="account">
             <AccountSection />
@@ -40,6 +44,9 @@ export function SettingsDialog({
           </TabsContent>
           <TabsContent value="notifications">
             <NotificationsSection />
+          </TabsContent>
+          <TabsContent value="voice">
+            <VoiceSettingsSection />
           </TabsContent>
         </Tabs>
       </DialogContent>

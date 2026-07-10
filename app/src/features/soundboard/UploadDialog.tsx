@@ -6,24 +6,15 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+// Default duration seam (FR-34 client-side check): the decode lives in the media layer so the audio
+// engine is reached only via the S7.2 audio port — never constructed directly from a feature.
+import { decodeDurationMs } from "@/media/decodeDuration";
 import { m } from "@/paraglide/messages.js";
 
 // The name form reuses the shared Sound schema's `name` constraint (1..32) via `.pick` — no zod is
 // imported into the app and shared/api.ts stays untouched.
 const NameForm = Sound.pick({ name: true });
 type NameFormValues = { name: string };
-
-// Default duration seam (FR-34 client-side check): decode the mp3 and read its duration. Injectable so
-// tests stub it without a large fixture. Never runs when a stub is supplied.
-async function decodeDurationMs(file: File): Promise<number> {
-  const ctx = new AudioContext();
-  try {
-    const buffer = await ctx.decodeAudioData(await file.arrayBuffer());
-    return Math.round(buffer.duration * 1000);
-  } finally {
-    void ctx.close();
-  }
-}
 
 interface UploadDialogProps {
   open: boolean;

@@ -237,6 +237,13 @@ export class PublishSession {
     if (track) track.enabled = enabled;
   }
 
+  // Read-only accessor for the mic's sender so the pinned FR-21/22 `capture.retoggleMic(current,
+  // sender, opts)` helper can `replaceTrack` mid-call without a renegotiation. The sender is created
+  // in `publishMic` (§7.1 publishPC); returns null before the mic is published.
+  micSender(): RTCRtpSender | null {
+    return this.senders.get(micTrackName(this.userId)) ?? null;
+  }
+
   async unpublish(trackNames: string[]): Promise<void> {
     await this.enqueue(async () => {
       const sessionId = this.requireSession();

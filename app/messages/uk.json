@@ -117,5 +117,22 @@
   "activity_member_join": "{name} приєднався до сервера",
   "activity_member_kick": "{name} виключено з сервера",
   "activity_former_member": "Колишній учасник",
-  "activity_empty": "Поки що немає активності"
+  "activity_empty": "Поки що немає активності",
+  "voice_join": "Приєднатися",
+  "voice_leave": "Вийти",
+  "voice_mute": "Вимкнути мікрофон",
+  "voice_unmute": "Увімкнути мікрофон",
+  "voice_deafen": "Вимкнути звук",
+  "voice_undeafen": "Увімкнути звук",
+  "voice_volume": "Гучність",
+  "voice_reset": "Скинути",
+  "voice_mute_user": "Заглушити {name}",
+  "voice_elsewhere_title": "Ви вже у голосовому каналі",
+  "voice_elsewhere_body": "Вийти з того каналу та приєднатися тут?",
+  "voice_elsewhere_confirm": "Перейти",
+  "voice_elsewhere_cancel": "Скасувати",
+  "settings_tabs_voice": "Голос",
+  "settings_voice_input": "Пристрій вводу",
+  "settings_voice_output": "Пристрій виводу",
+  "settings_voice_noise": "Придушення шуму"
 }
