@@ -62,5 +62,15 @@
   "error_bad_trim": "Invalid trim range",
   "error_bad_part_size": "Upload failed — try again",
   "error_recording_too_long": "The recording is too long",
-  "error_server_full": "This server is full"
+  "error_server_full": "This server is full",
+  "tabs_chat": "Chat",
+  "tabs_activity": "Activity",
+  "tabs_stats": "Stats",
+  "tabs_recordings": "Recordings",
+  "common_coming_soon": "Coming soon",
+  "chat_composer_placeholder": "Message #general",
+  "chat_composer_send": "Send",
+  "chat_composer_counter": "{n} / 2000",
+  "chat_emoji_label": "Emoji",
+  "chat_history_loading": "Loading…"
 }

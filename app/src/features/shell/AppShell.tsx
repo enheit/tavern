@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { ChatTabs } from "@/features/chat/ChatTabs";
 import { ChannelsPanel } from "@/features/servers/ChannelsPanel";
 import { PeoplePanel } from "@/features/servers/PeoplePanel";
 import { Header } from "./Header";
@@ -37,7 +38,9 @@ export function AppShell({ serverId }: { serverId: string }) {
         className="border-t bg-card"
       />
       <div style={{ gridArea: "right" }} className="flex min-h-0 flex-col border-l bg-card">
-        <div data-testid="slot-tabs" className="min-h-0 flex-1 overflow-hidden" />
+        <div data-testid="slot-tabs" className="min-h-0 flex-1 overflow-hidden">
+          <ChatTabs serverId={serverId} />
+        </div>
         <div data-testid="slot-soundboard" className="h-[280px] shrink-0 border-t" />
       </div>
     </div>
