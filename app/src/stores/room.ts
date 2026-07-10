@@ -31,6 +31,10 @@ export interface RoomState {
   pendingNonces: ReadonlySet<string>;
   voice: VoiceState;
   streams: StreamInfo[];
+  // FR-33 focus mode: the single watched tile pulled fullscreen (high simulcast layer). Local-only
+  // (never a wire frame); at most one focused tile at a time; cleared on resnapshot and when the
+  // focused stream is removed.
+  focusedTrackName: string | null;
   recording: RecordingState;
   activityTail: ActivityEntry[];
   serverMeta: ServerMeta | null;
@@ -45,6 +49,8 @@ export interface RoomState {
   sendMessage: (body: string) => void;
   // FR-17: request the previous history page (`chat.history { beforeId, limit }`).
   loadOlder: () => Promise<void>;
+  // FR-33: set (or clear with null) the focused tile. Enforces exactly-one by holding a single value.
+  setFocusedTrackName: (trackName: string | null) => void;
 }
 
 const ACTIVITY_TAIL_MAX = 200;
@@ -65,6 +71,7 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
         activityTail: [],
         kicked: false,
         lastProtocolError: null,
+        focusedTrackName: null,
       };
     case "chat.new":
       // A foreign message (no matching pending nonce — echo reconciliation happens in `apply`).
@@ -103,7 +110,11 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
         ),
       };
     case "stream.removed":
-      return { streams: state.streams.filter((s) => s.trackName !== msg.trackName) };
+      // Dropping a stream also drops any focus on it (FR-33 exactly-one-focused invariant).
+      return {
+        streams: state.streams.filter((s) => s.trackName !== msg.trackName),
+        ...(state.focusedTrackName === msg.trackName ? { focusedTrackName: null } : {}),
+      };
     // `activity.new` is handled in `apply` via `appendActivity` (dedup by id) — never reaches here.
     case "rec.state":
       return { recording: msg.recording };
@@ -135,6 +146,7 @@ export function createRoomStore(serverId: string) {
     pendingNonces: new Set<string>(),
     voice: { members: [], sessionStartedAt: null },
     streams: [],
+    focusedTrackName: null,
     recording: { active: false },
     activityTail: [],
     serverMeta: null,
@@ -202,6 +214,7 @@ export function createRoomStore(serverId: string) {
         // WS not open — the optimistic row stays; a reconnect resnapshot (hello.ok) clears it.
       }
     },
+    setFocusedTrackName: (trackName) => set({ focusedTrackName: trackName }),
     loadOlder: async () => {
       const { messages } = get();
       const oldest = messages[0];
