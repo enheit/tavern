@@ -8,6 +8,7 @@ allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+  electron: true
 minimumReleaseAgeExclude:
   - "@cloudflare/vitest-pool-workers@0.18.4"
   - miniflare@4.20260708.1
