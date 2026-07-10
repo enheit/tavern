@@ -5,10 +5,11 @@ import {
   CreateServerRequest,
   JoinServerRequest,
   LIMITS,
+  PatchServerRequest,
   StatsResponse,
 } from "@tavern/shared";
 import type { ErrorCode, MemberInit, ServerSummary, UserProfile } from "@tavern/shared";
-import { requireAuth, requireMember, zodJson } from "../middleware";
+import { requireAdmin, requireAuth, requireMember, zodJson } from "../middleware";
 import type { MemberVars } from "../middleware";
 import { hashServerPassword, verifyServerPassword } from "../lib/passwords";
 
@@ -123,6 +124,39 @@ async function notifyMemberJoin(
     });
   } catch (err: unknown) {
     console.error("member-join DO notify failed", err);
+  }
+}
+
+// Tells the server's DO the nickname changed (FR-12): it updates its cached `serverMeta.nickname` and
+// broadcasts `server.updated` to every live socket. Awaited; a DO failure is logged, never fatal — D1
+// is the source of truth and the cache re-syncs on the next member-join/hello (§9.5).
+async function notifyServerUpdated(env: Env, serverId: string, nickname: string): Promise<void> {
+  try {
+    const stub = env.SERVER_ROOM.get(env.SERVER_ROOM.idFromName(serverId));
+    await stub.fetch("https://do.internal/internal/server-updated", {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Tavern-Internal": "1" },
+      body: JSON.stringify({ nickname }),
+    });
+  } catch (err: unknown) {
+    console.error("server-updated DO notify failed", err);
+  }
+}
+
+// Tells the server's DO to evict a kicked member (FR-11): it closes the user's live sockets with a
+// `kicked` frame + close 4001, drops the member cache, and appends the `member.kick` activity (meta
+// carries the acting admin `by`). Called AFTER the D1 membership row is deleted (pinned order — a
+// racing rejoin then re-checks the password). Awaited; a DO failure is logged, never fatal (§9.5).
+async function notifyKick(env: Env, serverId: string, userId: string, by: string): Promise<void> {
+  try {
+    const stub = env.SERVER_ROOM.get(env.SERVER_ROOM.idFromName(serverId));
+    await stub.fetch("https://do.internal/internal/kick", {
+      method: "POST",
+      headers: { "content-type": "application/json", "X-Tavern-Internal": "1" },
+      body: JSON.stringify({ userId, by }),
+    });
+  } catch (err: unknown) {
+    console.error("kick DO notify failed", err);
   }
 }
 
@@ -267,6 +301,90 @@ serversRoute.get("/:id/members", requireMember, async (c) => {
     .all<MemberRow>();
   const members: UserProfile[] = rows.results.map(toProfile);
   return c.json({ members });
+});
+
+// PATCH /api/servers/:id (FR-10 password, FR-12 rename): admin-only. `requireMember` runs first (a
+// non-member gets `not_member`), then `requireAdmin` (a non-admin member gets `not_admin`). zodJson
+// rejected an empty body / bad nickname / too-short password with 400 bad_request. The `id` never
+// changes (FR-12). Returns the updated `ServerSummary`.
+serversRoute.patch("/:id", requireMember, requireAdmin, zodJson(PatchServerRequest), async (c) => {
+  const userId = invariant(c.var.userId, "requireMember guarantees userId");
+  const serverId = c.var.serverId;
+  const body = PatchServerRequest.parse(await c.req.json());
+
+  const server = invariant(
+    await c.env.DB.prepare(
+      "SELECT id, nickname, password_hash, admin_user_id, created_at FROM servers WHERE id = ?",
+    )
+      .bind(serverId)
+      .first<ServerRow>(),
+    "requireAdmin guarantees the server exists",
+  );
+
+  // FR-12 rename: NOCASE uniqueness EXCLUDING self (the column is COLLATE NOCASE, so `=` compares
+  // NOCASE). On success update D1 and tell the DO to broadcast `server.updated`.
+  if (body.nickname !== undefined) {
+    const clash = await c.env.DB.prepare("SELECT id FROM servers WHERE nickname = ? AND id <> ?")
+      .bind(body.nickname, serverId)
+      .first();
+    if (clash !== null) {
+      return c.json({ error: "nickname_taken" satisfies ErrorCode }, 409);
+    }
+    await c.env.DB.prepare("UPDATE servers SET nickname = ? WHERE id = ?")
+      .bind(body.nickname, serverId)
+      .run();
+    server.nickname = body.nickname;
+    await notifyServerUpdated(c.env, serverId, body.nickname);
+  }
+
+  // FR-10 password: a string sets the task-S2.1 hash; explicit `null` clears it (open server).
+  // Existing members are untouched — this only affects the NEXT join attempt.
+  if (body.password !== undefined) {
+    const passwordHash = body.password === null ? null : await hashServerPassword(body.password);
+    await c.env.DB.prepare("UPDATE servers SET password_hash = ? WHERE id = ?")
+      .bind(passwordHash, serverId)
+      .run();
+    server.password_hash = passwordHash;
+  }
+
+  // The summary's joinedAt is the admin's own membership timestamp (they are a member of the server).
+  const membership = invariant(
+    await c.env.DB.prepare("SELECT joined_at FROM memberships WHERE user_id = ? AND server_id = ?")
+      .bind(userId, serverId)
+      .first<{ joined_at: number }>(),
+    "the admin is a member of their own server",
+  );
+  return c.json(toSummary(server, membership.joined_at));
+});
+
+// DELETE /api/servers/:id/members/:userId (FR-11 kick): admin-only. Pinned order — (1) delete the D1
+// membership row, (2) POST /internal/kick to the DO — so a racing rejoin re-checks the password. The
+// admin cannot kick themselves (400; ownership transfer is a non-goal); an unknown target → 404.
+serversRoute.delete("/:id/members/:userId", requireMember, requireAdmin, async (c) => {
+  const adminId = invariant(c.var.userId, "requireMember guarantees userId");
+  const serverId = c.var.serverId;
+  const targetId = invariant(c.req.param("userId"), "route guarantees :userId");
+
+  if (targetId === adminId) {
+    return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  }
+
+  const membership = await c.env.DB.prepare(
+    "SELECT 1 FROM memberships WHERE user_id = ? AND server_id = ?",
+  )
+    .bind(targetId, serverId)
+    .first();
+  if (membership === null) {
+    return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  }
+
+  // (1) D1 membership removed first (source of truth); (2) DO eviction second.
+  await c.env.DB.prepare("DELETE FROM memberships WHERE user_id = ? AND server_id = ?")
+    .bind(targetId, serverId)
+    .run();
+  await notifyKick(c.env, serverId, targetId, adminId);
+
+  return c.body(null, 204);
 });
 
 // Pagination query for the activity read (§6.1 `?before&limit`). Both optional positive ints; a

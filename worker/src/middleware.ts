@@ -71,6 +71,24 @@ export const requireMember: MiddlewareHandler<{ Bindings: Env; Variables: Member
   await next();
 };
 
+// Admin guard for the `/api/servers/:id/*` admin ops (PLAN §6.1 "admin" auth column, S2.2 FR-10/11/12).
+// Runs AFTER `requireMember` in the route chain — that middleware already 401/404/403-not_member'd and
+// stashed `c.var.serverId`, so an outsider never reaches here (they get `not_member`). This adds the
+// final rung: 403 `not_admin` unless the server's `admin_user_id` is the caller.
+export const requireAdmin: MiddlewareHandler<{ Bindings: Env; Variables: MemberVars }> = async (
+  c,
+  next,
+) => {
+  const userId = c.get("userId");
+  const server = await c.env.DB.prepare("SELECT admin_user_id FROM servers WHERE id = ?")
+    .bind(c.var.serverId)
+    .first<{ admin_user_id: string }>();
+  if (server === null || server.admin_user_id !== userId) {
+    return c.json({ error: "not_admin" satisfies ErrorCode }, 403);
+  }
+  await next();
+};
+
 // zod body guard: 400 { error: 'bad_request' } on unparseable JSON or a schema mismatch; on success
 // stashes the parsed value under `validatedBody` for the route (Hono memoizes c.req.json()).
 export function zodJson<T extends z.ZodType>(schema: T): MiddlewareHandler {

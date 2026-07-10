@@ -163,25 +163,44 @@ export class ServerRoom extends DurableObject<Env> {
         this.room.broadcast({ t: "member.update", profile, at });
         return new Response(null, { status: 204 });
       }
+      // FR-11 kick (S2.2): body `{ userId, by }` (`by` = the acting admin). Order is pinned. (1) Evict
+      // every socket of the user — a `kicked` frame then close 4001 — so their UI returns to the join
+      // screen. (2) Drop the member cache + broadcast `member.left`. (3) Broadcast `presence.update
+      // offline` (the frame remaining members assert — the kicked user is gone). (4) Append the
+      // `member.kick` activity (meta carries `by`) + broadcast `activity.new`. The kicked user's own
+      // sockets are excluded from every survivor broadcast (they are closing). Response `200 { closed }`.
       case "/internal/kick": {
-        const body: { userId: string } = await request.json();
+        const body: { userId: string; by: string } = await request.json();
         const kickedSockets = this.room.socketsOf(body.userId);
+        for (const ws of kickedSockets) {
+          this.room.send(ws, { t: "kicked", at });
+          ws.close(CLOSE_KICKED, "kicked");
+        }
         this.room.removeMember(body.userId);
-        this.room.broadcast({ t: "member.left", userId: body.userId, at });
-        // FR-39 producer: append `member.kick` and broadcast `activity.new` to the survivors (the kicked
-        // user's own sockets are excluded — their UI returns to the join screen, FR-11).
         this.room.broadcast(
-          { t: "activity.new", entry: this.activity.append("member.kick", body.userId, {}, at) },
+          { t: "member.left", userId: body.userId, at },
           { except: kickedSockets },
         );
-        for (const ws of kickedSockets) ws.close(CLOSE_KICKED, "kicked");
-        return new Response(null, { status: 204 });
+        this.room.broadcast(
+          { t: "presence.update", userId: body.userId, presence: "offline", at },
+          { except: kickedSockets },
+        );
+        this.room.broadcast(
+          {
+            t: "activity.new",
+            entry: this.activity.append("member.kick", body.userId, { by: body.by }, at),
+          },
+          { except: kickedSockets },
+        );
+        return Response.json({ closed: kickedSockets.length });
       }
+      // FR-12 rename (S2.2): update the DO's cached `serverMeta.nickname`, then broadcast `server.updated`
+      // to every live socket. Response is `200 { ok: true }`.
       case "/internal/server-updated": {
         const body: { nickname: string } = await request.json();
         await this.room.patchNickname(body.nickname);
         this.room.broadcast({ t: "server.updated", nickname: body.nickname, at });
-        return new Response(null, { status: 204 });
+        return Response.json({ ok: true });
       }
       // GET /internal/activity?before&limit → { entries, hasMore } (§6.1). The Worker route validates
       // and forwards clean numeric params; a missing `limit` defaults to the page size (page() clamps).

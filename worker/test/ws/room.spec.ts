@@ -337,7 +337,8 @@ describe("FR-45 presence & room lifecycle", () => {
     const update = await colB.waitForType("member.update");
     expect(update.profile).toMatchObject({ userId: a.userId, displayName: "Renamed" });
 
-    await internalPost(stub, "/internal/kick", { userId: a.userId });
+    // S2.2 changed the /internal/kick body to `{ userId, by }` (by = acting admin) + a 200 response.
+    await internalPost(stub, "/internal/kick", { userId: a.userId, by: b.userId });
     const left = await colB.waitForType("member.left");
     expect(left.userId).toBe(a.userId);
     expect((await colA.waitForClose()).code).toBe(CLOSE_KICKED);

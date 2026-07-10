@@ -156,13 +156,15 @@ describe("FR-39 activity broadcast", () => {
     const { col: colA } = await connect(stub, a.userId);
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
 
-    await internalPost(stub, "/internal/kick", { userId: a.userId });
+    // S2.2 changed the /internal/kick body to `{ userId, by }` (by = the acting admin) + a 200 response;
+    // the member.kick activity meta now carries `by`.
+    await internalPost(stub, "/internal/kick", { userId: a.userId, by: b.userId });
 
-    // B (the survivor) receives the member.kick activity entry naming the kicked user.
+    // B (the survivor) receives the member.kick activity entry naming the kicked user + acting admin.
     const frame = await colB.waitForType("activity.new");
     expect(frame.entry.type).toBe("member.kick");
     expect(frame.entry.userId).toBe(a.userId);
-    expect(frame.entry.meta).toEqual({});
+    expect(frame.entry.meta).toEqual({ by: b.userId });
 
     // A's socket is evicted with the kicked close code, and A never receives the survivor broadcast.
     expect((await colA.waitForClose()).code).toBe(CLOSE_KICKED);
