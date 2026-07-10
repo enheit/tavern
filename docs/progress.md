@@ -26,3 +26,24 @@
      and keeps pinned config/docs verbatim.
 - Notes for dependents: pnpm is 11.10.0 (corepack). oxfmt gate is code-only (TS/JS/JSX/TSX) — do
   not rely on it to format JSON/MD. Placeholder export idiom is `export const placeholder = true;`.
+
+## S0.2 — @tavern/shared contract package — 2026-07-10
+- Agent: claude-opus-4-8[1m] (orchestrator, inline — background agent stalled twice on this step; foundation is sequential so no parallelism lost)
+- DoD results:
+  - `pnpm -F @tavern/shared test:coverage` → exit 0; 5 files / 16 tests passed; coverage Lines 100% (130/130), Branches 100% (16/16), Funcs 100% (9/9) — ≥90% gate met
+  - `pnpm typecheck && pnpm lint && pnpm format:check` → exit 0
+  - `node -e "...dependencies zod-only..."` → exit 0 (zod is the only runtime dep)
+  - `grep -c "describe('FR-32" shared/test/layout.test.ts` → 1
+- Files created: shared/src/{limits,errors,domain,presets,layout,protocol,api,ipc}.ts, shared/src/index.ts (barrel),
+  shared/vitest.config.ts, shared/test/{layout,limits,presets,protocol,contract}.test.ts; shared/package.json (deps+scripts)
+- Deviations (minor, non-contract):
+  1. `presets.ts` exports `PRESET_IDS` (`as const` data) and derives `PresetId` from it, instead of spelling the
+     literal-union type by hand as the step showed. Resulting `PresetId` type is byte-identical; the const array lets
+     `domain.ts` build the preset zod enum with NO `as`-cast (honoring §9.1's no-cast rule). Additive, not a contract change.
+  2. Added zod validators the step's prose requires but didn't name individually: `errorCodeSchema` (errors.ts),
+     `PresetIdSchema` (domain.ts), and the ipc arg/return schemas (`platformSchema`, `ScreenSourceSchema`,
+     `notificationArgSchema`, `updateInfoSchema`, `setBadgeArgSchema`, `setTokenArgSchema`, `selectSourceArgSchema`).
+     Required by contract.test.ts to round-trip the ipc surface into the coverage set.
+- Notes for dependents: import contract types/schemas from `@tavern/shared` (single barrel). Preset zod enum is
+  `PresetIdSchema` (domain). Error zod enum is `errorCodeSchema` (errors). WS parse entrypoints:
+  `parseClientMessage`/`parseServerMessage`. `ScreenSource` is both a type and `ScreenSourceSchema`.
