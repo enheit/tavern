@@ -16,6 +16,8 @@ export default defineConfig({
         bindings: {
           TEST_MIGRATIONS: await readD1Migrations("./migrations"),
           TAVERN_TEST_FAST_ALARM: "1",
+          // Fixture-backed Realtime mock (S7.1, §10) for the rtc broadcast/cost.warning WS specs.
+          TAVERN_SFU_MOCK: "1",
         },
       },
     })),

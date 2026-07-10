@@ -7,6 +7,7 @@ import { meRoute } from "./routes/me";
 import { mediaRoute } from "./routes/media";
 import { serversRoute } from "./routes/servers";
 import { wsTicketRoute } from "./routes/wsTicket";
+import { rtcRoute } from "./routes/rtc";
 import { ServerRoom } from "./do/ServerRoom";
 
 const app = new Hono<{ Bindings: Env; Variables: AuthVars }>();
@@ -38,6 +39,10 @@ app.route("/api/media", mediaRoute);
 // Server catalog (S2.1): create / join / list members. requireAuth + requireMember are applied
 // inside the router per-route.
 app.route("/api/servers", serversRoute);
+
+// RTC proxy to the Cloudflare Realtime SFU (S7.1, A3): session/tracks/renegotiate/close + ICE creds.
+// Membership + the rtc rate limit are applied inside the router; the DO enforces §8 caps.
+app.route("/api/rtc", rtcRoute);
 
 // WS ticket issuance + upgrade forwarding (S3.1, A4). Mounted at /api so it owns both
 // POST /api/ws-ticket and GET /api/servers/:id/ws (distinct from serversRoute's paths — no overlap).

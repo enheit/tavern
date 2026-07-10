@@ -8,7 +8,11 @@ export default defineConfig({
     cloudflareTest(async () => ({
       wrangler: { configPath: "./wrangler.jsonc" },
       // TEST_MIGRATIONS is applied by test/setup.ts's applyD1Migrations(); empty until S1.2.
-      miniflare: { bindings: { TEST_MIGRATIONS: await readD1Migrations("./migrations") } },
+      // TAVERN_SFU_MOCK=1 swaps the Realtime client for the fixture-backed mock (S7.1, §10) so the
+      // rtc-proxy tests never touch the live SFU — committed here so CI does not depend on .dev.vars.
+      miniflare: {
+        bindings: { TEST_MIGRATIONS: await readD1Migrations("./migrations"), TAVERN_SFU_MOCK: "1" },
+      },
     })),
   ],
   test: {
