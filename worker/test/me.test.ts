@@ -85,6 +85,16 @@ function patchProfile(token: string, body: unknown): Promise<Response> {
   });
 }
 
+// Insert a bare `user` row directly (no auth round-trip) — the fan-out seam test needs a real
+// user for the enforced memberships FK (miniflare D1 enforces REFERENCES). email is UNIQUE.
+async function seedUser(): Promise<string> {
+  const id = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO user (id, name, email, display_name) VALUES (?, ?, ?, ?)")
+    .bind(id, id, `${id}@users.tavern.invalid`, id)
+    .run();
+  return id;
+}
+
 describe("FR-43 boot call /api/me", () => {
   it("returns user + default settings + empty servers for a fresh account", async () => {
     const token = await session("boota");
@@ -319,11 +329,10 @@ describe("FR-06/FR-07 settings", () => {
 });
 
 describe("FR-03 fan-out seam (notifyJoinedServers)", () => {
-  // The `memberships` table lands in S2.1; this seam only needs its shape (server_id) to exercise the
-  // query→DO-stub path. The placeholder ServerRoom answers 501 (its /internal handler lands in S3.1);
-  // the helper fires the POST and does not gate on the response, so it resolves.
-  const MEMBERSHIPS_DDL =
-    "CREATE TABLE IF NOT EXISTS memberships (user_id TEXT NOT NULL, server_id TEXT NOT NULL, joined_at INTEGER NOT NULL, PRIMARY KEY (user_id, server_id))";
+  // The `memberships` table now lands via migration 0002 (S2.1) WITH enforced FK references to
+  // user(id)/servers(id) — the miniflare test D1 enforces them — so a joined-server row must seed a
+  // real user + real server. The placeholder ServerRoom answers 501 (its /internal handler lands in
+  // S3.1); the helper fires the POST and does not gate on the response, so it resolves.
   const profile = {
     userId: crypto.randomUUID(),
     username: "zoe",
@@ -332,17 +341,22 @@ describe("FR-03 fan-out seam (notifyJoinedServers)", () => {
   };
 
   it("POSTs member.update to each joined server's DO stub", async () => {
-    await env.DB.exec(MEMBERSHIPS_DDL);
+    const userId = await seedUser();
+    const serverId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO servers (id, nickname, password_hash, admin_user_id, created_at) VALUES (?, ?, NULL, ?, ?)",
+    )
+      .bind(serverId, `seam-${serverId.slice(0, 8)}`, userId, Date.now())
+      .run();
     await env.DB.prepare("INSERT INTO memberships (user_id, server_id, joined_at) VALUES (?, ?, ?)")
-      .bind("u-fanout", crypto.randomUUID(), Date.now())
+      .bind(userId, serverId, Date.now())
       .run();
     await expect(
-      notifyJoinedServers(env, "u-fanout", { t: "member.update", profile }),
+      notifyJoinedServers(env, userId, { t: "member.update", profile }),
     ).resolves.toBeUndefined();
   });
 
   it("no joined servers → resolves without fetching", async () => {
-    await env.DB.exec(MEMBERSHIPS_DDL);
     await expect(
       notifyJoinedServers(env, "nobody", { t: "member.update", profile }),
     ).resolves.toBeUndefined();

@@ -1,8 +1,9 @@
 import { Hono } from "hono";
 import { LIMITS, Locale, PatchProfileRequest, Theme, UserSettings } from "@tavern/shared";
-import type { ErrorCode, MeResponse, UserProfile } from "@tavern/shared";
+import type { ErrorCode, MeResponse, ServerSummary, UserProfile } from "@tavern/shared";
 import { requireAuth, zodJson } from "../middleware";
 import type { AuthVars } from "../middleware";
+import { notifyJoinedServers } from "../lib/fanout";
 
 // Non-null narrow without `!` (§9.1): a value the callers structurally guarantee (an authenticated
 // session's user row, requireAuth's userId) but TypeScript still widens to nullable.
@@ -25,6 +26,36 @@ type SettingsRow = {
   locale: string;
   theme: string;
 };
+
+// A joined-server row for the boot call — password_hash drives `hasPassword` but is NEVER returned.
+type ServerSummaryRow = {
+  id: string;
+  nickname: string;
+  admin_user_id: string;
+  password_hash: string | null;
+  created_at: number;
+  joined_at: number;
+};
+
+// Every server the user has joined, oldest-first, as ServerSummary[] (FR-43 boot payload).
+async function readJoinedServers(env: Env, userId: string): Promise<ServerSummary[]> {
+  const rows = await env.DB.prepare(
+    `SELECT s.id, s.nickname, s.admin_user_id, s.password_hash, s.created_at, m.joined_at
+     FROM memberships m JOIN servers s ON s.id = m.server_id
+     WHERE m.user_id = ?
+     ORDER BY m.joined_at ASC`,
+  )
+    .bind(userId)
+    .all<ServerSummaryRow>();
+  return rows.results.map((row) => ({
+    id: row.id,
+    nickname: row.nickname,
+    adminUserId: row.admin_user_id,
+    hasPassword: row.password_hash !== null,
+    createdAt: row.created_at,
+    joinedAt: row.joined_at,
+  }));
+}
 
 // Reads the profile columns from the auth `user` row. NO `email` is ever selected — the synthetic
 // address must never enter an API response (PLAN §5.1). avatarKey is omitted when NULL so the value
@@ -94,15 +125,16 @@ export const meRoute = new Hono<{ Bindings: Env; Variables: AuthVars }>();
 // Every /api/me/* surface is session-gated (FR-43 boot call is authenticated).
 meRoute.use("*", requireAuth);
 
-// GET /api/me — the single boot call (FR-43): profile + settings + joined servers. `servers` is a
-// pinned `[]` stub in S1.3; S2.1 replaces it with the memberships JOIN.
+// GET /api/me — the single boot call (FR-43): profile + settings + joined servers (S2.1 replaced
+// the S1.3 `[]` stub with the memberships JOIN).
 meRoute.get("/", async (c) => {
   const userId = invariant(c.var.userId, "requireAuth guarantees userId");
-  const [user, settings] = await Promise.all([
+  const [user, settings, servers] = await Promise.all([
     readProfile(c.env, userId),
     readSettings(c.env, userId),
+    readJoinedServers(c.env, userId),
   ]);
-  const body: MeResponse = { user, settings, servers: [] };
+  const body: MeResponse = { user, settings, servers };
   return c.json(body);
 });
 
@@ -152,7 +184,11 @@ meRoute.patch("/profile", zodJson(PatchProfileRequest), async (c) => {
       .run();
   }
 
-  return c.json(await readProfile(c.env, userId));
+  // FR-03/FR-04 live propagation: push the updated profile to every joined server's DO. Background
+  // (ctx.waitUntil) so the PATCH response is not blocked on fan-out; the DO handler lands in S3.1.
+  const profile = await readProfile(c.env, userId);
+  c.executionCtx.waitUntil(notifyJoinedServers(c.env, userId, { t: "member.update", profile }));
+  return c.json(profile);
 });
 
 // POST /api/me/avatar (FR-05): raw webp bytes → R2 at the LAW key `avatars/{userId}.webp` (PLAN §5.3).
@@ -184,6 +220,9 @@ meRoute.post("/avatar", async (c) => {
   await c.env.DB.prepare("UPDATE user SET avatar_key = ? WHERE id = ?")
     .bind(avatarKey, userId)
     .run();
+  // FR-05 live propagation: fan the new avatar out to joined servers' DOs (same seam as profile).
+  const profile = await readProfile(c.env, userId);
+  c.executionCtx.waitUntil(notifyJoinedServers(c.env, userId, { t: "member.update", profile }));
   return c.json({ avatarKey });
 });
 

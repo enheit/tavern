@@ -8,6 +8,10 @@ export type AuthVars = {
   userId: string | null;
 };
 
+// Adds the resolved `serverId` that `requireMember` writes after a membership check passes; the
+// member-scoped routes (GET /api/servers/:id/members, and every S3.x server sub-route) read it.
+export type MemberVars = AuthVars & { serverId: string };
+
 // Builds the per-request better-auth instance and resolves the session from the request headers.
 // getSession reads BOTH a session cookie (web) and an `Authorization: Bearer <token>` header
 // (Electron, via the bearer plugin) — one code path serves both transports (PLAN §3.4, A5).
@@ -30,6 +34,40 @@ export const requireAuth: MiddlewareHandler<{ Bindings: Env; Variables: AuthVars
   if (c.get("userId") === null) {
     return c.json({ error: "unauthorized" satisfies ErrorCode }, 401);
   }
+  await next();
+};
+
+// Member guard for `/api/servers/:id/*` (PLAN §6.1 "member" auth column). Runs standalone (it
+// re-checks the session, so routes need only `requireMember`): 401 when unauthenticated, 404
+// `not_found` when the server row is absent, 403 `not_member` when the caller has no membership
+// row. On success it stashes the validated `serverId` for the handler (c.var.serverId).
+export const requireMember: MiddlewareHandler<{ Bindings: Env; Variables: MemberVars }> = async (
+  c,
+  next,
+) => {
+  const userId = c.get("userId");
+  if (userId === null) {
+    return c.json({ error: "unauthorized" satisfies ErrorCode }, 401);
+  }
+  const serverId = c.req.param("id");
+  if (serverId === undefined) {
+    return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  }
+  const server = await c.env.DB.prepare("SELECT id FROM servers WHERE id = ?")
+    .bind(serverId)
+    .first();
+  if (server === null) {
+    return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  }
+  const membership = await c.env.DB.prepare(
+    "SELECT 1 FROM memberships WHERE user_id = ? AND server_id = ?",
+  )
+    .bind(userId, serverId)
+    .first();
+  if (membership === null) {
+    return c.json({ error: "not_member" satisfies ErrorCode }, 403);
+  }
+  c.set("serverId", serverId);
   await next();
 };
 

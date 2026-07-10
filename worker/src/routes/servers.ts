@@ -1,0 +1,211 @@
+import { Hono } from "hono";
+import { CreateServerRequest, JoinServerRequest, LIMITS } from "@tavern/shared";
+import type { ErrorCode, ServerSummary, UserProfile } from "@tavern/shared";
+import { requireAuth, requireMember, zodJson } from "../middleware";
+import type { MemberVars } from "../middleware";
+import { hashServerPassword, verifyServerPassword } from "../lib/passwords";
+
+// Non-null narrow without `!` (§9.1): mirrors the helper in routes/me.ts.
+function invariant<T>(value: T | null | undefined, message: string): T {
+  if (value === null || value === undefined) throw new Error(message);
+  return value;
+}
+
+// The stored server row (password_hash is the secret and NEVER leaves the server — ServerSummary
+// exposes only the boolean `hasPassword`).
+type ServerRow = {
+  id: string;
+  nickname: string;
+  password_hash: string | null;
+  admin_user_id: string;
+  created_at: number;
+};
+
+// The joined member's user columns (same projection as routes/me.ts readProfile — email is never
+// selected, §5.1). avatar_key stays NULL for a member with no avatar.
+type MemberRow = {
+  id: string;
+  username: string;
+  display_name: string;
+  color: string;
+  avatar_key: string | null;
+};
+
+// Builds the wire ServerSummary from a stored row + the caller's membership timestamp. hasPassword
+// is derived from the hash's presence; the hash itself is dropped here.
+function toSummary(row: ServerRow, joinedAt: number): ServerSummary {
+  return {
+    id: row.id,
+    nickname: row.nickname,
+    adminUserId: row.admin_user_id,
+    hasPassword: row.password_hash !== null,
+    createdAt: row.created_at,
+    joinedAt,
+  };
+}
+
+// UserProfile from a member row (avatarKey omitted when NULL to satisfy exactOptionalPropertyTypes).
+function toProfile(row: MemberRow): UserProfile {
+  return {
+    userId: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    color: row.color,
+    ...(row.avatar_key !== null ? { avatarKey: row.avatar_key } : {}),
+  };
+}
+
+// Count of servers the user belongs to (the per-user cap is on membership count, §App-B).
+async function membershipCount(env: Env, userId: string): Promise<number> {
+  const row = invariant(
+    await env.DB.prepare("SELECT COUNT(*) AS n FROM memberships WHERE user_id = ?")
+      .bind(userId)
+      .first<{ n: number }>(),
+    "COUNT(*) returns a row",
+  );
+  return row.n;
+}
+
+// Fire-and-forget notice to the server's ServerRoom DO that a member joined (FR-03 boot wiring).
+// The DO's `/internal/*` handler lands in S3.1; until then the placeholder answers 501 (a Response,
+// not a throw), so the catch only guards a genuine transport failure (§9.5 — logged, never swallowed).
+function notifyMemberJoined(env: Env, serverId: string, userId: string): Promise<Response> {
+  const stub = env.SERVER_ROOM.get(env.SERVER_ROOM.idFromName(serverId));
+  return stub.fetch("https://do.internal/internal/member-joined", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ t: "member.joined", userId }),
+  });
+}
+
+export const serversRoute = new Hono<{ Bindings: Env; Variables: MemberVars }>();
+
+// POST /api/servers (FR-08): create a server, creator becomes admin + first member, 2 default
+// channels seeded (FR-13). zodJson already rejected a bad nickname/password with 400 bad_request.
+serversRoute.post("/", requireAuth, zodJson(CreateServerRequest), async (c) => {
+  const userId = invariant(c.var.userId, "requireAuth guarantees userId");
+  const body = CreateServerRequest.parse(await c.req.json());
+
+  // Case-insensitive uniqueness (the column is COLLATE NOCASE, so `=` compares NOCASE).
+  const clash = await c.env.DB.prepare("SELECT id FROM servers WHERE nickname = ?")
+    .bind(body.nickname)
+    .first();
+  if (clash !== null) {
+    return c.json({ error: "nickname_taken" satisfies ErrorCode }, 409);
+  }
+
+  if ((await membershipCount(c.env, userId)) >= LIMITS.maxServersPerUser) {
+    return c.json({ error: "server_cap" satisfies ErrorCode }, 403);
+  }
+
+  const now = Date.now();
+  const serverId = crypto.randomUUID();
+  const passwordHash = body.password !== undefined ? await hashServerPassword(body.password) : null;
+
+  // One atomic batch: server + the 2 fixed channels (voice "Voice", text "General", FR-13) +
+  // the creator's membership row.
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "INSERT INTO servers (id, nickname, password_hash, admin_user_id, created_at) VALUES (?, ?, ?, ?, ?)",
+    ).bind(serverId, body.nickname, passwordHash, userId, now),
+    c.env.DB.prepare(
+      "INSERT INTO channels (id, server_id, kind, name, created_at) VALUES (?, ?, 'voice', 'Voice', ?)",
+    ).bind(crypto.randomUUID(), serverId, now),
+    c.env.DB.prepare(
+      "INSERT INTO channels (id, server_id, kind, name, created_at) VALUES (?, ?, 'text', 'General', ?)",
+    ).bind(crypto.randomUUID(), serverId, now),
+    c.env.DB.prepare(
+      "INSERT INTO memberships (user_id, server_id, joined_at) VALUES (?, ?, ?)",
+    ).bind(userId, serverId, now),
+  ]);
+
+  const summary = toSummary(
+    {
+      id: serverId,
+      nickname: body.nickname,
+      password_hash: passwordHash,
+      admin_user_id: userId,
+      created_at: now,
+    },
+    now,
+  );
+  return c.json(summary, 201);
+});
+
+// POST /api/servers/join (FR-09): join by nickname (+ optional password). Idempotent — a re-join
+// returns the existing summary and is checked BEFORE the fullness guard so a member is never locked
+// out of their own server.
+serversRoute.post("/join", requireAuth, zodJson(JoinServerRequest), async (c) => {
+  const userId = invariant(c.var.userId, "requireAuth guarantees userId");
+  const body = JoinServerRequest.parse(await c.req.json());
+
+  const server = await c.env.DB.prepare(
+    "SELECT id, nickname, password_hash, admin_user_id, created_at FROM servers WHERE nickname = ?",
+  )
+    .bind(body.nickname)
+    .first<ServerRow>();
+  if (server === null) {
+    return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  }
+
+  if (server.password_hash !== null) {
+    const ok =
+      body.password !== undefined &&
+      (await verifyServerPassword(body.password, server.password_hash));
+    if (!ok) {
+      return c.json({ error: "wrong_password" satisfies ErrorCode }, 403);
+    }
+  }
+
+  // Already a member → return the existing summary (before any cap/fullness check).
+  const existing = await c.env.DB.prepare(
+    "SELECT joined_at FROM memberships WHERE user_id = ? AND server_id = ?",
+  )
+    .bind(userId, server.id)
+    .first<{ joined_at: number }>();
+  if (existing !== null) {
+    return c.json(toSummary(server, existing.joined_at));
+  }
+
+  if ((await membershipCount(c.env, userId)) >= LIMITS.maxServersPerUser) {
+    return c.json({ error: "server_cap" satisfies ErrorCode }, 403);
+  }
+
+  // FR-09 max-members cap: count ≥ cap → server_full.
+  const memberCount = invariant(
+    await c.env.DB.prepare("SELECT COUNT(*) AS n FROM memberships WHERE server_id = ?")
+      .bind(server.id)
+      .first<{ n: number }>(),
+    "COUNT(*) returns a row",
+  ).n;
+  if (memberCount >= LIMITS.maxMembersPerServer) {
+    return c.json({ error: "server_full" satisfies ErrorCode }, 403);
+  }
+
+  const now = Date.now();
+  await c.env.DB.prepare("INSERT INTO memberships (user_id, server_id, joined_at) VALUES (?, ?, ?)")
+    .bind(userId, server.id, now)
+    .run();
+
+  c.executionCtx.waitUntil(
+    notifyMemberJoined(c.env, server.id, userId).catch((err: unknown) => {
+      console.error("member.joined DO notify failed", err);
+    }),
+  );
+
+  return c.json(toSummary(server, now));
+});
+
+// GET /api/servers/:id/members: member profiles (presence is pushed over WS by the DO, not here).
+serversRoute.get("/:id/members", requireMember, async (c) => {
+  const rows = await c.env.DB.prepare(
+    `SELECT u.id, u.username, u.display_name, u.color, u.avatar_key
+     FROM memberships m JOIN user u ON u.id = m.user_id
+     WHERE m.server_id = ?
+     ORDER BY m.joined_at ASC`,
+  )
+    .bind(c.var.serverId)
+    .all<MemberRow>();
+  const members: UserProfile[] = rows.results.map(toProfile);
+  return c.json({ members });
+});

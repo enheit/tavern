@@ -5,6 +5,7 @@ import type { AuthVars } from "./middleware";
 import { registerRoute } from "./routes/register";
 import { meRoute } from "./routes/me";
 import { mediaRoute } from "./routes/media";
+import { serversRoute } from "./routes/servers";
 import { ServerRoom } from "./do/ServerRoom";
 
 const app = new Hono<{ Bindings: Env; Variables: AuthVars }>();
@@ -32,6 +33,10 @@ app.route("/api/auth-wrap", registerRoute);
 // requireAuth is applied inside each router. /internal/* is NOT routed here — it is DO-stub-only.
 app.route("/api/me", meRoute);
 app.route("/api/media", mediaRoute);
+
+// Server catalog (S2.1): create / join / list members. requireAuth + requireMember are applied
+// inside the router per-route.
+app.route("/api/servers", serversRoute);
 
 // Hono's default notFound is plain text; the app-wide envelope is { error: ErrorCode }.
 app.notFound((c) => c.json({ error: "not_found" satisfies ErrorCode }, 404));
