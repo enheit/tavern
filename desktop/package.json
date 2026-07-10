@@ -1,0 +1,9 @@
+{
+  "name": "@tavern/desktop",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

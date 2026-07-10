@@ -1,0 +1,6 @@
+packages:
+  - shared
+  - worker
+  - app
+  - desktop
+  - e2e
