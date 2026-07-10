@@ -1,4 +1,5 @@
-import { LogOutIcon } from "lucide-react";
+import { LogOutIcon, SettingsIcon } from "lucide-react";
+import { useState } from "react";
 import { buttonVariants } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -8,6 +9,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/features/auth/useAuth";
 import { ServerSwitcher } from "@/features/servers/ServerSwitcher";
+import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { cn } from "@/lib/utils";
 import type { WsStatus } from "@/lib/wsClient";
 import { m } from "@/paraglide/messages.js";
@@ -62,36 +64,44 @@ function ConnectionDot() {
   );
 }
 
-// FR-11 client side gets its logout here; Settings joins this menu in S6.2.
+// FR-11 client-side logout + the FR-16/settings entry point (opens the controlled SettingsDialog).
 function UserMenu() {
   const { logout } = useAuth();
   const profile = useSessionStore((s) => s.profile);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const initial = profile !== null ? profile.displayName.charAt(0) : "";
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        data-testid="user-menu"
-        aria-label={m.shell_user_menu_logout()}
-        className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "rounded-full")}
-      >
-        <span
-          className="flex size-6 items-center justify-center rounded-full text-xs font-medium text-white"
-          style={{ backgroundColor: profile?.color ?? "#71717a" }}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          data-testid="user-menu"
+          aria-label={m.settings_title()}
+          className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "rounded-full")}
         >
-          {initial}
-        </span>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem
-          data-testid="user-menu-logout"
-          onClick={() => {
-            void logout();
-          }}
-        >
-          <LogOutIcon />
-          {m.shell_user_menu_logout()}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <span
+            className="flex size-6 items-center justify-center rounded-full text-xs font-medium text-white"
+            style={{ backgroundColor: profile?.color ?? "#71717a" }}
+          >
+            {initial}
+          </span>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem data-testid="user-menu-settings" onClick={() => setSettingsOpen(true)}>
+            <SettingsIcon />
+            {m.shell_user_menu_settings()}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            data-testid="user-menu-logout"
+            onClick={() => {
+              void logout();
+            }}
+          >
+            <LogOutIcon />
+            {m.shell_user_menu_logout()}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+    </>
   );
 }

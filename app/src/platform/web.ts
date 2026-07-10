@@ -1,5 +1,15 @@
 import type { PlatformBridge } from "./types";
 
+declare global {
+  interface Window {
+    // FR-16 / §10 notification test hook: under TAVERN_E2E the renderer cannot read the process env,
+    // so the e2e injects this array (via addInitScript) as the "TAVERN_E2E=1" signal. When present,
+    // both platform bridges record `{ title, body, serverId }` here instead of displaying a real
+    // system notification, letting specs assert the decision rule without OS-level notifications.
+    __tavernTestNotifications?: { title: string; body: string; serverId: string }[];
+  }
+}
+
 // The web implementation of PlatformBridge (FR-42): browser APIs only. No system-audio loopback,
 // no auto-update, secrets live in same-origin cookies (so the token store is a no-op here).
 export function createWebPlatform(): PlatformBridge {
@@ -26,9 +36,15 @@ export function createWebPlatform(): PlatformBridge {
     },
     notifications: {
       show: async (n) => {
-        if (typeof Notification === "undefined") return;
-        if (Notification.permission === "default") await Notification.requestPermission();
-        if (Notification.permission !== "granted") return;
+        // oxlint-disable-next-line no-underscore-dangle -- pinned S6.2 e2e notification test-hook global
+        const sink = typeof window === "undefined" ? undefined : window.__tavernTestNotifications;
+        if (sink !== undefined) {
+          sink.push({ title: n.title, body: n.body, serverId: n.tag });
+          return;
+        }
+        // Permission is requested only on the user gesture of enabling a toggle (requestPermission),
+        // never here — show just displays when already granted, otherwise no-ops.
+        if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
         const notification = new Notification(n.title, { body: n.body, tag: n.tag });
         notification.addEventListener("click", () => {
           for (const cb of clickCallbacks) cb(n.tag);
@@ -39,6 +55,12 @@ export function createWebPlatform(): PlatformBridge {
         return () => {
           clickCallbacks.delete(cb);
         };
+      },
+      requestPermission: async () => {
+        if (typeof Notification === "undefined") return false;
+        if (Notification.permission === "granted") return true;
+        if (Notification.permission === "denied") return false;
+        return (await Notification.requestPermission()) === "granted";
       },
     },
     updates: {
