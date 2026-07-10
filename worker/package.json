@@ -16,12 +16,15 @@
   },
   "dependencies": {
     "@tavern/shared": "workspace:*",
+    "better-auth": "1.6.23",
+    "drizzle-orm": "0.45.2",
     "hono": "4.12.28",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "0.18.4",
     "@vitest/coverage-istanbul": "4.1.10",
+    "drizzle-kit": "0.31.10",
     "vitest": "4.1.10",
     "wrangler": "4.110.0"
   }
