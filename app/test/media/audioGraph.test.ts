@@ -181,6 +181,28 @@ describe("AudioGraph lifecycle", () => {
     graph.stopSoundboard();
   });
 
+  it("releaseRecordingMix (FR-25) detaches the tap but leaves the live path to deafenGain intact", () => {
+    graph.attachRemoteMic("u1", fakeStream());
+    const recStream = graph.mixForRecording(fakeTrack("audio"));
+    const ctx = port.last();
+    const dest = ctx.destinations[0];
+    const userGain = ctx.gains[FIRST_USER];
+    const micSource = ctx.sources.at(-1);
+    expect(recStream).toBe(dest?.stream);
+    expect(userGain?.outputs).toContain(dest);
+    expect(userGain?.outputs).toContain(ctx.gains[DEAFEN]);
+    expect(ctx.gains[SB]?.outputs).toContain(dest);
+
+    graph.releaseRecordingMix();
+    // the recording tap is gone from every source, but the live path (→ deafenGain) is untouched
+    expect(userGain?.outputs).not.toContain(dest);
+    expect(userGain?.outputs).toContain(ctx.gains[DEAFEN]);
+    expect(ctx.gains[SB]?.outputs).not.toContain(dest);
+    expect(micSource?.disconnected).toBe(true);
+    // idempotent — a second release is a no-op
+    expect(() => graph.releaseRecordingMix()).not.toThrow();
+  });
+
   it("close() closes the context and clears the graph", async () => {
     graph.attachRemoteMic("u1", fakeStream());
     await graph.close();

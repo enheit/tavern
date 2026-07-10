@@ -1,5 +1,4 @@
 import {
-  CircleIcon,
   HeadphoneOffIcon,
   HeadphonesIcon,
   LogInIcon,
@@ -13,6 +12,7 @@ import { useState } from "react";
 import { useStore } from "zustand";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { RecordButton, stopRecording } from "@/features/recordings/RecordButton";
 import { SharePickerDialog } from "@/features/streams/SharePickerDialog";
 import { useScreenShare } from "@/features/streams/useScreenShare";
 import { TimerChip } from "@/features/voice/TimerChip";
@@ -39,6 +39,13 @@ export function ControlsBar({ serverId }: { serverId: string }) {
     });
   };
 
+  // FR-25 graceful leave: if this client owns the active recording, stop-and-complete it BEFORE
+  // voice.leave — a bare leave would dirty-end (discard) the recording server-side.
+  const onLeave = async (): Promise<void> => {
+    await stopRecording(serverId);
+    await leave();
+  };
+
   return (
     <div data-testid="controls-bar" className="flex h-full items-center gap-1.5 px-3">
       {active ? (
@@ -46,7 +53,7 @@ export function ControlsBar({ serverId }: { serverId: string }) {
           variant="destructive"
           size="sm"
           data-testid="controls-leave"
-          onClick={() => void leave()}
+          onClick={() => void onLeave()}
         >
           <PhoneOffIcon />
           {m.voice_leave()}
@@ -95,13 +102,12 @@ export function ControlsBar({ serverId }: { serverId: string }) {
       >
         <MonitorUpIcon />
       </Button>
-      {/* Disabled placeholders — webcam (S8.3), record (S9.3). */}
+      {/* Disabled placeholder — webcam (S8.3). */}
       <Button variant="ghost" size="icon-sm" data-testid="controls-cam" disabled>
         <VideoIcon />
       </Button>
-      <Button variant="ghost" size="icon-sm" data-testid="controls-record" disabled>
-        <CircleIcon />
-      </Button>
+      {/* FR-25 record toggle + the red REC indicator (visible to all voice members). */}
+      <RecordButton serverId={serverId} inVoice={active} />
       <div className="flex-1" />
       <TimerChip sessionStartedAt={sessionStartedAt} />
       <SharePickerDialog

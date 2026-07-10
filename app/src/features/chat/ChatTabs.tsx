@@ -1,11 +1,12 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ActivityTab } from "@/features/activity/ActivityTab";
+import { RecordingsTab } from "@/features/recordings/RecordingsTab";
 import { m } from "@/paraglide/messages.js";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 
-// The right-column tabs slot (§7.6, order Chat·Activity·Stats·Recordings). Chat + Activity render
-// content; Stats/Recordings stay placeholders until S10.2 / S9.3.
+// The right-column tabs slot (§7.6, order Chat·Activity·Stats·Recordings). Chat + Activity + Recordings
+// render content; Stats stays a placeholder until S10.2.
 function ComingSoon() {
   return (
     <div
@@ -49,7 +50,7 @@ export function ChatTabs({ serverId }: { serverId: string }) {
         <ComingSoon />
       </TabsContent>
       <TabsContent value="recordings" className="min-h-0 flex-1">
-        <ComingSoon />
+        <RecordingsTab serverId={serverId} />
       </TabsContent>
     </Tabs>
   );

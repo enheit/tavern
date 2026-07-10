@@ -17,7 +17,9 @@ export class ActivityModule {
   append(
     type: ActivityType,
     userId: string,
-    meta: Record<string, string> = {},
+    // App-A pins `rec.stop meta:{aborted:true}` (boolean); ActivityEntry.meta (§domain.ts) already
+    // admits string|number|boolean, so the append surface matches it (S9.3 widened from string-only).
+    meta: Record<string, string | number | boolean> = {},
     now: number = Date.now(),
   ): ActivityEntry {
     const row = this.sql

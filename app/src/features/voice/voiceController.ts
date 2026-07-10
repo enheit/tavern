@@ -336,6 +336,16 @@ export class VoiceController {
     return this.publish;
   }
 
+  // FR-25 recording seam (S9.3): the recorder mixes the shared audio graph + the live mic, both owned
+  // here. Exposed like screenPublisher() so the RecordButton drives the recorder without a second
+  // graph/mic. Null until fully joined (mic acquired). `instanceof` narrows GraphLike → AudioGraph
+  // without a cast (§9.1); the fake graph in unit tests is not an AudioGraph, so it never reaches here.
+  recorderInputs(): { graph: AudioGraph; localMic: MediaStreamTrack } | null {
+    const graph = this.deps.graph;
+    if (!(graph instanceof AudioGraph) || this.localMic === null) return null;
+    return { graph, localMic: this.localMic };
+  }
+
   // FR-21 output change — reroutes remote voice, streams, and soundboard (§7.3).
   async setSink(sinkId: string): Promise<void> {
     if (this.publish === null) return;

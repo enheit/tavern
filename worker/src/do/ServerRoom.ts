@@ -18,6 +18,7 @@ import { ChatModule } from "./chat";
 import { ActivityModule } from "./activity";
 import { StatsModule } from "./stats";
 import { CostMeter } from "./costMeter";
+import { RecordingsModule } from "./recordings";
 import {
   createSound,
   deleteSound,
@@ -28,6 +29,18 @@ import {
   TavernError,
 } from "./soundboard";
 import type { Actor, SoundPatch } from "./soundboard";
+
+// Internal recording route bodies (Worker → DO). The Worker route resolves the caller's userId + admin
+// from the session; the DO decides authorization from its own registry (§7.4).
+const recOpenBody = z.object({ userId: z.string() });
+const recResolveBody = z.object({ userId: z.string(), recordingId: z.string() });
+const recFinalizeBody = z.object({ recordingId: z.string(), durationMs: z.number() });
+const recAbortBody = z.object({ userId: z.string(), recordingId: z.string() });
+const recDeleteBody = z.object({
+  userId: z.string(),
+  isAdmin: z.boolean(),
+  recordingId: z.string(),
+});
 
 // The `sound.updated` broadcast fires after every create/patch/delete; clients refetch the list (S9.2).
 // The create body carries the not-yet-persisted sound (playCount is derived, so omitted) + its R2 key.
@@ -87,6 +100,10 @@ export class ServerRoom extends DurableObject<Env> {
   // One CostMeter per DO → §8 G5 egress estimate + kill switch. Ticked on the 60s alarm, reprices on
   // layer, gates non-mic pulls at the cap; snapshotted into hello.ok.costStatus.
   private readonly costMeter: CostMeter;
+  // One RecordingsModule per DO → the single active-recording state machine (FR-25). Fed by the
+  // rec.start/rec.stop router + the disconnect/leave dirty-end path; the Worker multipart routes reach
+  // it via /internal/recordings/*. Broadcasts + activity go through `room`/`activity`.
+  private readonly recordings: RecordingsModule;
   // connId → hello-timeout handle (in-memory; a 5 s pending timer keeps the DO from hibernating, so
   // the same instance handles the hello within the window — negligible cost, §S3.1 task 6).
   private readonly helloTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -111,6 +128,13 @@ export class ServerRoom extends DurableObject<Env> {
     this.activity = new ActivityModule(ctx.storage.sql);
     this.stats = new StatsModule(ctx);
     this.costMeter = new CostMeter(ctx, env);
+    this.recordings = new RecordingsModule({
+      sql: ctx.storage.sql,
+      storage: ctx.storage,
+      media: env.MEDIA,
+      room: this.room,
+      activity: this.activity,
+    });
     this.routes = {
       hello: (ws, att) => this.handleHello(ws, att),
       "chat.send": (ws, att, msg) => this.handleChatSend(ws, att, msg),
@@ -124,13 +148,14 @@ export class ServerRoom extends DurableObject<Env> {
       "watch.start": (ws) => this.notImplemented(ws),
       "watch.stop": (ws) => this.notImplemented(ws),
       "sound.play": (ws, att, msg) => this.handleSoundPlay(ws, att, msg),
-      "rec.start": (ws) => this.notImplemented(ws),
-      "rec.stop": (ws) => this.notImplemented(ws),
+      "rec.start": (ws, att) => this.handleRecStart(ws, att),
+      "rec.stop": (ws, att) => this.handleRecStop(ws, att),
       ping: (ws) => this.notImplemented(ws),
     };
     ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage.sql);
       await this.room.load();
+      await this.recordings.load();
     });
     // Protocol pings answered without waking the DO (App-A `ping`/`pong`).
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping"}', '{"t":"pong"}'));
@@ -342,6 +367,36 @@ export class ServerRoom extends DurableObject<Env> {
           throw err;
         }
       }
+      // FR-25 recording multipart (§6.1). The Worker routes stream the part bytes + resolve
+      // session/admin; the DO owns authorization + the R2 multipart lifecycle (create/abort) + the row.
+      // GET /internal/recordings → list (newest finalized first).
+      case "/internal/recordings":
+        return Response.json({ recordings: this.recordings.list() });
+      // POST /internal/recordings/open → create the multipart for the active starter.
+      case "/internal/recordings/open": {
+        const body = recOpenBody.parse(await request.json());
+        return Response.json(await this.recordings.openMultipart(body.userId));
+      }
+      // POST /internal/recordings/resolve → uploadId + key + startedAt for the PUT part / complete route.
+      case "/internal/recordings/resolve": {
+        const body = recResolveBody.parse(await request.json());
+        return Response.json(this.recordings.resolve(body.userId, body.recordingId));
+      }
+      // POST /internal/recordings/finalize → stamp ended_at + capped duration, clear upload_id.
+      case "/internal/recordings/finalize": {
+        const body = recFinalizeBody.parse(await request.json());
+        return Response.json(this.recordings.finalize(body.recordingId, body.durationMs));
+      }
+      // POST /internal/recordings/abort → R2 abort + row delete + inactive broadcast + aborted activity.
+      case "/internal/recordings/abort": {
+        const body = recAbortBody.parse(await request.json());
+        return Response.json(await this.recordings.abort(body.userId, body.recordingId, at));
+      }
+      // POST /internal/recordings/delete → starter/admin delete of a finalized row; returns its R2 key.
+      case "/internal/recordings/delete": {
+        const body = recDeleteBody.parse(await request.json());
+        return Response.json(this.recordings.remove(body.userId, body.isAdmin, body.recordingId));
+      }
       default:
         return Response.json({ error: "not_found" satisfies ErrorCode }, { status: 404 });
     }
@@ -417,7 +472,12 @@ export class ServerRoom extends DurableObject<Env> {
     // Reconnect replays the full snapshot (§6.2 no delta sync); a repeat hello is idempotent.
     this.room.send(
       ws,
-      this.room.helloSnapshot(att.userId, this.chat.lastMessageId(), this.costMeter.status(at)),
+      this.room.helloSnapshot(
+        att.userId,
+        this.chat.lastMessageId(),
+        this.costMeter.status(at),
+        this.recordings.state(),
+      ),
     );
     if (firstHello) this.room.presenceOnHello(ws, att.userId, at);
   }
@@ -508,11 +568,30 @@ export class ServerRoom extends DurableObject<Env> {
     // Drop the leaver's SFU sessions/tracks/grants + flush their open meter watches (§S3.4 disconnect
     // cleanup path; the SFU GCs the dead session itself). Broadcasts stream.removed for their video.
     await this.room.rtcCleanupFor(userId, this.costMeter, now);
+    // FR-25 dirty end: if the leaver owns the active recording without a prior graceful rec.stop, cancel
+    // it (abort R2 multipart, delete row, broadcast inactive, aborted activity). No-op otherwise, so a
+    // graceful stop-then-leave or a non-recorder's leave costs nothing.
+    await this.recordings.handleUserGone(userId, now);
     this.room.broadcast({
       t: "activity.new",
       entry: this.activity.append("voice.leave", userId, {}, now),
     });
     this.room.broadcast({ t: "voice.state", voice: snapshot, at: now });
+  }
+
+  // rec.start (FR-25): the sender must be in voice + no recording active. On success the module inserts
+  // the row, flips `rec.state{active}` to everyone, and appends `rec.start`; a rejection replies error
+  // on this socket only (it stays open).
+  private async handleRecStart(ws: WebSocket, att: ConnAttachment): Promise<void> {
+    const code = await this.recordings.start(att.userId, Date.now());
+    if (code !== null) this.room.send(ws, { t: "error", code });
+  }
+
+  // rec.stop (FR-25, starter only): flips `rec.state{active:false}` immediately + appends `rec.stop`;
+  // the row finalizes later via the REST `complete`. A non-starter reply is a socket-local error.
+  private async handleRecStop(ws: WebSocket, att: ConnAttachment): Promise<void> {
+    const code = await this.recordings.stop(att.userId, Date.now());
+    if (code !== null) this.room.send(ws, { t: "error", code });
   }
 
   // voice.state (FR-26): relay the caller's self mute/deafen flags into the snapshot; broadcast to all.

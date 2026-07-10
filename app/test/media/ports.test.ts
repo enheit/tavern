@@ -46,13 +46,16 @@ describe("browser ports (§7.2 constructor site)", () => {
 });
 
 describe("S9 interface stubs", () => {
-  it("VoiceRecorder throws until S9.3 implements it", () => {
+  // S9.3 filled VoiceRecorder (behaviour covered in test/media/recorder.test.ts); the S7.2 stub-guard
+  // becomes the §9.3 STOP-condition guard: opus/webm must be supported before recording starts.
+  it("VoiceRecorder is inactive before start and guards MediaRecorder support (S9.3)", () => {
     const rec = new VoiceRecorder({ graph: new AudioGraph(new FakeAudioPort()) });
     expect(rec.active).toBe(false);
+    vi.stubGlobal("MediaRecorder", { isTypeSupported: () => false });
     expect(() => rec.start(fakeTrack("audio"), { onPart: async () => undefined })).toThrow(
-      "S9 not implemented",
+      "does not support",
     );
-    expect(() => rec.stop()).toThrow("S9 not implemented");
+    expect(rec.active).toBe(false);
   });
 
   it("SoundboardPlayer is implemented in S9.2 (play runs the fetch→decode path via the graph)", async () => {
