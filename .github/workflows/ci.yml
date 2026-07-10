@@ -17,7 +17,14 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # @tavern/app's i18n is compiled from messages/ (src/paraglide is generated + gitignored),
+      # so it must be generated before typecheck/test/build (S4.2).
+      - run: pnpm -F @tavern/app exec paraglide-js compile --project ./project.inlang --outdir ./src/paraglide --strategy localStorage baseLocale --emit-ts-declarations
       - run: pnpm lint
+      - run: pnpm check:i18n
+      - run: '! grep -rn "@radix-ui" app/src app/package.json'
+      - run: '! grep -rn "@base-ui-components" app'
+      - run: test -f .mcp.json && grep -q '"shadcn"' .mcp.json
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm test:coverage
