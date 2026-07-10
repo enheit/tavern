@@ -9,10 +9,15 @@ vi.mock("@/features/chat/MessageList", () => ({
 vi.mock("@/features/chat/Composer", () => ({
   Composer: () => <div data-testid="composer-stub" />,
 }));
-// Activity is now a live pane (S10.1) with its own suite + data deps (query client, room store); stub
-// it here so this suite stays focused on the tab shell and the remaining coming-soon placeholders.
+// Activity (S10.1) and Stats (S10.2) are live panes with their own suites + data deps (query client,
+// room store, session); stub them here so this suite stays focused on the tab shell wiring.
 vi.mock("@/features/activity/ActivityTab", () => ({
   ActivityTab: () => <div data-testid="activity-tab-stub" />,
+}));
+vi.mock("@/features/stats/StatsTab", () => ({
+  StatsTab: ({ active }: { active: boolean }) => (
+    <div data-testid="stats-tab-stub" data-active={active} />
+  ),
 }));
 
 import { ChatTabs } from "@/features/chat/ChatTabs";
@@ -50,9 +55,14 @@ describe("FR-14 chat tabs", () => {
     expect(screen.queryByTestId("coming-soon")).toBeNull();
   });
 
-  it("shows a coming-soon placeholder for the not-yet-built panes", async () => {
+  it("renders the Stats pane (not a placeholder) and marks it active on the Stats tab", async () => {
     render(<ChatTabs serverId="s1" />);
+    // The Stats panel stays mounted (keepMounted) but inactive until selected — its query gate.
+    expect(screen.getByTestId("stats-tab-stub").getAttribute("data-active")).toBe("false");
     fireEvent.click(screen.getByTestId("tab-stats"));
-    await waitFor(() => expect(screen.getByTestId("coming-soon")).toBeDefined());
+    await waitFor(() =>
+      expect(screen.getByTestId("stats-tab-stub").getAttribute("data-active")).toBe("true"),
+    );
+    expect(screen.queryByTestId("coming-soon")).toBeNull();
   });
 });
