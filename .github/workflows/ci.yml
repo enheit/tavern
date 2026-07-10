@@ -88,3 +88,23 @@ jobs:
           name: playwright-report-desktop
           path: e2e/playwright-report
           retention-days: 7
+
+  package-check:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix: { os: [macos-latest, windows-latest, ubuntu-latest] }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build && pnpm -F @tavern/desktop build
+      # Unsigned packaging proof: full installer targets, no publish, no notarization
+      # (release.yml owns signing; CSC auto-discovery off so the mac runner can't grab a
+      # random keychain cert).
+      - run: cd desktop && pnpm exec electron-builder --publish never --config.mac.notarize=false
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'

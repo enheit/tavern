@@ -2,6 +2,7 @@
   "name": "tavern",
   "private": true,
   "packageManager": "pnpm@11.10.0",
+  "repository": "https://github.com/enheit/tavern.git",
   "engines": { "node": ">=22.12" },
   "scripts": {
     "dev": "pnpm -r --parallel --if-present dev",
