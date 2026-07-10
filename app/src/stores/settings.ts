@@ -15,6 +15,8 @@ export const DEVICE_SETTINGS_KEY = "tavern.settings.v1";
 export interface DeviceSettingsV1 {
   micId?: string;
   sinkId?: string;
+  // FR-29 selected webcam (videoinput deviceId); undefined = the browser default camera.
+  cameraDeviceId?: string;
   noiseSuppression: boolean;
 }
 
@@ -34,6 +36,7 @@ export function loadDeviceSettings(): DeviceSettingsV1 {
     };
     if (typeof rec.micId === "string") next.micId = rec.micId;
     if (typeof rec.sinkId === "string") next.sinkId = rec.sinkId;
+    if (typeof rec.cameraDeviceId === "string") next.cameraDeviceId = rec.cameraDeviceId;
     return next;
   } catch {
     // localStorage unavailable or corrupt — fall back to defaults.

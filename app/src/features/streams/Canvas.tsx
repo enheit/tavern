@@ -5,6 +5,7 @@ import { useStore } from "zustand";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
 import { StreamTile } from "./StreamTile";
+import { useWebcamStore } from "./useWebcam";
 
 // FR-32 canvas auto-layout. Tiles are laid out per §App-C via computeLayout (unit-locked table),
 // re-measured with a ResizeObserver. FR-33 focus mode is a SEPARATE flex layout (focused tile fills,
@@ -21,6 +22,13 @@ function CanvasInner({ serverId }: { serverId: string }) {
   const streams = useStore(store, (s) => s.streams);
   const focusedTrackName = useStore(store, (s) => s.focusedTrackName);
   const setFocused = useStore(store, (s) => s.setFocusedTrackName);
+
+  // FR-29 self-preview: the live LOCAL webcam stream is rendered directly on its own `cam:{userId}`
+  // tile (never pulled from the SFU). Matched by trackName so only the sharer's own cam tile gets it.
+  const camStream = useWebcamStore((s) => s.stream);
+  const camTrackName = useWebcamStore((s) => s.trackName);
+  const selfStreamFor = (trackName: string): MediaStream | null =>
+    trackName === camTrackName ? camStream : null;
 
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -63,7 +71,12 @@ function CanvasInner({ serverId }: { serverId: string }) {
         className="flex h-full w-full gap-2 p-2"
       >
         <div className="min-h-0 min-w-0 flex-1">
-          <StreamTile stream={focusedStream} focused onToggleFocus={() => setFocused(null)} />
+          <StreamTile
+            stream={focusedStream}
+            focused
+            selfStream={selfStreamFor(focusedStream.trackName)}
+            onToggleFocus={() => setFocused(null)}
+          />
         </div>
         {others.length > 0 && (
           <div
@@ -75,6 +88,7 @@ function CanvasInner({ serverId }: { serverId: string }) {
                 <StreamTile
                   stream={s}
                   focused={false}
+                  selfStream={selfStreamFor(s.trackName)}
                   onToggleFocus={() => setFocused(s.trackName)}
                 />
               </div>
@@ -107,6 +121,7 @@ function CanvasInner({ serverId }: { serverId: string }) {
               key={s.trackName}
               stream={s}
               focused={false}
+              selfStream={selfStreamFor(s.trackName)}
               onToggleFocus={() =>
                 setFocused(focusedTrackName === s.trackName ? null : s.trackName)
               }

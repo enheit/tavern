@@ -8,6 +8,7 @@ import { getVoiceController } from "@/features/voice/voiceController";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
+import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
 import { useWatch } from "./useWatch";
 
@@ -19,10 +20,63 @@ function setStreamVolume(streamKey: string, gain: number): void {
   s.setVolumes({ ...s.volumes, streams: { ...s.volumes.streams, [streamKey]: gain } });
 }
 
-// FR-30/31/33 canvas tile: a placeholder (Watch, FR-30) until the viewer opts in, then the live
+// FR-29 self path: the sharer's OWN stream (`stream.userId === self.userId`) renders the LOCAL
+// MediaStream directly — never a PullSession to self, never a Watch button (you don't watch yourself).
+// Every other tile is a normal opt-in remote tile (FR-30 applies to webcams exactly as to screens).
+export function StreamTile({
+  stream,
+  focused,
+  onToggleFocus,
+  selfStream,
+}: {
+  stream: StreamInfo;
+  focused: boolean;
+  onToggleFocus: () => void;
+  selfStream?: MediaStream | null;
+}) {
+  const selfUserId = useSessionStore((s) => s.profile?.userId);
+  if (stream.userId === selfUserId) {
+    return <SelfTile stream={stream} selfStream={selfStream ?? null} />;
+  }
+  return <RemoteTile stream={stream} focused={focused} onToggleFocus={onToggleFocus} />;
+}
+
+// FR-29 self-preview: the local webcam (or any own stream) shown muted with a "You" badge. No Watch
+// button and no useWatch — the sharer sees their own tile without pulling from the SFU.
+function SelfTile({ stream, selfStream }: { stream: StreamInfo; selfStream: MediaStream | null }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = videoRef.current;
+    if (el) el.srcObject = selfStream;
+  }, [selfStream]);
+  return (
+    <div
+      data-testid={`stream-tile-${stream.trackName}`}
+      data-self="true"
+      className="group relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden rounded-lg bg-black/90"
+    >
+      <video
+        ref={videoRef}
+        autoPlay
+        muted
+        playsInline
+        data-testid={`stream-self-${stream.trackName}`}
+        className="h-full w-full object-contain"
+      />
+      <span
+        data-testid={`stream-self-badge-${stream.trackName}`}
+        className="absolute top-2 left-2 rounded bg-black/60 px-1.5 py-0.5 text-xs font-medium text-white"
+      >
+        {m.streams_self()}
+      </span>
+    </div>
+  );
+}
+
+// FR-30/31/33 remote canvas tile: a placeholder (Watch, FR-30) until the viewer opts in, then the live
 // video (letterboxed 16:9, muted — audio flows through the gain node) with an unwatch button and,
 // when the stream carries audio, an independent volume slider. Double-click toggles focus (FR-33).
-export function StreamTile({
+function RemoteTile({
   stream,
   focused,
   onToggleFocus,

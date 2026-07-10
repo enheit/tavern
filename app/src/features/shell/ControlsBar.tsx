@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { RecordButton, stopRecording } from "@/features/recordings/RecordButton";
 import { SharePickerDialog } from "@/features/streams/SharePickerDialog";
 import { useScreenShare } from "@/features/streams/useScreenShare";
+import { useWebcam } from "@/features/streams/useWebcam";
 import { TimerChip } from "@/features/voice/TimerChip";
 import { useVoice } from "@/features/voice/useVoice";
 import { VoiceElsewhereError } from "@/features/voice/voiceController";
@@ -30,6 +31,7 @@ export function ControlsBar({ serverId }: { serverId: string }) {
     useVoice(serverId);
   const active = inVoiceServerId === serverId && (status === "joined" || status === "joining");
   const { sharing, start: startShare, stop: stopShare } = useScreenShare();
+  const { active: camming, start: startCam, stop: stopCam } = useWebcam();
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const onJoin = (): void => {
@@ -102,8 +104,18 @@ export function ControlsBar({ serverId }: { serverId: string }) {
       >
         <MonitorUpIcon />
       </Button>
-      {/* Disabled placeholder — webcam (S8.3). */}
-      <Button variant="ghost" size="icon-sm" data-testid="controls-cam" disabled>
+      {/* FR-29 webcam: idle↔active (pulsing accent ring); click while active = stop. Same visual
+          language as the screen-share toggle; disabled unless in voice on this server. */}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        data-testid="controls-cam"
+        aria-label={camming ? m.streams_cam_stop() : m.streams_cam_start()}
+        aria-pressed={camming}
+        disabled={!active}
+        className={cn(camming && "animate-pulse text-primary ring-2 ring-primary/60")}
+        onClick={() => (camming ? void stopCam() : void startCam())}
+      >
         <VideoIcon />
       </Button>
       {/* FR-25 record toggle + the red REC indicator (visible to all voice members). */}

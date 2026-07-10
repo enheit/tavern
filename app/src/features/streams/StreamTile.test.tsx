@@ -3,7 +3,9 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StreamTile } from "@/features/streams/StreamTile";
+import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
+import { fakeStream, fakeTrack } from "../../../test/fakes/media";
 
 // useWatch is mocked — StreamTile.test drives the tile's UI (volume, focus) against a controlled
 // watch state, not the real PullSession engine.
@@ -53,6 +55,9 @@ beforeEach(() => {
   watchMock.state = "watching";
   watchMock.mediaStream = null;
   vi.clearAllMocks();
+  // Remote-tile default: no self identity, so UID-owned streams are NOT self tiles. The FR-29 self
+  // describe sets a matching profile explicitly.
+  useSessionStore.setState({ status: "unauthed", profile: null });
   useSettingsStore.setState({
     volumes: { v: 1, users: {}, streams: {}, soundboard: 1, mutedUsers: [] },
   });
@@ -152,5 +157,66 @@ describe("FR-33 focus layer", () => {
 
     expect(watchMock.setLayer).toHaveBeenCalledWith("l");
     expect(tile.getAttribute("data-watching")).toBe("true");
+  });
+});
+
+describe("FR-29 self preview", () => {
+  function seedSelf(): void {
+    useSessionStore.setState({
+      status: "authed",
+      profile: { userId: UID, username: "me", displayName: "Me", color: "#abcdef" },
+    });
+  }
+
+  it("own cam tile renders local stream muted with You badge", () => {
+    seedSelf();
+    // jsdom provides no MediaStream constructor; the fake double is what the tile assigns to
+    // `<video>.srcObject` (jsdom stores it as-is), which is all the self-preview needs.
+    const selfStream = fakeStream({ video: [fakeTrack("video")] });
+    const stream = makeStream({ kind: "webcam", trackName: `cam:${UID}` });
+    render(
+      <StreamTile
+        stream={stream}
+        selfStream={selfStream}
+        focused={false}
+        onToggleFocus={vi.fn()}
+      />,
+    );
+
+    const video = screen.getByTestId(`stream-self-${stream.trackName}`) as HTMLVideoElement;
+    expect(video.srcObject).toBe(selfStream);
+    expect(video.muted).toBe(true);
+    // The "You" badge marks the sharer's own tile (m.streams_self → "You").
+    expect(screen.getByTestId(`stream-self-badge-${stream.trackName}`).textContent).toBe("You");
+  });
+
+  it("own tiles never render a Watch button", () => {
+    seedSelf();
+    // Even with the watch engine idle, a self tile shows no Watch — you never pull your own stream.
+    watchMock.state = "idle";
+    const stream = makeStream({ kind: "webcam", trackName: `cam:${UID}` });
+    render(
+      <StreamTile stream={stream} selfStream={null} focused={false} onToggleFocus={vi.fn()} />,
+    );
+
+    expect(screen.queryByTestId(`stream-watch-${stream.trackName}`)).toBeNull();
+    expect(screen.queryByTestId(`stream-unwatch-${stream.trackName}`)).toBeNull();
+  });
+
+  it("remote cam tile renders placeholder + Watch (FR-30 applies to webcams)", () => {
+    // A DIFFERENT user's webcam — the local profile is someone else, so it is a normal opt-in tile.
+    useSessionStore.setState({
+      status: "authed",
+      profile: { userId: "someone-else", username: "x", displayName: "X", color: "#111111" },
+    });
+    watchMock.state = "idle";
+    const stream = makeStream({ kind: "webcam", trackName: `cam:${UID}` });
+    render(
+      <StreamTile stream={stream} selfStream={null} focused={false} onToggleFocus={vi.fn()} />,
+    );
+
+    expect(screen.getByTestId(`stream-watch-${stream.trackName}`)).not.toBeNull();
+    expect(screen.getByTestId(`stream-kind-${stream.trackName}`)).not.toBeNull();
+    expect(screen.queryByTestId(`stream-self-${stream.trackName}`)).toBeNull();
   });
 });
