@@ -94,6 +94,7 @@ test.describe("FR-40 stats e2e", () => {
     baseURL,
     api,
   }) => {
+    test.skip(!process.env.REALTIME_APP_ID, "realtime secrets absent");
     test.setTimeout(120_000);
     const a = await api.createUser("a");
     const server = await api.createServer(a);
