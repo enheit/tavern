@@ -10,6 +10,7 @@ import { soundsRoute } from "./routes/sounds";
 import { recordingsRoute } from "./routes/recordings";
 import { wsTicketRoute } from "./routes/wsTicket";
 import { rtcRoute } from "./routes/rtc";
+import { testSeedRoute } from "./routes/testSeed";
 import { ServerRoom } from "./do/ServerRoom";
 
 const app = new Hono<{ Bindings: Env; Variables: AuthVars }>();
@@ -58,6 +59,18 @@ app.route("/api/rtc", rtcRoute);
 // WS ticket issuance + upgrade forwarding (S3.1, A4). Mounted at /api so it owns both
 // POST /api/ws-ticket and GET /api/servers/:id/ws (distinct from serversRoute's paths — no overlap).
 app.route("/api", wsTicketRoute);
+
+// Test-only seed route (S8.5, §10). The env guard lives HERE at router assembly: workerd exposes no
+// module-scope env, so the guard is a per-request check on the mock-SFU flag — in production
+// (TAVERN_SFU_MOCK absent) every /api/__test/* path 404s, so the route is effectively excluded from
+// the production surface. Only the PR/e2e worker env sets TAVERN_SFU_MOCK=1.
+app.use("/api/__test/*", async (c, next) => {
+  if (c.env.TAVERN_SFU_MOCK !== "1") {
+    return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  }
+  await next();
+});
+app.route("/api/__test", testSeedRoute);
 
 // Hono's default notFound is plain text; the app-wide envelope is { error: ErrorCode }.
 app.notFound((c) => c.json({ error: "not_found" satisfies ErrorCode }, 404));

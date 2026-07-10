@@ -5,6 +5,12 @@ import { getVoiceController } from "@/features/voice/voiceController";
 import type { StreamAudioSink } from "@/features/voice/voiceController";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { errorMessage } from "@/lib/errorMessage";
+import {
+  clearWatchPullState,
+  clearWatchVideoStats,
+  setWatchPullState,
+  setWatchVideoStats,
+} from "@/lib/testHooks";
 import { connectRoom } from "@/lib/wsClient";
 import { browserRtcPort } from "@/media/ports";
 import { PullSession } from "@/media/rtc/pullSession";
@@ -25,6 +31,9 @@ interface PullLike {
   ): () => void;
   addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>): Promise<void>;
   setLayer(trackName: string, rid: "h" | "l"): Promise<void>;
+  // Inbound-video getStats (framesDecoded/frameHeight) — surfaced to the §10 @realtime hook. Optional so
+  // a test double may omit it; the real PullSession implements it.
+  inboundVideoStats?(): Promise<{ framesDecoded: number; frameHeight: number | null }>;
   close(): Promise<void>;
 }
 
@@ -84,6 +93,12 @@ export class WatchController {
 
   private setState(s: WatchState): void {
     this.stateValue = s;
+    // §10 e2e hook (S8.5, FR-30): mirror this watch's dedicated PullSession state under its trackName so
+    // streams.spec can assert `__tavernTestRtc.pullStates[trackName]`. `watching` = the pull is live
+    // ('connected'); idle deletes the key (a never-watched or stopped tile reads `undefined`). No-op
+    // outside the harness (the setters gate on platform.isE2E).
+    if (s === "idle") clearWatchPullState(this.stream.trackName);
+    else setWatchPullState(this.stream.trackName, s === "watching" ? "connected" : "connecting");
     this.notify();
   }
 
@@ -129,6 +144,11 @@ export class WatchController {
     const pull = this.deps.createPull(serverId);
     this.pull = pull;
     this.unsubTrack = pull.onTrack((tn, track) => this.onPulledTrack(tn, track));
+    // §10 @realtime hook: expose this watch pull's inbound-video getStats by trackName (FR-27/32/33).
+    setWatchVideoStats(
+      this.stream.trackName,
+      () => pull.inboundVideoStats?.() ?? Promise.resolve({ framesDecoded: 0, frameHeight: null }),
+    );
     // G3: grid tiles pin the low simulcast layer; audio (screen loopback) has no rid.
     const tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }> = [
       { trackName: this.stream.trackName, preferredRid: "l" },
@@ -182,6 +202,7 @@ export class WatchController {
     this.unsubRemoved = null;
     this.unsubError = null;
     this.deps.sink()?.detachStreamAudio(this.streamKey());
+    clearWatchVideoStats(this.stream.trackName);
     void this.pull?.close();
     this.pull = null;
     this.mediaStreamValue = null;
@@ -207,8 +228,31 @@ function defaultWatchDeps(): WatchDeps {
   };
 }
 
-// FR-30 tile seam: opt-in watch of a single stream. The controller lives for the tile's lifetime
-// (one per StreamTile) and is torn down on unmount — a never-watched tile creates zero PullSessions.
+// Per-stream WatchController registry (keyed by trackName — unique per user/share, and one Canvas is a
+// single server). The controller is NOT tied to a tile's React lifetime: FR-33 focus re-parents the
+// tile (grid ↔ focus mode), which React implements as an unmount + remount into a different subtree.
+// If the controller lived in the component, that remount would tear down and re-create the pull — a
+// re-pull the design forbids ("double-click reacts by setLayer, no re-pull"). Keeping it here lets the
+// remounted tile reuse the SAME live pull; teardown is deferred one task so a synchronous remount keeps
+// it alive, while a genuine unmount (stream removed, navigation) still frees it (G1).
+interface WatchEntry {
+  controller: WatchController;
+  mounts: number;
+  teardown: ReturnType<typeof setTimeout> | null;
+}
+const watchRegistry = new Map<string, WatchEntry>();
+
+// Test seam: clears the module registry between unit tests (the deferred teardown is timer-based).
+export function resetWatchRegistry(): void {
+  for (const entry of watchRegistry.values()) {
+    if (entry.teardown) clearTimeout(entry.teardown);
+  }
+  watchRegistry.clear();
+}
+
+// FR-30 tile seam: opt-in watch of a single stream. A never-watched tile still creates zero
+// PullSessions (watch() is user-initiated); a watched pull survives the tile's focus remount and is
+// freed one task after the last tile for the stream unmounts.
 export function useWatch(stream: StreamInfo): {
   state: WatchState;
   mediaStream: MediaStream | null;
@@ -216,20 +260,48 @@ export function useWatch(stream: StreamInfo): {
   unwatch(): void;
   setLayer(rid: "h" | "l"): void;
 } {
-  const ref = useRef<WatchController | null>(null);
-  ref.current ??= new WatchController(stream, defaultWatchDeps());
-  const controller = ref.current;
+  const key = stream.trackName;
+  const entryRef = useRef<WatchEntry | null>(null);
+  if (entryRef.current === null) {
+    const existing = watchRegistry.get(key);
+    if (existing !== undefined) {
+      entryRef.current = existing;
+    } else {
+      const created: WatchEntry = {
+        controller: new WatchController(stream, defaultWatchDeps()),
+        mounts: 0,
+        teardown: null,
+      };
+      watchRegistry.set(key, created);
+      entryRef.current = created;
+    }
+  }
+  const entry = entryRef.current;
+  const controller = entry.controller;
 
   const subscribe = useCallback((cb: () => void) => controller.subscribe(cb), [controller]);
   const state = useSyncExternalStore(subscribe, () => controller.state);
   const mediaStream = useSyncExternalStore(subscribe, () => controller.mediaStream);
 
-  useEffect(
-    () => () => {
-      controller.unwatch();
-    },
-    [controller],
-  );
+  useEffect(() => {
+    entry.mounts += 1;
+    if (entry.teardown) {
+      clearTimeout(entry.teardown);
+      entry.teardown = null;
+    }
+    return () => {
+      entry.mounts -= 1;
+      // Defer one task: a focus re-parent unmounts then remounts in the same commit, so `mounts` is
+      // back to 1 by the time this fires and the pull is kept. The identity guard avoids tearing down a
+      // newer controller that reused this trackName.
+      entry.teardown = setTimeout(() => {
+        if (entry.mounts === 0 && watchRegistry.get(key) === entry) {
+          controller.unwatch();
+          watchRegistry.delete(key);
+        }
+      }, 0);
+    };
+  }, [entry, controller, key]);
 
   const watch = useCallback(() => controller.watch(), [controller]);
   const unwatch = useCallback(() => controller.unwatch(), [controller]);

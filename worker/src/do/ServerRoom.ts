@@ -42,6 +42,10 @@ const recDeleteBody = z.object({
   recordingId: z.string(),
 });
 
+// Test-only seed body (S8.5): register `count` synthetic active screen shares. Reachable only via the
+// mock-SFU-gated /api/__test route (index.ts) + the internal header — never in production.
+const testSeedSharesBody = z.object({ count: z.number().int().min(0) });
+
 // The `sound.updated` broadcast fires after every create/patch/delete; clients refetch the list (S9.2).
 // The create body carries the not-yet-persisted sound (playCount is derived, so omitted) + its R2 key.
 const createSoundBody = z.object({ sound: Sound.omit({ playCount: true }), r2Key: z.string() });
@@ -152,7 +156,7 @@ export class ServerRoom extends DurableObject<Env> {
       "voice.join": (ws, att) => this.handleVoiceJoin(ws, att),
       "voice.leave": (_ws, att) => this.leaveVoice(att.userId, Date.now()),
       "voice.state": (ws, att, msg) => this.handleVoiceState(ws, att, msg),
-      "stream.start": (_ws, att) => this.handleStreamStart(att),
+      "stream.start": (_ws, att, msg) => this.handleStreamStart(att, msg),
       "stream.preset": (ws, att, msg) => this.handleStreamPreset(ws, att, msg),
       "stream.stop": (_ws, att, msg) => this.handleStreamStop(att, msg),
       "watch.start": (ws, att, msg) => this.handleWatchStart(ws, att, msg),
@@ -407,6 +411,12 @@ export class ServerRoom extends DurableObject<Env> {
         const body = recDeleteBody.parse(await request.json());
         return Response.json(this.recordings.remove(body.userId, body.isAdmin, body.recordingId));
       }
+      // POST /internal/test/seed-shares (S8.5, mock-SFU only) → register `count` synthetic active screen
+      // shares in the RTC registry (G4 cap exercise). Guarded upstream by the /api/__test env gate.
+      case "/internal/test/seed-shares": {
+        const body = testSeedSharesBody.parse(await request.json());
+        return Response.json({ screens: await this.room.rtcSeedShares(body.count) });
+      }
       default:
         return Response.json({ error: "not_found" satisfies ErrorCode }, { status: 404 });
     }
@@ -619,12 +629,24 @@ export class ServerRoom extends DurableObject<Env> {
     this.room.broadcast({ t: "voice.state", voice: snapshot, at: Date.now() });
   }
 
-  // stream.start (FR-40): the publisher's "hours streamed" clock opens (server-authoritative). The
-  // stream itself was registered + `stream.added`-broadcast on the publish authorize (S7.1 HTTP path);
-  // this frame only starts the stat. Idempotent per user — a 2nd concurrent share (webcam alongside a
-  // screen, FR-29) does NOT restart the clock, so one clock spans "user is streaming ≥1 thing".
-  private async handleStreamStart(att: ConnAttachment): Promise<void> {
-    await this.stats.noteStreamStart(att.userId, Date.now());
+  // stream.start (FR-39/FR-40): the publisher's "hours streamed" clock opens (server-authoritative,
+  // idempotent per user — a 2nd concurrent share alongside a screen, FR-29, does NOT restart it) AND a
+  // `stream.start` activity entry is appended + broadcast (FR-39, one per share). The stream itself was
+  // registered + `stream.added`-broadcast on the publish authorize (S7.1 HTTP path); this frame drives
+  // the stat + activity only. meta carries kind + trackName for the (future) activity detail.
+  private async handleStreamStart(att: ConnAttachment, msg: ClientMessage): Promise<void> {
+    if (msg.t !== "stream.start") return;
+    const at = Date.now();
+    await this.stats.noteStreamStart(att.userId, at);
+    this.room.broadcast({
+      t: "activity.new",
+      entry: this.activity.append(
+        "stream.start",
+        att.userId,
+        { kind: msg.kind, trackName: msg.trackName },
+        at,
+      ),
+    });
   }
 
   // stream.stop (FR-40): close the publisher's stream clock ONLY when they have no OTHER live video
@@ -642,6 +664,23 @@ export class ServerRoom extends DurableObject<Env> {
         name !== msg.trackName,
     );
     if (!otherLiveStream) await this.stats.noteStreamStop(att.userId, now);
+    // Unregister the stopped video track + its screenAudio companion and broadcast stream.removed so
+    // watchers drop the tile. The client's parallel SFU close is a pure passthrough (§6.1) that never
+    // touches the DO registry, and the disconnect sweep only fires on a socket close — a graceful
+    // stop.start/stop must clean the registry here (reuses the op:'close' unregister + broadcast).
+    const audioCompanion = msg.trackName.startsWith("screen:")
+      ? [msg.trackName.replace(/^screen:/, "screenAudio:")]
+      : [];
+    await this.room.rtcAuthorize(
+      { op: "close", userId: att.userId, trackNames: [msg.trackName, ...audioCompanion] },
+      this.costMeter,
+      now,
+    );
+    // FR-39: record the share stop (one entry per stopped track) + broadcast live to open Activity tabs.
+    this.room.broadcast({
+      t: "activity.new",
+      entry: this.activity.append("stream.stop", att.userId, { trackName: msg.trackName }, now),
+    });
   }
 
   // watch.start (G1/FR-40): grant the viewer the pull (default low layer, G3), open the cost-meter

@@ -179,6 +179,30 @@ export class PullSession {
     return { bytesReceived, audioLevel };
   }
 
+  // Read-only inbound-rtp VIDEO summary of this watch pull PC — the source for the pinned §10 @realtime
+  // streams hook (FR-27/32/33 real-media getStats: framesDecoded increases, frameHeight tracks the
+  // simulcast layer / preset). Reads existing WebRTC stats only; narrowed with `in`/`typeof` because
+  // RTCStats does not declare the video members (no `as`-casts, §9.1). Not exercised under the mock
+  // (no media plane) — the PR streams spec asserts signaling/state instead.
+  async inboundVideoStats(): Promise<{ framesDecoded: number; frameHeight: number | null }> {
+    const pc = this.pc;
+    if (!pc) return { framesDecoded: 0, frameHeight: null };
+    const report = await pc.getStats();
+    let framesDecoded = 0;
+    let frameHeight: number | null = null;
+    report.forEach((stat) => {
+      if (stat.type !== "inbound-rtp") return;
+      if (!("kind" in stat) || stat.kind !== "video") return;
+      if ("framesDecoded" in stat && typeof stat.framesDecoded === "number") {
+        framesDecoded += stat.framesDecoded;
+      }
+      if ("frameHeight" in stat && typeof stat.frameHeight === "number") {
+        frameHeight = stat.frameHeight;
+      }
+    });
+    return { framesDecoded, frameHeight };
+  }
+
   async close(): Promise<void> {
     await this.enqueue(async () => {
       this.pc?.close();

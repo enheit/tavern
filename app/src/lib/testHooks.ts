@@ -41,12 +41,54 @@ declare global {
   interface Window {
     __tavernTestAudio?: TavernTestAudio;
     __tavernTestRtc?: TavernTestRtc;
+    // S8.5 @realtime: reads a watched stream's inbound-video getStats by trackName (0/null when the
+    // stream is not currently watched). Separate global so it never collides with __tavernTestRtc.
+    __tavernTestVideoStats?: (trackName: string) => Promise<VideoStats>;
   }
 }
 
 // Owned here so S9.2 can push {soundId, at} for the FR-36 cross-client sync assertion without any
 // new plumbing — the array identity is stable across the object's lifetime.
 const soundboardPlays: Array<{ soundId: string; at: number }> = [];
+
+// S8.5: per-stream watch pull states keyed by video trackName (FR-30). The dedicated per-watch
+// PullSession lives inside WatchController (app/src/features/streams/useWatch.ts, one per watched
+// tile) — separate from the voice pull the `sources` thunks expose — so the WatchController registers
+// its live state here. `pullStates` (below) merges these with the voice pull under one Record.
+const watchPullStates: Record<string, PullState> = {};
+
+// Called by WatchController on each watch-state transition (only under platform.isE2E, so production is
+// a no-op). `connected` mirrors the pull being live ('watching'); the key is deleted on unwatch/idle so
+// `pullStates[trackName]` reads `undefined` again (the "cleared" assertion after a stream stops).
+export function setWatchPullState(trackName: string, state: PullState): void {
+  if (!platform.isE2E) return;
+  watchPullStates[trackName] = state;
+}
+
+export function clearWatchPullState(trackName: string): void {
+  if (!platform.isE2E) return;
+  delete watchPullStates[trackName];
+}
+
+export interface VideoStats {
+  framesDecoded: number;
+  frameHeight: number | null;
+}
+
+// S8.5 @realtime: per-watch inbound-video getStats reader, keyed by video trackName. The WatchController
+// registers its pull's `inboundVideoStats` while watching; the nightly streams-realtime spec reads
+// framesDecoded (frames flow) + frameHeight (preset drop / focus layer). Unused under the mock SFU.
+const watchVideoReaders: Record<string, () => Promise<VideoStats>> = {};
+
+export function setWatchVideoStats(trackName: string, reader: () => Promise<VideoStats>): void {
+  if (!platform.isE2E) return;
+  watchVideoReaders[trackName] = reader;
+}
+
+export function clearWatchVideoStats(trackName: string): void {
+  if (!platform.isE2E) return;
+  delete watchVideoReaders[trackName];
+}
 
 // FR-33 layer switches (S8.4 pushes, S8.5 asserts). Stable array identity across the hook's lifetime,
 // like soundboardPlays — pullSession.setLayer records {trackName, rid} on each grid↔focus switch.
@@ -90,10 +132,13 @@ export function installTestHooks(sources: TestHookSources): void {
       return sources.publishState();
     },
     get pullStates(): Record<string, PullState> {
-      return sources.pullStates();
+      // 'voice' from the voice controller + the per-stream watch pulls (keys never collide).
+      return { ...watchPullStates, ...sources.pullStates() };
     },
     stats: (_session) => sources.voiceStats(),
     layerCalls,
   };
+  window.__tavernTestVideoStats = (trackName) =>
+    watchVideoReaders[trackName]?.() ?? Promise.resolve({ framesDecoded: 0, frameHeight: null });
   /* oxlint-enable no-underscore-dangle */
 }
