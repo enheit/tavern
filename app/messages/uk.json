@@ -72,5 +72,18 @@
   "chat_composer_send": "Надіслати",
   "chat_composer_counter": "{n} / 2000",
   "chat_emoji_label": "Емодзі",
-  "chat_history_loading": "Завантаження…"
+  "chat_history_loading": "Завантаження…",
+  "soundboard_title": "Дошка звуків",
+  "soundboard_upload_title": "Завантажити звук",
+  "soundboard_upload_file": "MP3-файл",
+  "soundboard_upload_file_required": "Виберіть MP3-файл",
+  "soundboard_upload_name": "Назва",
+  "soundboard_upload_name_invalid": "Назва має містити 1–32 символи",
+  "soundboard_upload_too_long": "Звук має бути не довшим за 5 хвилин",
+  "soundboard_upload_submit": "Завантажити",
+  "soundboard_trim_title": "Обрізати звук",
+  "soundboard_trim_preview": "Прослухати",
+  "soundboard_trim_save": "Зберегти",
+  "soundboard_edit": "Редагувати",
+  "soundboard_delete": "Видалити"
 }

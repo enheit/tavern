@@ -6,6 +6,7 @@ import { registerRoute } from "./routes/register";
 import { meRoute } from "./routes/me";
 import { mediaRoute } from "./routes/media";
 import { serversRoute } from "./routes/servers";
+import { soundsRoute } from "./routes/sounds";
 import { wsTicketRoute } from "./routes/wsTicket";
 import { rtcRoute } from "./routes/rtc";
 import { ServerRoom } from "./do/ServerRoom";
@@ -39,6 +40,10 @@ app.route("/api/media", mediaRoute);
 // Server catalog (S2.1): create / join / list members. requireAuth + requireMember are applied
 // inside the router per-route.
 app.route("/api/servers", serversRoute);
+
+// Soundboard (S9.1): upload / list / trim / rename / delete per-server sounds. requireMember is
+// applied inside the router; the paths (`/:id/sounds…`) do not overlap serversRoute's.
+app.route("/api/servers", soundsRoute);
 
 // RTC proxy to the Cloudflare Realtime SFU (S7.1, A3): session/tracks/renegotiate/close + ICE creds.
 // Membership + the rtc rate limit are applied inside the router; the DO enforces §8 caps.

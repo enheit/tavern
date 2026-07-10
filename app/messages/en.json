@@ -72,5 +72,18 @@
   "chat_composer_send": "Send",
   "chat_composer_counter": "{n} / 2000",
   "chat_emoji_label": "Emoji",
-  "chat_history_loading": "Loading…"
+  "chat_history_loading": "Loading…",
+  "soundboard_title": "Soundboard",
+  "soundboard_upload_title": "Upload sound",
+  "soundboard_upload_file": "MP3 file",
+  "soundboard_upload_file_required": "Choose an MP3 file",
+  "soundboard_upload_name": "Name",
+  "soundboard_upload_name_invalid": "Name must be 1–32 characters",
+  "soundboard_upload_too_long": "Sound must be 5 minutes or shorter",
+  "soundboard_upload_submit": "Upload",
+  "soundboard_trim_title": "Trim sound",
+  "soundboard_trim_preview": "Preview",
+  "soundboard_trim_save": "Save",
+  "soundboard_edit": "Edit",
+  "soundboard_delete": "Delete"
 }

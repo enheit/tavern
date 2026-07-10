@@ -1,9 +1,15 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AppShell } from "@/features/shell/AppShell";
 import { resetRoomStores } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
+import { closeAllRooms } from "@/lib/wsClient";
+
+// The slot-soundboard region now mounts SoundboardPanel → useSounds (TanStack Query), so the shell
+// needs a QueryClientProvider; retries off so the failing test-env fetch does not schedule work.
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 beforeEach(() => {
   resetRoomStores();
@@ -12,14 +18,19 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // SoundboardPanel opens a per-server WS via connectRoom; close it so no reconnect timer leaks.
+  closeAllRooms();
+  queryClient.clear();
 });
 
 describe("shell layout", () => {
   it("renders pinned grid template and named slots", () => {
     render(
-      <MemoryRouter>
-        <AppShell serverId="s1" />
-      </MemoryRouter>,
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <AppShell serverId="s1" />
+        </MemoryRouter>
+      </QueryClientProvider>,
     );
 
     const shell = screen.getByTestId("app-shell");
