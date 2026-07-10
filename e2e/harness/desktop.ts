@@ -64,14 +64,24 @@ export async function launchDesktop(opts: {
   // test electron. It is a standard chromium argv switch (reliable via args, unlike the fake-media
   // flags of #16621, which is why those still go through the main process). Kept off macOS/Windows.
   const sandboxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
+  // Electron 43 (Chromium 150) runs the audio service out-of-process, so the main-process
+  // `use-file-for-fake-audio-capture` switch (S4.1/§10) never reaches it and the fake mic emits
+  // silence — the tone WAV can't drive the speaking analyser (S7.4). Forcing in-process audio fixes
+  // it (verified: fake-tone RMS ≈ 0.145 ≫ the §App-B 0.02 threshold). A plain feature switch, reliable
+  // via launch args (unlike the fake-media flags that #16621 requires go through the main process).
+  const audioArgs = ["--disable-features=AudioServiceOutOfProcess"];
 
   const binary = process.env.TAVERN_DESKTOP_BINARY;
   const app =
     binary !== undefined && binary.length > 0
-      ? await _electron.launch({ executablePath: binary, args: sandboxArgs, env })
+      ? await _electron.launch({
+          executablePath: binary,
+          args: [...audioArgs, ...sandboxArgs],
+          env,
+        })
       : await _electron.launch({
           executablePath: electronExecutable(),
-          args: [".", ...sandboxArgs],
+          args: [".", ...audioArgs, ...sandboxArgs],
           cwd: desktopDir,
           env,
         });

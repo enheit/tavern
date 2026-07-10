@@ -24,7 +24,7 @@ describe("IPC preload bridge (window.tavern)", () => {
     expect(bridgeInstalled).toBe(true);
     expect(api).toBeDefined();
     expect(Object.keys(api).toSorted()).toEqual(
-      ["capture", "notifications", "platform", "secrets", "shell", "updates"].toSorted(),
+      ["capture", "isE2E", "notifications", "platform", "secrets", "shell", "updates"].toSorted(),
     );
     expect("ipcRenderer" in api).toBe(false);
     expect("on" in api).toBe(false);

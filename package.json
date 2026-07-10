@@ -14,7 +14,8 @@
     "format:check": "oxfmt --check",
     "check:fr": "node scripts/check-fr-traceability.mjs",
     "check:i18n": "node scripts/check-i18n-literals.mjs",
-    "e2e": "pnpm -F @tavern/e2e exec playwright test --project=web --project=desktop"
+    "e2e": "pnpm -F @tavern/e2e exec playwright test --project=web --project=desktop",
+    "e2e:realtime": "pnpm -F @tavern/e2e exec playwright test --project=web-realtime"
   },
   "devDependencies": {
     "oxc-parser": "0.139.0",

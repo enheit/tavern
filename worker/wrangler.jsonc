@@ -32,5 +32,30 @@
       "TURN_KEY_ID",
       "TURN_KEY_API_TOKEN"
     ]
+  },
+  // S7.4 e2e environment (`wrangler dev --env e2e`, picks `.dev.vars.e2e` → TAVERN_SFU_MOCK=1 +
+  // TAVERN_TEST_FAST_ALARM=1). Named environments do NOT inherit bindings, so the d1_databases,
+  // r2_buckets, durable_objects, and assets entries are re-declared here verbatim from the top level.
+  "env": {
+    "e2e": {
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "tavern-db",
+          "database_id": "49d52212-7fd9-4d4e-a7dd-d48f90dc0219",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "tavern-media" }],
+      "durable_objects": {
+        "bindings": [{ "name": "SERVER_ROOM", "class_name": "ServerRoom" }]
+      },
+      "assets": {
+        "directory": "../app/dist",
+        "binding": "ASSETS",
+        "not_found_handling": "single-page-application",
+        "run_worker_first": ["/api/*"]
+      }
+    }
   }
 }

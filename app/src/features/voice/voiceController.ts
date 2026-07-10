@@ -1,12 +1,16 @@
 import type { ClientMessage, ServerMessage, VoiceMember } from "@tavern/shared";
 import { apiClient } from "@/lib/apiClient";
+import { installTestHooks } from "@/lib/testHooks";
+import type { VoiceStats } from "@/lib/testHooks";
 import { connectRoom } from "@/lib/wsClient";
 import { AudioGraph } from "@/media/audioGraph";
 import { getMic as browserGetMic, retoggleMic as browserRetoggleMic } from "@/media/capture";
 import { watchSpeaking as browserWatchSpeaking } from "@/media/levelMeter";
 import { browserAudioPort, browserRtcPort } from "@/media/ports";
 import { PublishSession } from "@/media/rtc/publishSession";
+import type { PublishState } from "@/media/rtc/publishSession";
 import { PullSession } from "@/media/rtc/pullSession";
+import type { PullState } from "@/media/rtc/pullSession";
 import { createSfuSignal } from "@/media/sfuSignal";
 import { micTrackName } from "@/media/trackName";
 import { useMediaStore } from "@/stores/media";
@@ -38,6 +42,9 @@ interface PublishLike {
   micSender(): RTCRtpSender | null;
   setTrackEnabled(trackName: string, enabled: boolean): void;
   close(): Promise<void>;
+  // Optional so unit-test fakes need not implement it; the real PublishSession exposes it. Surfaced
+  // via the §10 e2e publish-state hook only.
+  readonly state?: PublishState;
 }
 interface PullLike {
   connect(): Promise<void>;
@@ -47,6 +54,9 @@ interface PullLike {
   addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>): Promise<void>;
   removeRemoteTracks(trackNames: string[]): Promise<void>;
   close(): Promise<void>;
+  // Optional — real PullSession only. Feed the §10 e2e pull-state and voice-stats hooks.
+  readonly state?: PullState;
+  inboundAudioStats?(): Promise<VoiceStats>;
 }
 interface GraphLike {
   init(sinkId?: string): Promise<void>;
@@ -357,6 +367,23 @@ export class VoiceController {
     this.micTrackName = null;
   }
 
+  // Read-only live views for the §10 e2e test hooks (installTestHooks). Product-neutral — they only
+  // surface existing session state and never mutate anything.
+  publishStateForTest(): PublishState {
+    return this.publish?.state ?? "idle";
+  }
+
+  pullStatesForTest(): Record<string, PullState> {
+    const state = this.pull?.state;
+    return state === undefined ? {} : { voice: state };
+  }
+
+  voiceStatsForTest(): Promise<VoiceStats> {
+    return (
+      this.pull?.inboundAudioStats?.() ?? Promise.resolve({ bytesReceived: 0, audioLevel: null })
+    );
+  }
+
   private resetState(): void {
     this.ws = null;
     this.serverId = null;
@@ -372,7 +399,7 @@ let singleton: VoiceController | null = null;
 export function getVoiceController(): VoiceController {
   if (singleton) return singleton;
   const signal = createSfuSignal(apiClient);
-  singleton = new VoiceController({
+  const controller = new VoiceController({
     graph: new AudioGraph(browserAudioPort),
     createPublish: (serverId, userId) =>
       new PublishSession({ rtc: browserRtcPort, signal, serverId, userId }),
@@ -382,5 +409,13 @@ export function getVoiceController(): VoiceController {
     retoggleMic: browserRetoggleMic,
     watchSpeaking: browserWatchSpeaking,
   });
-  return singleton;
+  singleton = controller;
+  // §10: installs window.__tavernTestAudio / __tavernTestRtc when platform.isE2E — the SOLE wiring
+  // site for the e2e hooks (installTestHooks owns the global assignment).
+  installTestHooks({
+    publishState: () => controller.publishStateForTest(),
+    pullStates: () => controller.pullStatesForTest(),
+    voiceStats: () => controller.voiceStatsForTest(),
+  });
+  return controller;
 }

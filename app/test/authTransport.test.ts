@@ -9,6 +9,7 @@ function makeBridge(
 ): PlatformBridge {
   return {
     kind,
+    isE2E: false,
     secrets,
     capture: {
       getScreenSources: async () => [],

@@ -61,6 +61,7 @@ describe("platform/web", () => {
 function makeIpc(): TavernIpc {
   return {
     platform: "darwin",
+    isE2E: false,
     secrets: {
       getToken: vi.fn(async () => "tok"),
       setToken: vi.fn(async () => undefined),
