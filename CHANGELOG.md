@@ -3,6 +3,15 @@
 All notable changes to Tavern are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semver.
 
+## [0.3.0] — 2026-07-11
+
+### Added
+
+- **Download landing page** at `/product`: one-screen page with a
+  platform-detected download button (macOS/Windows/Linux), direct links to the
+  latest release installers via the GitHub releases API (falls back to the
+  releases page), and an "Open Tavern in your browser" entry point.
+
 ## [0.2.1] — 2026-07-11
 
 ### Fixed
