@@ -131,14 +131,17 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
       const track = await startScreenShare(a, "720p30");
       await b.page.getByTestId(`stream-tile-${track}`).getByTestId(`stream-watch-${track}`).click();
       // Focus so B pulls the HIGH layer (the preset the publisher drives, FR-27/33); a grid tile stays
-      // on the pinned low layer and would not observe the h-preset change.
+      // on the pinned low layer and would not observe the h-preset change. 40s: the SFU only forwards
+      // h once the viewer's bandwidth estimate clears the h bitrate (1200 kbps here), and that ramp
+      // regularly needs >20s on constrained CI runners (S12.4 docker probe) — the upswitch itself is
+      // SFU/BWE-governed, not product logic.
       await b.page.getByTestId(`stream-tile-${track}`).dblclick();
       await expect
-        .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 20_000 })
+        .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 40_000 })
         .toBeGreaterThan(480);
 
-      // A drops the preset 720p30 → 480p30 on the fly (own-tile quality dropdown, applyConstraints +
-      // setParameters, no renegotiation). The minified worker-served build wires Base UI popups a
+      // A drops the preset 720p30 → 480p30 on the fly (own-tile quality dropdown → setPreset: fps-only
+      // applyConstraints + encoder re-scale, no renegotiation). The minified worker-served build wires Base UI popups a
       // tick late (the S11.1 slider precedent), so a blind option click can silently land on
       // nothing (bimodal never-drops failures) — retry the selection until A's own trigger
       // REFLECTS the new preset, then poll the media plane.
@@ -150,6 +153,24 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
           timeout: 2_000,
         });
       }).toPass({ timeout: 30_000 });
+      // Fault-domain split (S12.4 nightly finding): FIRST assert A's own encoder re-encodes the h
+      // layer at ≤480 (outbound-rtp via the §10 hook — publisher-local, no SFU involved). A red HERE
+      // means applyConstraints/setParameters did not reach the encoder; a red on the viewer poll
+      // BELOW then isolates the SFU→watcher path. `Infinity` when the h layer has no frameHeight yet
+      // so a missing stat can never pass the ≤ check.
+      await expect
+        .poll(
+          async () => {
+            const layers = await a.page.evaluate(
+              (tn) => window.__tavernTestRtc?.outboundVideoStats(tn),
+              track,
+            );
+            const h = (layers ?? []).find((layer) => layer.rid === "h");
+            return h?.frameHeight ?? Number.POSITIVE_INFINITY;
+          },
+          { timeout: 20_000 },
+        )
+        .toBeLessThanOrEqual(480);
       // B's inbound high layer shrinks to ≤ 480 (eventual over the real SFU: encoder reconfig +
       // keyframe + forwarding; FR-27's AC pins the outcome, not a latency).
       await expect
@@ -177,11 +198,12 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
         .toBeGreaterThan(0);
 
       // Focus (double-click) → tracks/update to the high layer → inbound frameHeight climbs above the
-      // low layer (>270), with no publisher involvement. Same 20s real-network window as the other
-      // layer/preset polls in this file.
+      // low layer (>270), with no publisher involvement. 40s: the SFU forwards h only after the
+      // viewer's bandwidth estimate clears the h bitrate — the same BWE ramp window as FR-27's
+      // precondition poll (S12.4).
       await b.page.getByTestId(`stream-tile-${track}`).dblclick();
       await expect
-        .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 20_000 })
+        .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 40_000 })
         .toBeGreaterThan(270);
     } finally {
       await Promise.all([a.context.close(), b.context.close()]);

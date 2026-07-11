@@ -1,12 +1,5 @@
 import type { PresetId } from "@tavern/shared";
-import {
-  LOW_LAYER,
-  SCREEN_PRESETS,
-  WEBCAM_LOW,
-  WEBCAM_PRESET,
-  lowLayerScaleDown,
-  presetKbps,
-} from "@tavern/shared";
+import { LOW_LAYER, SCREEN_PRESETS, WEBCAM_LOW, WEBCAM_PRESET, presetKbps } from "@tavern/shared";
 import type { RtcPort } from "../ports";
 import type { SfuSignal } from "../sfuSignal";
 import { camTrackName, micTrackName, screenAudioTrackName, screenTrackName } from "../trackName";
@@ -27,16 +20,36 @@ interface PublishSpec {
   encodings?: RTCRtpEncodingParameters[];
 }
 
+// The height the capture track actually delivers, read ONCE at acquisition (getSettings() is
+// truthful before any constraint churn; test doubles may omit it → preset fallback). Stored per
+// track: every later per-rid scale derives from it, never from live getSettings() — after an
+// applyConstraints the settings can transiently report the constrained size while the frames keep
+// the acquisition size (S12.4 nightly probe).
+function trackHeightOf(track: MediaStreamTrack, fallback: number): number {
+  const height = typeof track.getSettings === "function" ? track.getSettings().height : undefined;
+  return typeof height === "number" && height > 0 ? height : fallback;
+}
+
 // Two simulcast layers per video track (App-D): h = the chosen preset, l = the pinned low layer.
-// maxBitrate is mandatory on every encoding (G2) — unbounded layers break selection + the cost model.
-function screenEncodings(preset: PresetId): RTCRtpEncodingParameters[] {
+// BOTH carry an explicit scaleResolutionDownBy derived from the ACQUISITION height (S12.4 nightly
+// finding): Chromium's display-capture rescale via applyConstraints is a silent no-op on some
+// platforms (linux headless observed — frames keep the acquisition size), so resolution is owned by
+// the ENCODER, never the capturer. maxBitrate is mandatory on every encoding (G2) — unbounded
+// layers break selection + the cost model.
+function screenEncodings(preset: PresetId, captureHeight: number): RTCRtpEncodingParameters[] {
+  const spec = SCREEN_PRESETS[preset];
   return [
-    { rid: "h", maxBitrate: presetKbps(preset) * KBPS, maxFramerate: SCREEN_PRESETS[preset].fps },
+    {
+      rid: "h",
+      maxBitrate: presetKbps(preset) * KBPS,
+      maxFramerate: spec.fps,
+      scaleResolutionDownBy: Math.max(1, captureHeight / spec.height),
+    },
     {
       rid: "l",
       maxBitrate: LOW_LAYER.maxKbps * KBPS,
       maxFramerate: LOW_LAYER.fps,
-      scaleResolutionDownBy: lowLayerScaleDown(preset),
+      scaleResolutionDownBy: Math.max(1, captureHeight / LOW_LAYER.heightTarget),
     },
   ];
 }
@@ -75,6 +88,9 @@ export class PublishSession {
   private readonly senders = new Map<string, RTCRtpSender>();
   private readonly transceivers = new Map<string, RTCRtpTransceiver>();
   private readonly presets = new Map<string, PresetId>();
+  // Acquisition height per published screen track — the fixed base every setPreset scale derives
+  // from (capture geometry never changes after acquisition; see screenEncodings).
+  private readonly captureHeights = new Map<string, number>();
   private readonly listeners = new Set<(s: PublishState) => void>();
 
   constructor(deps: { rtc: RtcPort; signal: SfuSignal; serverId: string; userId: string }) {
@@ -187,8 +203,13 @@ export class PublishSession {
   ): Promise<{ videoTrackName: string; audioTrackName?: string }> {
     const n = ++this.shareCounter;
     const videoTrackName = screenTrackName(this.userId, n);
+    const captureHeight = trackHeightOf(video, SCREEN_PRESETS[preset].height);
     const specs: PublishSpec[] = [
-      { track: video, trackName: videoTrackName, encodings: screenEncodings(preset) },
+      {
+        track: video,
+        trackName: videoTrackName,
+        encodings: screenEncodings(preset, captureHeight),
+      },
     ];
     let audioTrackName: string | undefined;
     if (audio) {
@@ -197,6 +218,7 @@ export class PublishSession {
     }
     await this.publish(specs);
     this.presets.set(videoTrackName, preset);
+    this.captureHeights.set(videoTrackName, captureHeight);
     return audioTrackName ? { videoTrackName, audioTrackName } : { videoTrackName };
   }
 
@@ -206,29 +228,62 @@ export class PublishSession {
     return { trackName };
   }
 
-  // FR-27 on-the-fly: applyConstraints (ideal/max) + sender.setParameters — NEVER a renegotiation.
+  // FR-27 on-the-fly: applyConstraints (frame-rate ceiling only) + sender.setParameters — NEVER a
+  // renegotiation. Resolution changes ride setParameters' scaleResolutionDownBy on the FIXED
+  // acquisition geometry, not the capturer: a width/height applyConstraints on a display-capture
+  // track resolves but silently keeps delivering acquisition-size frames on some platforms (S12.4
+  // nightly probe: linux headless h stayed 720 for 30s while getSettings() flapped 480→720), which
+  // left the h layer at the old resolution whenever the capturer ignored the resize. The encoder
+  // scale is honored everywhere (the l layer re-encoded live mid-share in the same probe).
   async setPreset(trackName: string, preset: PresetId): Promise<void> {
     const sender = this.senders.get(trackName);
     if (!sender) throw new Error(`no sender for ${trackName}`);
     const spec = SCREEN_PRESETS[preset];
     if (sender.track) {
       await sender.track.applyConstraints({
-        width: { ideal: spec.width, max: spec.width },
-        height: { ideal: spec.height, max: spec.height },
         frameRate: { ideal: spec.fps, max: spec.fps },
       });
     }
+    const captureHeight = this.captureHeights.get(trackName) ?? spec.height;
     const params = sender.getParameters();
     for (const enc of params.encodings) {
       if (enc.rid === "h") {
         enc.maxBitrate = presetKbps(preset) * KBPS;
         enc.maxFramerate = spec.fps;
+        enc.scaleResolutionDownBy = Math.max(1, captureHeight / spec.height);
       } else if (enc.rid === "l") {
-        enc.scaleResolutionDownBy = lowLayerScaleDown(preset);
+        enc.scaleResolutionDownBy = Math.max(1, captureHeight / LOW_LAYER.heightTarget);
       }
     }
     await sender.setParameters(params);
     this.presets.set(trackName, preset);
+  }
+
+  // Read-only outbound-rtp VIDEO summary for ONE published track, per simulcast rid — the §10
+  // @realtime hook's publisher-side counterpart of the watch pull's inboundVideoStats. It splits an
+  // FR-27 preset-drop red into fault domains: is the local encoder producing the new height (h-layer
+  // frameHeight here) or is the SFU→viewer path stale (inbound stats on the watcher)? Sender-scoped
+  // getStats keeps the report to this one track. Narrowed with `in`/`typeof` (no `as`, §9.1).
+  async outboundVideoStats(
+    trackName: string,
+  ): Promise<Array<{ rid: string | null; frameHeight: number | null; framesSent: number }>> {
+    const sender = this.senders.get(trackName);
+    if (!sender) return [];
+    const report = await sender.getStats();
+    const layers: Array<{ rid: string | null; frameHeight: number | null; framesSent: number }> =
+      [];
+    report.forEach((stat) => {
+      if (stat.type !== "outbound-rtp") return;
+      if (!("kind" in stat) || stat.kind !== "video") return;
+      layers.push({
+        rid: "rid" in stat && typeof stat.rid === "string" ? stat.rid : null,
+        frameHeight:
+          "frameHeight" in stat && typeof stat.frameHeight === "number" ? stat.frameHeight : null,
+        framesSent:
+          "framesSent" in stat && typeof stat.framesSent === "number" ? stat.framesSent : 0,
+      });
+    });
+    return layers;
   }
 
   // Mute = track.enabled=false; silence frames keep the SFU track alive (30s GC). NEVER replaceTrack(null).
@@ -263,6 +318,7 @@ export class PublishSession {
         this.senders.delete(name);
         this.transceivers.delete(name);
         this.presets.delete(name);
+        this.captureHeights.delete(name);
       }
       if (mids.length > 0) await this.signal.closeTracks(this.serverId, sessionId, mids);
     });
@@ -275,6 +331,7 @@ export class PublishSession {
       this.senders.clear();
       this.transceivers.clear();
       this.presets.clear();
+      this.captureHeights.clear();
       this.setState("closed");
     });
   }

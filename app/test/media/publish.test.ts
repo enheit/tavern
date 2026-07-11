@@ -80,16 +80,22 @@ describe("FR-19 publish flow", () => {
 });
 
 describe("FR-27 simulcast encodings", () => {
+  // fakeTrack has no getSettings → the acquisition height falls back to the preset height, so the
+  // h scale is exactly 1 (explicit — resolution is encoder-owned, S12.4) and l scales to ≈270.
   const cases: { preset: PresetId; h: RTCRtpEncodingParameters; scale: number }[] = [
     {
       preset: "1080p30",
-      h: { rid: "h", maxBitrate: 2_000_000, maxFramerate: 30 },
+      h: { rid: "h", maxBitrate: 2_000_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
       scale: 1080 / 270,
     },
-    { preset: "480p15", h: { rid: "h", maxBitrate: 400_000, maxFramerate: 15 }, scale: 480 / 270 },
+    {
+      preset: "480p15",
+      h: { rid: "h", maxBitrate: 400_000, maxFramerate: 15, scaleResolutionDownBy: 1 },
+      scale: 480 / 270,
+    },
     {
       preset: "1440p60",
-      h: { rid: "h", maxBitrate: 4_500_000, maxFramerate: 60 },
+      h: { rid: "h", maxBitrate: 4_500_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
       scale: 1440 / 270,
     },
   ];
@@ -130,7 +136,7 @@ describe("FR-27 simulcast encodings", () => {
 });
 
 describe("FR-27 setPreset", () => {
-  it("applies applyConstraints + setParameters, createOffer NEVER called", async () => {
+  it("applies fps-only applyConstraints + encoder re-scale via setParameters, createOffer NEVER called", async () => {
     await connect();
     const video = fakeTrack("video");
     const { videoTrackName } = await session.publishStream(video, null, "1080p30");
@@ -138,15 +144,22 @@ describe("FR-27 setPreset", () => {
 
     await session.setPreset(videoTrackName, "480p15");
 
+    // Capture geometry is fixed at acquisition (S12.4): only the frame-rate ceiling reaches the
+    // capturer; resolution rides the encoder scales below.
     expect(video.applyConstraints).toHaveBeenCalledWith({
-      width: { ideal: 854, max: 854 },
-      height: { ideal: 480, max: 480 },
       frameRate: { ideal: 15, max: 15 },
     });
     const sender = port.last().transceivers[0]?.sender;
     expect(sender?.setParametersCount).toBe(1);
-    // the h encoding's ceiling was re-priced to the new preset; NO SDP op happened
-    expect(sender?.encodings[0]).toMatchObject({ rid: "h", maxBitrate: 400_000, maxFramerate: 15 });
+    // h re-priced AND re-scaled to the preset height from the acquisition height (fallback 1080);
+    // l re-derived to its ≈270 target. NO SDP op happened.
+    expect(sender?.encodings[0]).toMatchObject({
+      rid: "h",
+      maxBitrate: 400_000,
+      maxFramerate: 15,
+      scaleResolutionDownBy: 1080 / 480,
+    });
+    expect(sender?.encodings[1]).toMatchObject({ scaleResolutionDownBy: 1080 / 270 });
     expect(log.entries).not.toContain("createOffer");
     expect(log.entries).not.toContain("setLocalDescription");
   });

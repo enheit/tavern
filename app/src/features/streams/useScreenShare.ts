@@ -18,8 +18,9 @@ export interface ScreenPublisher {
     audio: MediaStreamTrack | null,
     preset: PresetId,
   ): Promise<{ videoTrackName: string; audioTrackName?: string }>;
-  // FR-27 on-the-fly: applyConstraints + setParameters on the h-encoding (no renegotiation). Owned by
-  // PublishSession (holds the App-D encodings); useScreenShare drives it then broadcasts stream.preset.
+  // FR-27 on-the-fly: fps-only applyConstraints + setParameters re-scaling both encodings from the
+  // acquisition height (no renegotiation — publishSession.setPreset documents the S12.4 platform
+  // pin). Owned by PublishSession; useScreenShare drives it then broadcasts stream.preset.
   setPreset(trackName: string, preset: PresetId): Promise<void>;
   unpublish(trackNames: string[]): Promise<void>;
 }
@@ -136,9 +137,10 @@ export class ScreenShareController {
   }
 
   // FR-27 on-the-fly preset switch — no restart, no viewer renegotiation. Order (pinned): (a)+(b) the
-  // engine's setPreset does applyConstraints (ideal/max only) + sender.setParameters on the h-encoding,
-  // then (c) the WS `stream.preset` keeps the DO registry + cost meter (G5) accurate. A no-op when not
-  // sharing. The store mirror updates only AFTER a successful local switch so the dropdown never lies.
+  // engine's setPreset does an fps-only applyConstraints + sender.setParameters re-scaling both
+  // encodings from the acquisition height (S12.4 pin in publishSession), then (c) the WS
+  // `stream.preset` keeps the DO registry + cost meter (G5) accurate. A no-op when not sharing. The
+  // store mirror updates only AFTER a successful local switch so the dropdown never lies.
   async setPreset(preset: PresetId): Promise<void> {
     const videoTrackName = this.videoTrackName;
     const serverId = this.serverId;

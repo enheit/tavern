@@ -18,6 +18,9 @@ declare global {
       pullStates: Record<string, string>;
       stats(session: "voice"): Promise<{ bytesReceived: number; audioLevel: number | null }>;
       // Kept identical to voice.spec's ambient block (interface-merge requires it); unused here.
+      outboundVideoStats(
+        trackName: string,
+      ): Promise<Array<{ rid: string | null; frameHeight: number | null; framesSent: number }>>;
       layerCalls: Array<{ trackName: string; rid: "h" | "l" }>;
     };
   }

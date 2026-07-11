@@ -755,8 +755,13 @@ Screen shares and webcams publish **two simulcast layers** (`h` = the chosen pre
 pinned low layer) via `addTransceiver(track, { direction:'sendonly', sendEncodings:[{rid:'h',…},
 {rid:'l', scaleResolutionDownBy,…}] })`. Watchers: grid tile → `l`, focused/fullscreen tile → `h`
 (FR-33 via `tracks/update`), voice-only users → nothing (FR-30). Publisher preset changes (FR-27)
-= `applyConstraints` on the capture track + `RTCRtpSender.setParameters` (maxBitrate/maxFramerate)
-— never re-create the track.
+= `applyConstraints` on the capture track (frame-rate ceiling only) + `RTCRtpSender.setParameters`
+(maxBitrate/maxFramerate/scaleResolutionDownBy on both rids) — never re-create the track. Amended
+S12.4: RESOLUTION is owned by the encoder scales computed from the acquisition height — a
+width/height `applyConstraints` on a display-capture track resolves but silently keeps delivering
+acquisition-size frames on some platforms (nightly probe: linux headless), which stranded the `h`
+layer at the old resolution; capture geometry is therefore FIXED at acquisition for the share's
+lifetime.
 `getDisplayMedia` constraint rules (Chromium, pinned): only `ideal`/`max` are legal (`min`/`exact`
 throw TypeError); `width`/`height` act as downscale-only maxima; fps above the source refresh or on
 static content silently drops — the preset is a ceiling, not a guarantee, and tests assert `≤`.

@@ -12,8 +12,13 @@ import { FakeSignal } from "../../../test/fakes/signal";
 const USER = "u1";
 
 // A capture track double exposing its stop mock + `end()` to fire the "ended" event the controller
-// listens for (OS/browser stop button). §9.1 allows casts for test doubles.
-function captureTrack(kind: "audio" | "video"): {
+// listens for (OS/browser stop button). §9.1 allows casts for test doubles. `height` (when given)
+// backs getSettings() — the acquisition height PublishSession snapshots for the per-rid scales;
+// omitted, the track has no getSettings and the session falls back to the preset height.
+function captureTrack(
+  kind: "audio" | "video",
+  height?: number,
+): {
   track: MediaStreamTrack;
   stop: ReturnType<typeof vi.fn>;
   end(): void;
@@ -30,6 +35,7 @@ function captureTrack(kind: "audio" | "video"): {
     },
     removeEventListener: () => undefined,
     applyConstraints: vi.fn(async () => undefined),
+    ...(height === undefined ? {} : { getSettings: () => ({ height }) }),
   } as unknown as MediaStreamTrack;
   return { track, stop, end: () => onEnded?.(new Event("ended")) };
 }
@@ -89,9 +95,10 @@ describe("FR-27 screen share publish", () => {
 
     await controller.start({ sourceId: "screen:0", preset: "720p60", withAudio: false });
 
-    // §App-D 720p60: h = 1800 kbps @ 60fps; l = 250 kbps @ 15fps scaled to ≈270 height.
+    // §App-D 720p60: h = 1800 kbps @ 60fps; l = 250 kbps @ 15fps scaled to ≈270 height. Both scales
+    // derive from the acquisition height (no getSettings on this double → preset fallback 720).
     expect(port.last().transceivers[0]?.init.sendEncodings).toEqual([
-      { rid: "h", maxBitrate: 1_800_000, maxFramerate: 60 },
+      { rid: "h", maxBitrate: 1_800_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
       { rid: "l", maxBitrate: 250_000, maxFramerate: 15, scaleResolutionDownBy: 720 / 270 },
     ]);
     expect(useMediaStore.getState().sharing).toBe(true);
@@ -210,7 +217,7 @@ describe("FR-27 screen share publish", () => {
 });
 
 describe("FR-27 on-the-fly preset switch", () => {
-  it("setPreset applies ideal/max constraints then setParameters on h only", async () => {
+  it("setPreset caps capture fps only and re-scales both encodings from the acquisition height", async () => {
     const { session, port } = await makePublisher();
     const video = captureTrack("video");
     const { deps } = makeDeps(session, {
@@ -221,18 +228,53 @@ describe("FR-27 on-the-fly preset switch", () => {
 
     await controller.setPreset("480p15");
 
-    // (a) §7.2 ideal/max ONLY (never min/exact) for the new preset's resolution + fps.
+    // (a) §7.2 ideal/max ONLY (never min/exact), and frame-rate ONLY: capture geometry is fixed at
+    // acquisition — a width/height applyConstraints on display capture silently no-ops on some
+    // platforms (S12.4), so resolution belongs to the encoder scales in (b).
     expect(video.track.applyConstraints).toHaveBeenCalledWith({
-      width: { ideal: 854, max: 854 },
-      height: { ideal: 480, max: 480 },
       frameRate: { ideal: 15, max: 15 },
     });
-    // (b) only the h-encoding is re-priced (App-D 480p15 = 400 kbps @ 15fps); the l-encoding's fixed
-    // 250 kbps is untouched (its scaleResolutionDownBy tracks the source, but the constant does not).
+    // (b) h re-priced (App-D 480p15 = 400 kbps @ 15fps) AND re-scaled to the preset height from the
+    // acquisition height (fallback 1080 here); l keeps its fixed 250 kbps and its ≈270 target.
     const sender = port.last().transceivers[0]?.sender;
-    expect(sender?.encodings[0]).toMatchObject({ rid: "h", maxBitrate: 400_000, maxFramerate: 15 });
-    expect(sender?.encodings[1]?.maxBitrate).toBe(250_000);
+    expect(sender?.encodings[0]).toMatchObject({
+      rid: "h",
+      maxBitrate: 400_000,
+      maxFramerate: 15,
+      scaleResolutionDownBy: 1080 / 480,
+    });
+    expect(sender?.encodings[1]).toMatchObject({
+      maxBitrate: 250_000,
+      scaleResolutionDownBy: 1080 / 270,
+    });
     expect(useMediaStore.getState().sharePreset).toBe("480p15");
+  });
+
+  it("scales derive from the REAL acquisition height when the capture is smaller than the preset (S12.4 CI finding)", async () => {
+    // A 720-high capture published as 1080p30 (small screen): h cannot upscale (scale 1). Dropping
+    // to 480p30 then re-encodes h at 720/480 and l at 720/270 — the capturer is never asked to
+    // resize, so the drop reaches viewers even where display-capture applyConstraints no-ops.
+    const { session, port } = await makePublisher();
+    const video = captureTrack("video", 720);
+    const { deps } = makeDeps(session, {
+      capture: async () => ({ video: video.track, audio: null }),
+    });
+    const controller = new ScreenShareController(deps);
+    await controller.start({ sourceId: "screen:0", preset: "1080p30", withAudio: false });
+
+    expect(port.last().transceivers[0]?.init.sendEncodings).toEqual([
+      { rid: "h", maxBitrate: 2_000_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
+      { rid: "l", maxBitrate: 250_000, maxFramerate: 15, scaleResolutionDownBy: 720 / 270 },
+    ]);
+
+    await controller.setPreset("480p30");
+
+    const sender = port.last().transceivers[0]?.sender;
+    expect(sender?.encodings[0]).toMatchObject({
+      rid: "h",
+      scaleResolutionDownBy: 720 / 480,
+    });
+    expect(sender?.encodings[1]).toMatchObject({ scaleResolutionDownBy: 720 / 270 });
   });
 
   it("no renegotiation occurs (fake signal layer records zero new offers)", async () => {

@@ -26,6 +26,11 @@ declare global {
       publishState: string;
       pullStates: Record<string, string>;
       stats(session: "voice"): Promise<{ bytesReceived: number; audioLevel: number | null }>;
+      // Publisher-side per-rid outbound video summary (FR-27 fault-domain split — streams-realtime
+      // asserts the h layer re-encodes a dropped preset before polling the viewer).
+      outboundVideoStats(
+        trackName: string,
+      ): Promise<Array<{ rid: string | null; frameHeight: number | null; framesSent: number }>>;
       // Extends the S7.4 hook (S8.4 populates it; S8.5's streams specs assert it). Declared here so the
       // ambient window type stays a single source for every spec — voice.spec does not read it.
       layerCalls: Array<{ trackName: string; rid: "h" | "l" }>;

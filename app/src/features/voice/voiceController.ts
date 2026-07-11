@@ -63,6 +63,11 @@ interface PublishLike {
   // Optional so unit-test fakes need not implement it; the real PublishSession exposes it. Surfaced
   // via the §10 e2e publish-state hook only.
   readonly state?: PublishState;
+  // Optional (test fakes omit it) — per-rid outbound-rtp video summary for the §10 @realtime hook
+  // (publisher-side FR-27 fault-domain split; see PublishSession.outboundVideoStats).
+  outboundVideoStats?(
+    trackName: string,
+  ): Promise<Array<{ rid: string | null; frameHeight: number | null; framesSent: number }>>;
 }
 interface PullLike {
   connect(): Promise<void>;
@@ -527,6 +532,12 @@ export class VoiceController {
     );
   }
 
+  outboundVideoStatsForTest(
+    trackName: string,
+  ): Promise<Array<{ rid: string | null; frameHeight: number | null; framesSent: number }>> {
+    return this.publish?.outboundVideoStats?.(trackName) ?? Promise.resolve([]);
+  }
+
   private resetState(): void {
     this.ws = null;
     this.serverId = null;
@@ -564,6 +575,7 @@ export function getVoiceController(): VoiceController {
     publishState: () => controller.publishStateForTest(),
     pullStates: () => controller.pullStatesForTest(),
     voiceStats: () => controller.voiceStatsForTest(),
+    outboundVideoStats: (trackName) => controller.outboundVideoStatsForTest(trackName),
   });
   return controller;
 }

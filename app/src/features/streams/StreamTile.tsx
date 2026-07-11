@@ -194,8 +194,8 @@ function StreamVolume({ streamKey }: { streamKey: string }) {
 
 // FR-27 on-the-fly preset switch, sharer side: a compact quality dropdown overlaid on the OWN screen
 // tile. `useScreenShare().preset` is the live self-share preset (mirrored from stores/media); it falls
-// back to the StreamInfo preset before the first switch. Selecting a preset drives setPreset (which
-// applyConstraints + setParameters + sends stream.preset) — no restart, no viewer renegotiation.
+// back to the StreamInfo preset before the first switch. Selecting a preset drives setPreset (fps-only
+// applyConstraints + encoder re-scale + sends stream.preset) — no restart, no viewer renegotiation.
 function OwnPresetControl({ trackName, fallback }: { trackName: string; fallback: PresetId }) {
   const { preset, setPreset } = useScreenShare();
   const value: PresetId = preset ?? fallback;

@@ -22,10 +22,19 @@ export interface TavernTestAudio {
   soundboardPlays: Array<{ soundId: string; at: number }>; // filled by S9.2 (FR-36 sync AC)
 }
 
+// Per-rid outbound-rtp video summary of ONE published track (§10 @realtime, FR-27): lets the nightly
+// spec separate "publisher encodes the new preset" from "the SFU delivers it to the watcher".
+export interface OutboundVideoLayer {
+  rid: string | null;
+  frameHeight: number | null;
+  framesSent: number;
+}
+
 export interface TavernTestRtc {
   publishState: PublishState;
   pullStates: Record<string, PullState>; // 'voice' + (S8) per-stream trackName keys
   stats(session: "voice"): Promise<VoiceStats>; // inbound-rtp audio summary
+  outboundVideoStats(trackName: string): Promise<OutboundVideoLayer[]>; // publisher-side (FR-27)
   layerCalls: Array<{ trackName: string; rid: "h" | "l" }>; // FR-33 setLayer switches (S8.4/S8.5)
 }
 
@@ -35,6 +44,7 @@ export interface TestHookSources {
   publishState(): PublishState;
   pullStates(): Record<string, PullState>;
   voiceStats(): Promise<VoiceStats>;
+  outboundVideoStats(trackName: string): Promise<OutboundVideoLayer[]>;
 }
 
 declare global {
@@ -136,6 +146,7 @@ export function installTestHooks(sources: TestHookSources): void {
       return { ...watchPullStates, ...sources.pullStates() };
     },
     stats: (_session) => sources.voiceStats(),
+    outboundVideoStats: (trackName) => sources.outboundVideoStats(trackName),
     layerCalls,
   };
   window.__tavernTestVideoStats = (trackName) =>
