@@ -36,9 +36,13 @@ export const PatchProfileRequest = z
   .refine(atLeastOneKey, { message: "bad_request" });
 export type PatchProfileRequest = z.infer<typeof PatchProfileRequest>;
 
+// Password is ALWAYS required (no open servers) and `code` is a one-time server-creation code an
+// operator seeds into D1 by hand (uncontrolled resource creation guard). The worker burns the code
+// atomically on success and records who used it, when, and for which server.
 export const CreateServerRequest = z.object({
   nickname: z.string().regex(LIMITS.serverNicknameRe),
-  password: z.string().min(LIMITS.serverPasswordMinLen).optional(),
+  password: z.string().min(LIMITS.serverPasswordMinLen),
+  code: z.string().trim().min(1),
 });
 export type CreateServerRequest = z.infer<typeof CreateServerRequest>;
 
@@ -48,10 +52,12 @@ export const JoinServerRequest = z.object({
 });
 export type JoinServerRequest = z.infer<typeof JoinServerRequest>;
 
+// `password` can only be REPLACED, never cleared — a server password is always set (no open
+// servers), matching CreateServerRequest.
 export const PatchServerRequest = z
   .object({
     nickname: z.string().regex(LIMITS.serverNicknameRe).optional(),
-    password: z.union([z.string().min(LIMITS.serverPasswordMinLen), z.null()]).optional(),
+    password: z.string().min(LIMITS.serverPasswordMinLen).optional(),
   })
   .refine(atLeastOneKey, { message: "bad_request" });
 export type PatchServerRequest = z.infer<typeof PatchServerRequest>;

@@ -60,12 +60,15 @@ app.route("/api/rtc", rtcRoute);
 // POST /api/ws-ticket and GET /api/servers/:id/ws (distinct from serversRoute's paths — no overlap).
 app.route("/api", wsTicketRoute);
 
-// Test-only seed route (S8.5, §10). The env guard lives HERE at router assembly: workerd exposes no
-// module-scope env, so the guard is a per-request check on the mock-SFU flag — in production
-// (TAVERN_SFU_MOCK absent) every /api/__test/* path 404s, so the route is effectively excluded from
-// the production surface. Only the PR/e2e worker env sets TAVERN_SFU_MOCK=1.
+// Test-only seed routes (S8.5, §10). The env guard lives HERE at router assembly: workerd exposes no
+// module-scope env, so the guard is a per-request check on the test flags — in production (neither
+// TAVERN_SFU_MOCK nor TAVERN_TEST set) every /api/__test/* path 404s, so the routes are effectively
+// excluded from the production surface. TAVERN_SFU_MOCK=1 is the PR/e2e worker env; TAVERN_TEST=1
+// additionally covers the nightly real-SFU worker (seed-code needs it there — servers can't be
+// created without a one-time code). Routes with a narrower audience re-check their own flag inside
+// testSeed.ts (seed-shares → mock only, set-egress/seed-code → TAVERN_TEST).
 app.use("/api/__test/*", async (c, next) => {
-  if (c.env.TAVERN_SFU_MOCK !== "1") {
+  if (c.env.TAVERN_SFU_MOCK !== "1" && c.env.TAVERN_TEST !== "1") {
     return c.json({ error: "not_found" satisfies ErrorCode }, 404);
   }
   await next();

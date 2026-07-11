@@ -163,7 +163,10 @@ async function notifyKick(env: Env, serverId: string, userId: string, by: string
 export const serversRoute = new Hono<{ Bindings: Env; Variables: MemberVars }>();
 
 // POST /api/servers (FR-08): create a server, creator becomes admin + first member, 2 default
-// channels seeded (FR-13). zodJson already rejected a bad nickname/password with 400 bad_request.
+// channels seeded (FR-13). zodJson already rejected a bad nickname/password/code with 400
+// bad_request. Creation is gated by a one-time operator-seeded code (migration 0003): the code is
+// claimed with a conditional UPDATE (used_at IS NULL) so two racing creates can never both spend
+// it, and the claim records who used it, when, and which server it created.
 serversRoute.post("/", requireAuth, zodJson(CreateServerRequest), async (c) => {
   const userId = invariant(c.var.userId, "requireAuth guarantees userId");
   const body = CreateServerRequest.parse(await c.req.json());
@@ -182,24 +185,50 @@ serversRoute.post("/", requireAuth, zodJson(CreateServerRequest), async (c) => {
 
   const now = Date.now();
   const serverId = crypto.randomUUID();
-  const passwordHash = body.password !== undefined ? await hashServerPassword(body.password) : null;
+  const passwordHash = await hashServerPassword(body.password);
+
+  // Claim the one-time code AFTER the cheap validations (so a nickname clash never burns a code)
+  // and BEFORE the inserts. `changes === 0` covers both an unknown and an already-used code —
+  // deliberately the same `invalid_code` answer, so the response doesn't reveal which codes exist.
+  const claim = await c.env.DB.prepare(
+    `UPDATE server_creation_codes
+     SET used_by_user_id = ?, used_at = ?, created_server_id = ?
+     WHERE code = ? AND used_at IS NULL`,
+  )
+    .bind(userId, now, serverId, body.code)
+    .run();
+  if (claim.meta.changes !== 1) {
+    return c.json({ error: "invalid_code" satisfies ErrorCode }, 403);
+  }
 
   // One atomic batch: server + the 2 fixed channels (voice "Voice", text "General", FR-13) +
-  // the creator's membership row.
-  await c.env.DB.batch([
-    c.env.DB.prepare(
-      "INSERT INTO servers (id, nickname, password_hash, admin_user_id, created_at) VALUES (?, ?, ?, ?, ?)",
-    ).bind(serverId, body.nickname, passwordHash, userId, now),
-    c.env.DB.prepare(
-      "INSERT INTO channels (id, server_id, kind, name, created_at) VALUES (?, ?, 'voice', 'Voice', ?)",
-    ).bind(crypto.randomUUID(), serverId, now),
-    c.env.DB.prepare(
-      "INSERT INTO channels (id, server_id, kind, name, created_at) VALUES (?, ?, 'text', 'General', ?)",
-    ).bind(crypto.randomUUID(), serverId, now),
-    c.env.DB.prepare(
-      "INSERT INTO memberships (user_id, server_id, joined_at) VALUES (?, ?, ?)",
-    ).bind(userId, serverId, now),
-  ]);
+  // the creator's membership row. If the batch loses a nickname race (UNIQUE) the claimed code is
+  // released — the guard on created_server_id ensures only OUR claim is ever rolled back.
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(
+        "INSERT INTO servers (id, nickname, password_hash, admin_user_id, created_at) VALUES (?, ?, ?, ?, ?)",
+      ).bind(serverId, body.nickname, passwordHash, userId, now),
+      c.env.DB.prepare(
+        "INSERT INTO channels (id, server_id, kind, name, created_at) VALUES (?, ?, 'voice', 'Voice', ?)",
+      ).bind(crypto.randomUUID(), serverId, now),
+      c.env.DB.prepare(
+        "INSERT INTO channels (id, server_id, kind, name, created_at) VALUES (?, ?, 'text', 'General', ?)",
+      ).bind(crypto.randomUUID(), serverId, now),
+      c.env.DB.prepare(
+        "INSERT INTO memberships (user_id, server_id, joined_at) VALUES (?, ?, ?)",
+      ).bind(userId, serverId, now),
+    ]);
+  } catch (err: unknown) {
+    await c.env.DB.prepare(
+      `UPDATE server_creation_codes
+       SET used_by_user_id = NULL, used_at = NULL, created_server_id = NULL
+       WHERE code = ? AND created_server_id = ?`,
+    )
+      .bind(body.code, serverId)
+      .run();
+    throw err;
+  }
 
   // Seed the DO cache: the creator is the admin + first member (FR-08). serverMeta carries the full
   // {id, nickname, adminUserId} the DO serves in hello.ok.
@@ -337,10 +366,10 @@ serversRoute.patch("/:id", requireMember, requireAdmin, zodJson(PatchServerReque
     await notifyServerUpdated(c.env, serverId, body.nickname);
   }
 
-  // FR-10 password: a string sets the task-S2.1 hash; explicit `null` clears it (open server).
-  // Existing members are untouched — this only affects the NEXT join attempt.
+  // FR-10 password: replaces the stored hash (clearing is not possible — a server password is
+  // always set). Existing members are untouched — this only affects the NEXT join attempt.
   if (body.password !== undefined) {
-    const passwordHash = body.password === null ? null : await hashServerPassword(body.password);
+    const passwordHash = await hashServerPassword(body.password);
     await c.env.DB.prepare("UPDATE servers SET password_hash = ? WHERE id = ?")
       .bind(passwordHash, serverId)
       .run();

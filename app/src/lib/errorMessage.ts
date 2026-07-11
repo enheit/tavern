@@ -26,6 +26,7 @@ const RESOLVERS: Record<ErrorCode, () => string> = {
   username_taken: () => m.error_username_taken(),
   nickname_taken: () => m.error_nickname_taken(),
   wrong_password: () => m.error_wrong_password(),
+  invalid_code: () => m.error_invalid_code(),
   password_mismatch: () => m.error_password_mismatch(),
   password_too_short: () => m.error_password_too_short(),
   server_cap: () => m.error_server_cap(),

@@ -77,18 +77,25 @@ function json(token: string, method: string, path: string, body: unknown): Promi
 }
 
 async function createServer(token: string, nickname: string): Promise<string> {
-  const res = await json(token, "POST", "/api/servers", { nickname });
+  // Creation now requires a password + a one-time operator-seeded code (migration 0003); seed a fresh
+  // code per create and use a fixed password (joinServer below matches it).
+  const code = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO server_creation_codes (code, created_at) VALUES (?, ?)")
+    .bind(code, Date.now())
+    .run();
+  const res = await json(token, "POST", "/api/servers", { nickname, password: "hunter2", code });
   if (res.status !== 201) throw new Error(`create server: ${res.status} ${await res.text()}`);
   const body: { id: string } = await res.json();
   return body.id;
 }
 
 async function joinServer(token: string, nickname: string): Promise<void> {
-  const res = await json(token, "POST", "/api/servers/join", { nickname });
+  // Servers created via the helper carry the fixed "hunter2" password, so join with it.
+  const res = await json(token, "POST", "/api/servers/join", { nickname, password: "hunter2" });
   if (!res.ok) throw new Error(`join server: ${res.status} ${await res.text()}`);
 }
 
-// A fresh open server with `memberCount` members; tokens[0] is the creator (admin).
+// A fresh server with `memberCount` members; tokens[0] is the creator (admin).
 async function freshServer(
   memberCount = 1,
 ): Promise<{ serverId: string; tokens: string[]; nickname: string }> {

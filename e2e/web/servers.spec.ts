@@ -30,13 +30,19 @@ test.describe("FR-08 FR-09 FR-41 FR-45 servers", () => {
     api,
   }) => {
     const a = await api.createUser("a");
+    const code = await api.seedCreationCode(a);
     const { context, page } = await pageFor(browser, baseURL, a);
     try {
       // Zero servers → the boot gate lands the fresh account on /join.
       await page.goto("/");
       await expect(page).toHaveURL(/\/join$/);
 
+      // Creating is behind the low-key link under the Join card: the dialog asks for nickname,
+      // password (always required) and the one-time creation code.
+      await page.getByTestId("create-open").click();
       await page.getByTestId("create-nickname").fill(serverNickname());
+      await page.getByTestId("create-password").fill(serverPassword());
+      await page.getByTestId("create-code").fill(code);
       await page.getByTestId("create-submit").click();
 
       await expect(page).toHaveURL(/\/s\/[0-9a-f-]+$/);

@@ -62,10 +62,16 @@ async function meUserId(token: string): Promise<string> {
 }
 
 async function createServer(token: string, nickname: string): Promise<string> {
+  // Creation now requires a password + a one-time operator-seeded code (migration 0003); seed a fresh
+  // code per create and use a fixed password.
+  const code = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO server_creation_codes (code, created_at) VALUES (?, ?)")
+    .bind(code, Date.now())
+    .run();
   const res = await authed(token, "/api/servers", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ nickname }),
+    body: JSON.stringify({ nickname, password: "hunter2", code }),
   });
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`);
   const summary: { id: string } = await res.json();
@@ -154,5 +160,58 @@ describe("S8.5 test-seed route", () => {
     });
     expect(publishRes.status).toBe(403);
     expect(await publishRes.json()).toEqual({ error: "share_cap" });
+  });
+});
+
+// POST /api/__test/seed-code with TAVERN_TEST=1 forced on. The default pool-workers env sets only
+// TAVERN_SFU_MOCK, so drive the app directly with the flag added — same shape as the seed-shares
+// production-guard test above. Returns the freshly minted one-time code.
+async function seedCodeViaRoute(): Promise<string> {
+  const ctx = createExecutionContext();
+  const req = new Request(`${BASE}/api/__test/seed-code`, { method: "POST" });
+  const res = await app.fetch(req, { ...env, TAVERN_TEST: "1" }, ctx);
+  await waitOnExecutionContext(ctx);
+  if (res.status !== 200) throw new Error(`seed-code failed: ${res.status} ${await res.text()}`);
+  const body: { code: string } = await res.json();
+  return body.code;
+}
+
+describe("FR-08 seed-code route", () => {
+  it("with TAVERN_TEST=1 returns a code whose D1 row exists unused", async () => {
+    const code = await seedCodeViaRoute();
+    const row = must(
+      await env.DB.prepare(
+        "SELECT used_by_user_id, used_at, created_server_id FROM server_creation_codes WHERE code = ?",
+      )
+        .bind(code)
+        .first<{
+          used_by_user_id: string | null;
+          used_at: number | null;
+          created_server_id: string | null;
+        }>(),
+      "seeded code row",
+    );
+    expect(row.used_by_user_id).toBeNull();
+    expect(row.used_at).toBeNull();
+    expect(row.created_server_id).toBeNull();
+  });
+
+  it("a seeded code creates a server via POST /api/servers", async () => {
+    const token = await register("seed_code_creator");
+    const code = await seedCodeViaRoute();
+    const res = await authed(token, "/api/servers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nickname: "seed-code-srv", password: "hunter2", code }),
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("404s when TAVERN_TEST is not '1' (route guard)", async () => {
+    // The pool-workers env opens the /api/__test mount (TAVERN_SFU_MOCK=1) but does NOT set
+    // TAVERN_TEST, so the route's own guard is the only thing left — mirrors the set-egress guard.
+    const res = await SELF.fetch(`${BASE}/api/__test/seed-code`, { method: "POST" });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not_found" });
   });
 });

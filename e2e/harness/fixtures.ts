@@ -26,7 +26,13 @@ export interface Api {
   createUser(prefix: string): Promise<SeededUser>;
   createServer(admin: SeededUser, opts?: { password?: string }): Promise<ServerSummary>;
   join(user: SeededUser, nickname: string, password?: string): Promise<ServerSummary>;
+  seedCreationCode(user: SeededUser): Promise<string>;
 }
+
+// Every server now has a password (CreateServerRequest requires one). Fixture-created servers use
+// this default unless a spec passes its own, and `join` falls back to the same default — so the
+// historical `createServer(a)` + `join(b, nickname)` pairing keeps working unchanged.
+export const E2E_SERVER_PASSWORD = "pw-e2e";
 
 // Reads `user.id` out of the register response without an `as`-cast (structural narrowing only).
 function readUserId(body: unknown): string {
@@ -44,12 +50,35 @@ function readUserId(body: unknown): string {
   throw new Error("createUser: unexpected register response shape");
 }
 
+// Mints a fresh one-time server-creation code via the test-only worker route (TAVERN_TEST=1 envs:
+// the mock e2e worker AND the nightly real-SFU worker). Every POST /api/servers must spend one.
+async function seedCreationCode(user: SeededUser): Promise<string> {
+  const res = await user.request.post("/api/__test/seed-code");
+  if (!res.ok()) {
+    throw new Error(`seedCreationCode failed: ${res.status()} ${await res.text()}`);
+  }
+  const body: unknown = await res.json();
+  if (
+    typeof body === "object" &&
+    body !== null &&
+    "code" in body &&
+    typeof body.code === "string"
+  ) {
+    return body.code;
+  }
+  throw new Error("seedCreationCode: unexpected response shape");
+}
+
 async function createServer(
   admin: SeededUser,
   opts?: { password?: string },
 ): Promise<ServerSummary> {
   const nickname = `e2e-${hex(4)}`;
-  const data = opts?.password === undefined ? { nickname } : { nickname, password: opts.password };
+  const data = {
+    nickname,
+    password: opts?.password ?? E2E_SERVER_PASSWORD,
+    code: await seedCreationCode(admin),
+  };
   const res = await admin.request.post("/api/servers", { data });
   if (!res.ok()) {
     throw new Error(`createServer failed: ${res.status()} ${await res.text()}`);
@@ -62,7 +91,7 @@ async function joinServer(
   nickname: string,
   password?: string,
 ): Promise<ServerSummary> {
-  const data = password === undefined ? { nickname } : { nickname, password };
+  const data = { nickname, password: password ?? E2E_SERVER_PASSWORD };
   const res = await user.request.post("/api/servers/join", { data });
   if (!res.ok()) {
     throw new Error(`join failed: ${res.status()} ${await res.text()}`);
@@ -111,7 +140,7 @@ export const test = base.extend<HarnessFixtures>({
       return { userId: readUserId(body), username, password, token, request: ctx };
     };
 
-    await use({ createUser, createServer, join: joinServer });
+    await use({ createUser, createServer, join: joinServer, seedCreationCode });
     await Promise.all(track.map((ctx) => ctx.dispose()));
   },
 

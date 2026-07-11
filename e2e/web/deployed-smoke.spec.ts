@@ -9,6 +9,13 @@ import { expect, test } from "../harness/fixtures";
 
 const base = process.env.E2E_BASE_URL;
 
+// Server creation now requires a one-time creation code (FR-08 hardening) and production has no
+// test seed route — run this spec through `node e2e/scripts/deployed-smoke.mjs --base <url>`, which
+// mints an EPHEMERAL code via the operator's wrangler auth, passes it as SMOKE_CREATE_CODE, and
+// deletes it after the run if it went unused. The spec FAILS (not skips) without the code so the
+// deploy-evidence run can't silently lose its create coverage.
+const smokeCode = process.env.SMOKE_CREATE_CODE;
+
 const hex = (bytes: number): string => randomBytes(bytes).toString("hex");
 
 test.describe("FR-42 deployed smoke", () => {
@@ -16,6 +23,11 @@ test.describe("FR-42 deployed smoke", () => {
 
   test("register, login, send and receive a chat message", async ({ browser }) => {
     test.setTimeout(120_000);
+    if (smokeCode === undefined || smokeCode === "") {
+      throw new Error(
+        "SMOKE_CREATE_CODE not set — seed a one-time creation code into the deployed D1 (see header comment)",
+      );
+    }
     const target = (base ?? "").replace(/\/$/, "");
     const username = `u_smoke_${hex(3)}`;
     const password = `pw-${hex(5)}`;
@@ -31,7 +43,10 @@ test.describe("FR-42 deployed smoke", () => {
       await page.getByTestId("submit").click();
       await expect(page).toHaveURL(/\/join$/, { timeout: 15_000 });
 
+      await page.getByTestId("create-open").click();
       await page.getByTestId("create-nickname").fill(`smoke-${hex(4)}`);
+      await page.getByTestId("create-password").fill(`sp-${hex(4)}`);
+      await page.getByTestId("create-code").fill(smokeCode);
       await page.getByTestId("create-submit").click();
       await expect(page).toHaveURL(/\/s\/[0-9a-zA-Z-]+$/, { timeout: 15_000 });
 

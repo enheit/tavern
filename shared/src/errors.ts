@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-// The 31 ErrorCodes shared by API/WS/UI i18n (PLAN §App-A + step S0.2). Count locked at 31.
+// The 32 ErrorCodes shared by API/WS/UI i18n (PLAN §App-A + step S0.2; +invalid_code for the
+// one-time server-creation codes).
 export const ERROR_CODES = [
   "bad_message",
   "bad_request",
@@ -23,6 +24,7 @@ export const ERROR_CODES = [
   "username_taken",
   "nickname_taken",
   "wrong_password",
+  "invalid_code",
   "password_mismatch",
   "password_too_short",
   "server_cap",

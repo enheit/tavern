@@ -23,6 +23,9 @@ const doResSchema = z.object({ screens: z.number() });
 export const testSeedRoute = new Hono<{ Bindings: Env; Variables: AuthVars }>();
 
 testSeedRoute.post("/seed-shares", async (c) => {
+  // Mock-SFU only (the index.ts mount now also opens /api/__test for TAVERN_TEST=1 — re-check the
+  // original narrower guard here so the real-SFU nightly worker still 404s this route).
+  if (c.env.TAVERN_SFU_MOCK !== "1") return c.json({ error: "not_found" satisfies ErrorCode }, 404);
   const parsed = seedSharesBody.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
   const { serverId, count } = parsed.data;
@@ -43,6 +46,20 @@ const setEgressBody = z.object({
   serverId: z.string(),
   month: z.string().regex(/^\d{4}-\d{2}$/),
   bytes: z.number().int().nonnegative(),
+});
+
+// One-time server-creation code seeding (FR-08 hardening e2e). POST /api/__test/seed-code inserts a
+// fresh unused code into `server_creation_codes` and returns it, so e2e/soak flows can create
+// servers without an operator manually running `wrangler d1 execute`. Guarded like set-egress:
+// TAVERN_TEST=1 required (set in .dev.vars.e2e AND the nightly real-SFU .dev.vars); production sets
+// neither test flag, so the route does not exist there in any configuration.
+testSeedRoute.post("/seed-code", async (c) => {
+  if (c.env.TAVERN_TEST !== "1") return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  const code = crypto.randomUUID();
+  await c.env.DB.prepare("INSERT INTO server_creation_codes (code, created_at) VALUES (?, ?)")
+    .bind(code, Date.now())
+    .run();
+  return c.json({ code });
 });
 
 testSeedRoute.post("/set-egress", async (c) => {

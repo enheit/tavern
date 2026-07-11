@@ -174,26 +174,6 @@ describe("FR-10 FR-11 FR-12 admin dialog", () => {
     );
   });
 
-  it("password clear requires confirm then PATCHes {password:null}", async () => {
-    seed([member(ADMIN, { isAdmin: true })]);
-    setSelf(ADMIN);
-    vi.mocked(apiClient.patch).mockResolvedValue(undefined);
-    render(<ServerSettingsDialog serverId={SID} />);
-    await openDialog();
-
-    // The clear button only opens a confirm — no PATCH yet.
-    fireEvent.click(screen.getByTestId("admin-password-clear"));
-    await screen.findByTestId("admin-password-clear-confirm");
-    expect(apiClient.patch).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByTestId("admin-password-clear-action"));
-    await waitFor(() =>
-      expect(apiClient.patch).toHaveBeenCalledWith(`/api/servers/${SID}`, expect.anything(), {
-        password: null,
-      }),
-    );
-  });
-
   it("kick shows confirm with member name and DELETEs on confirm", async () => {
     seed([member(ADMIN, { isAdmin: true }), member("bob", { displayName: "Bob" })]);
     setSelf(ADMIN);

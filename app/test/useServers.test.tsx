@@ -55,12 +55,18 @@ describe("FR-08 FR-09 server mutations", () => {
 
     let id = "";
     await act(async () => {
-      id = await result.current.createServer({ nickname: "my-cave" });
+      id = await result.current.createServer({
+        nickname: "my-cave",
+        password: "hunter2",
+        code: "code-1",
+      });
     });
 
     expect(id).toBe(created.id);
     expect(apiClient.post).toHaveBeenCalledWith("/api/servers", expect.anything(), {
       nickname: "my-cave",
+      password: "hunter2",
+      code: "code-1",
     });
     expect(useServersStore.getState().servers).toContainEqual(created);
     expect(connectRoom).toHaveBeenCalledWith(created.id);

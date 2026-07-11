@@ -6,17 +6,6 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { useStore } from "zustand";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { PasswordInput } from "@/components/password-input";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -118,12 +107,12 @@ function RenameSection({ serverId }: { serverId: string }) {
   );
 }
 
-// FR-10 password: set (min-length gated) or clear (confirm alert-dialog → PATCH { password: null }).
+// FR-10 password: replace only — a server password is always set, so there is no "clear" flow.
 // The current password is never shown — the server never returns it.
 function PasswordSection({ serverId }: { serverId: string }) {
   const [password, setPassword] = useState("");
 
-  const submit = async (value: string | null): Promise<void> => {
+  const submit = async (value: string): Promise<void> => {
     try {
       await apiClient.patch(`/api/servers/${serverId}`, ServerSummary, { password: value });
       setPassword("");
@@ -153,31 +142,6 @@ function PasswordSection({ serverId }: { serverId: string }) {
           {m.admin_password_set()}
         </Button>
       </div>
-      <AlertDialog>
-        <AlertDialogTrigger
-          data-testid="admin-password-clear"
-          className={cn(buttonVariants({ variant: "outline", size: "sm" }), "w-fit")}
-        >
-          {m.admin_password_clear()}
-        </AlertDialogTrigger>
-        <AlertDialogContent data-testid="admin-password-clear-confirm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{m.admin_password_clear()}</AlertDialogTitle>
-            <AlertDialogDescription>{m.admin_password_clear_confirm()}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="admin-password-clear-cancel">
-              {m.common_cancel()}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              data-testid="admin-password-clear-action"
-              onClick={() => void submit(null)}
-            >
-              {m.common_confirm()}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </section>
   );
 }

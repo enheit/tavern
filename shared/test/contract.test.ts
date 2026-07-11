@@ -73,9 +73,13 @@ const cases: [string, z.ZodType, unknown][] = [
   ["LoginForm", LoginForm, { username: "roman_1", password: "x" }],
   ["MeResponse", MeResponse, { user: profile, settings, servers: [summary] }],
   ["PatchProfileRequest", PatchProfileRequest, { displayName: "New" }],
-  ["CreateServerRequest", CreateServerRequest, { nickname: "tavern" }],
+  [
+    "CreateServerRequest",
+    CreateServerRequest,
+    { nickname: "tavern", password: "hunter2", code: "letmein" },
+  ],
   ["JoinServerRequest", JoinServerRequest, { nickname: "tavern" }],
-  ["PatchServerRequest", PatchServerRequest, { password: null }],
+  ["PatchServerRequest", PatchServerRequest, { password: "hunter2" }],
   ["WsTicketRequest", WsTicketRequest, { serverId: UUID }],
   ["WsTicketResponse", WsTicketResponse, { ticket: "t" }],
   ["MembersResponse", MembersResponse, { members: [{ ...profile, isAdmin: true, joinedAt: 1 }] }],
@@ -156,9 +160,28 @@ const cases: [string, z.ZodType, unknown][] = [
 ];
 
 describe("contract surface", () => {
-  it("ERROR_CODES has 31 unique members", () => {
-    expect(ERROR_CODES.length).toBe(31);
-    expect(new Set(ERROR_CODES).size).toBe(31);
+  it("ERROR_CODES has 32 unique members", () => {
+    expect(ERROR_CODES.length).toBe(32);
+    expect(new Set(ERROR_CODES).size).toBe(32);
+  });
+
+  it("CreateServerRequest requires both a password and a non-empty (trimmed) code", () => {
+    // Missing code, missing password, and a whitespace-only code (trimmed to empty) all fail.
+    expect(CreateServerRequest.safeParse({ nickname: "tavern", password: "hunter2" }).success).toBe(
+      false,
+    );
+    expect(CreateServerRequest.safeParse({ nickname: "tavern", code: "letmein" }).success).toBe(
+      false,
+    );
+    expect(
+      CreateServerRequest.safeParse({ nickname: "tavern", password: "hunter2", code: "   " })
+        .success,
+    ).toBe(false);
+  });
+
+  it("PatchServerRequest is password-string-only (clearing with null removed)", () => {
+    expect(PatchServerRequest.safeParse({ password: null }).success).toBe(false);
+    expect(PatchServerRequest.safeParse({ password: "hunter2" }).success).toBe(true);
   });
 
   it("round-trips a valid fixture through every api.ts + ipc.ts schema", () => {

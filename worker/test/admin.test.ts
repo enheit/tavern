@@ -28,11 +28,27 @@ function authed(token: string, path: string, init: RequestInit = {}): Promise<Re
   return SELF.fetch(`${BASE}${path}`, { ...init, headers });
 }
 
-async function createdSummary(token: string, body: unknown): Promise<ServerSummary> {
+// Seed a fresh one-time server-creation code into D1 (migration 0003) and return it — the create
+// route burns one atomically per server.
+async function seedCode(): Promise<string> {
+  const code = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO server_creation_codes (code, created_at) VALUES (?, ?)")
+    .bind(code, Date.now())
+    .run();
+  return code;
+}
+
+// POST /api/servers. Password is now required and creation is gated by a one-time code, so auto-seed
+// a fresh code and default the password; both are overridable via `body` (later keys win).
+async function createdSummary(
+  token: string,
+  body: Record<string, unknown>,
+): Promise<ServerSummary> {
+  const code = await seedCode();
   const res = await authed(token, "/api/servers", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ password: "hunter2", code, ...body }),
   });
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`);
   return ServerSummary.parse(await res.json());
@@ -107,7 +123,9 @@ describe("FR-12 rename", () => {
     const created = await createdSummary(admin, { nickname: "guardserver12" });
 
     const member = await session("mem12");
-    expect((await joinServer(member, { nickname: "guardserver12" })).status).toBe(200);
+    expect(
+      (await joinServer(member, { nickname: "guardserver12", password: "hunter2" })).status,
+    ).toBe(200);
     const asMember = await patchServer(member, created.id, { nickname: "hijack" });
     expect(asMember.status).toBe(403);
     expect(await asMember.json()).toEqual({ error: "not_admin" });
@@ -128,10 +146,10 @@ describe("FR-12 rename", () => {
 });
 
 describe("FR-10 password change", () => {
-  it("set password: next join requires it (wrong → 403 wrong_password)", async () => {
+  it("set password: next join requires the NEW password (wrong → 403 wrong_password)", async () => {
     const admin = await session("pwsetadmin");
     const created = await createdSummary(admin, { nickname: "pwsetserver" });
-    expect(created.hasPassword).toBe(false);
+    expect(created.hasPassword).toBe(true); // always set now; PATCH replaces it below
 
     const patched = await patchServer(admin, created.id, { password: "s3cret" });
     expect(patched.status).toBe(200);
@@ -151,28 +169,34 @@ describe("FR-10 password change", () => {
     expect(ServerSummary.parse(await right.json()).id).toBe(created.id);
   });
 
-  it("clear password with null: join succeeds with no password", async () => {
+  it("clearing the password is not possible: PATCH {password: null} → 400 bad_request", async () => {
     const admin = await session("pwclradmin");
     const created = await createdSummary(admin, { nickname: "pwclrserver", password: "openme" });
     expect(created.hasPassword).toBe(true);
 
+    // A server password is always set (no open servers), so the schema rejects null outright.
     const patched = await patchServer(admin, created.id, { password: null });
-    expect(patched.status).toBe(200);
-    expect(ServerSummary.parse(await patched.json()).hasPassword).toBe(false);
+    expect(patched.status).toBe(400);
+    expect(await patched.json()).toEqual({ error: "bad_request" });
 
+    // The password is untouched — the server still requires one to join.
+    const listed = must(serverIn(await me(admin), created.id), "server still listed");
+    expect(listed.hasPassword).toBe(true);
     const joiner = await session("pwclrjoiner");
-    const res = await joinServer(joiner, { nickname: "pwclrserver" });
-    expect(res.status).toBe(200);
-    expect(ServerSummary.parse(await res.json()).id).toBe(created.id);
+    const none = await joinServer(joiner, { nickname: "pwclrserver" });
+    expect(none.status).toBe(403);
+    expect(await none.json()).toEqual({ error: "wrong_password" });
   });
 
   it("existing member unaffected (their /api/me still lists the server)", async () => {
     const admin = await session("pwmemadmin");
     const created = await createdSummary(admin, { nickname: "pwmemserver" });
     const member = await session("pwmember");
-    expect((await joinServer(member, { nickname: "pwmemserver" })).status).toBe(200);
+    expect(
+      (await joinServer(member, { nickname: "pwmemserver", password: "hunter2" })).status,
+    ).toBe(200);
 
-    // Admin adds a password AFTER the member already joined.
+    // Admin changes the password AFTER the member already joined.
     expect((await patchServer(admin, created.id, { password: "afterjoin" })).status).toBe(200);
 
     // The existing member's membership is untouched — /api/me still lists the server.
@@ -188,7 +212,9 @@ describe("FR-11 kick — catalog side", () => {
     const created = await createdSummary(admin, { nickname: "kickserver" });
     const member = await session("kickmember");
     const memberId = await meUserId(member);
-    expect((await joinServer(member, { nickname: "kickserver" })).status).toBe(200);
+    expect((await joinServer(member, { nickname: "kickserver", password: "hunter2" })).status).toBe(
+      200,
+    );
     expect(serverIn(await me(member), created.id)).toBeDefined();
 
     const res = await kick(admin, created.id, memberId);

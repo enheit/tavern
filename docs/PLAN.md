@@ -119,9 +119,11 @@ tests. Test files reference FR ids in `describe()` strings so coverage is greppa
 
 ### 1.2 Servers & membership
 
-- **FR-08 Create server**: unique server nickname + optional password. Creator becomes **admin**.
-  Server has a stable `serverId` forever. AC: appears in creator's server list; single voice
-  channel + single text channel exist by default.
+- **FR-08 Create server**: unique server nickname + a required password (≥4), gated by a one-time,
+  operator-issued **creation code**. Creator becomes **admin**. Server has a stable `serverId`
+  forever. AC: appears in creator's server list; single voice channel + single text channel exist
+  by default; the creation code is single-use and its use is audited (who used it, when, and which
+  server it created) — a spent or unknown code → `invalid_code` (403).
 - **FR-09 Join server** by nickname (+ password if set). Users can join many servers and switch
   between them (header dropdown). AC: wrong password → error; join rejected with `server_full`
   when the member count reached `LIMITS.maxMembersPerServer`; joined server persists across
@@ -570,6 +572,14 @@ user_settings(
   locale TEXT NOT NULL DEFAULT 'en' CHECK (locale IN ('en','uk')),
   theme TEXT NOT NULL DEFAULT 'system' CHECK (theme IN ('light','dark','system'))
 )
+server_creation_codes(         -- FR-08: one-time, operator-seeded codes gating create
+  code TEXT PRIMARY KEY,       -- the literal code an operator hands out
+  created_at INTEGER NOT NULL, -- epoch ms
+  used_by_user_id TEXT,        -- user(id); NULL until claimed
+  used_at INTEGER,             -- NULL until claimed; non-NULL = burned (single-use)
+  created_server_id TEXT       -- servers(id); the server this code created. NO FK clauses on this
+                               -- table: the route stamps the claim BEFORE the servers row commits.
+)
 ```
 
 ### 5.2 ServerRoom DO SQLite (per server; DDL in step S3.1, applied idempotently on first fetch)
@@ -654,10 +664,10 @@ soundboard: number 0..2, mutedUsers: userId[] }` (the localStorage `settings.vol
 | `PATCH /api/me/profile` | session | `{ displayName?, color?, username? }` → fan-out `member.update` to joined-server DOs |
 | `POST /api/me/avatar` | session | body = webp bytes ≤ `LIMITS.avatarMaxBytes`; magic-byte check; → R2 |
 | `GET/PUT /api/me/settings` | session | `user_settings` row (FR-16, FR-06, FR-07) |
-| `POST /api/servers` | session | create (FR-08): `{ nickname, password? }`; creator=admin; seeds 2 channels; joins creator |
+| `POST /api/servers` | session | create (FR-08): `{ nickname, password, code }` (`code` = one-time creation code → 403 `invalid_code` if spent/unknown); creator=admin; seeds 2 channels; joins creator |
 | `POST /api/servers/join` | session | `{ nickname, password? }` (FR-09) |
 | `GET /api/servers/:id/members` | member | member profiles (presence comes via WS) |
-| `PATCH /api/servers/:id` | admin | `{ nickname? , password?|null }` (FR-10, FR-12) → DO `server.updated` |
+| `PATCH /api/servers/:id` | admin | `{ nickname?, password? }` (FR-10 replace-only — a server password is always set; FR-12) → DO `server.updated` |
 | `DELETE /api/servers/:id/members/:userId` | admin | kick (FR-11) → D1 delete + DO eviction |
 | `POST /api/ws-ticket` | session | `{ serverId }` → `{ ticket }` one-time, 30s TTL (A4; stored in DO) |
 | `GET /api/servers/:id/ws?ticket=` | ticket | WS upgrade → ServerRoom DO |

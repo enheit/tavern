@@ -39,10 +39,16 @@ async function meUserId(token: string): Promise<string> {
 }
 
 async function createServer(token: string, nickname: string): Promise<string> {
+  // Creation now requires a password + a one-time operator-seeded code (migration 0003); seed a fresh
+  // code per create and use a fixed password (joinServer below matches it).
+  const code = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO server_creation_codes (code, created_at) VALUES (?, ?)")
+    .bind(code, Date.now())
+    .run();
   const res = await authed(token, "/api/servers", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ nickname }),
+    body: JSON.stringify({ nickname, password: "hunter2", code }),
   });
   if (res.status !== 201) throw new Error(`create failed: ${res.status}`);
   const summary: { id: string } = await res.json();
@@ -50,10 +56,11 @@ async function createServer(token: string, nickname: string): Promise<string> {
 }
 
 async function joinServer(token: string, nickname: string): Promise<void> {
+  // Servers created via the helper carry the fixed "hunter2" password, so join with it.
   const res = await authed(token, "/api/servers/join", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ nickname }),
+    body: JSON.stringify({ nickname, password: "hunter2" }),
   });
   if (!res.ok) throw new Error(`join failed: ${res.status}`);
 }

@@ -153,11 +153,17 @@ async function main() {
   for (let i = 0; i < clientCount; i += 1) users.push(await registerUser(String(i)));
   const [admin, ...rest] = users;
   const nickname = `soak-${hex(4)}`;
-  const created = await admin.request.post("/api/servers", { data: { nickname } });
+  const password = `pw-${hex(4)}`;
+  // Server creation requires a one-time code (FR-08 hardening) — mint one via the TAVERN_TEST-only
+  // seed route (present on the soak worker: its .dev.vars sets TAVERN_TEST=1).
+  const seeded = await admin.request.post("/api/__test/seed-code");
+  if (!seeded.ok()) throw new Error(`seed-code: ${seeded.status()} ${await seeded.text()}`);
+  const { code } = await seeded.json();
+  const created = await admin.request.post("/api/servers", { data: { nickname, password, code } });
   if (!created.ok()) throw new Error(`createServer: ${created.status()} ${await created.text()}`);
   const server = await created.json();
   for (const user of rest) {
-    const joined = await user.request.post("/api/servers/join", { data: { nickname } });
+    const joined = await user.request.post("/api/servers/join", { data: { nickname, password } });
     if (!joined.ok()) throw new Error(`join ${user.username}: ${joined.status()}`);
   }
   log(`server ${server.id} (${nickname}) seeded with ${users.length} members`);

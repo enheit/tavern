@@ -29,12 +29,32 @@ function authed(token: string, path: string, init: RequestInit = {}): Promise<Re
   return SELF.fetch(`${BASE}${path}`, { ...init, headers });
 }
 
-function createServer(token: string, body: unknown): Promise<Response> {
+// Seed a fresh one-time server-creation code straight into D1 (migration 0003) and return it. An
+// operator seeds these by hand in production; the create route burns one atomically per server.
+async function seedCode(): Promise<string> {
+  const code = crypto.randomUUID();
+  await env.DB.prepare("INSERT INTO server_creation_codes (code, created_at) VALUES (?, ?)")
+    .bind(code, Date.now())
+    .run();
+  return code;
+}
+
+// Raw POST /api/servers with an EXACT body — for the code-gating / missing-field cases that need
+// full control over the request (no auto-seeded code or default password).
+function rawCreate(token: string, body: unknown): Promise<Response> {
   return authed(token, "/api/servers", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+// POST /api/servers. Password is now required and creation is gated by a one-time code, so auto-seed
+// a fresh code and default the password — existing call sites only pass the fields they assert on.
+// Both are overridable via `body` (later keys win).
+async function createServer(token: string, body: Record<string, unknown>): Promise<Response> {
+  const code = await seedCode();
+  return rawCreate(token, { password: "hunter2", code, ...body });
 }
 
 function joinServer(token: string, body: unknown): Promise<Response> {
@@ -58,7 +78,10 @@ async function meUserId(token: string): Promise<string> {
   return body.user.userId;
 }
 
-async function createdSummary(token: string, body: unknown): Promise<ServerSummary> {
+async function createdSummary(
+  token: string,
+  body: Record<string, unknown>,
+): Promise<ServerSummary> {
   const res = await createServer(token, body);
   if (res.status !== 201) throw new Error(`create failed: ${res.status} ${await res.text()}`);
   return ServerSummary.parse(await res.json());
@@ -104,7 +127,7 @@ describe("FR-08 create server", () => {
     expect(summary).toMatchObject({
       nickname: "mytavern",
       adminUserId: userId,
-      hasPassword: false,
+      hasPassword: true, // password is always set now (no open servers via the API)
     });
 
     const server = must(
@@ -155,6 +178,78 @@ describe("FR-08 create server", () => {
     expect(await spaced.json()).toEqual({ error: "bad_request" });
   });
 
+  it("missing password or missing code → 400 bad_request", async () => {
+    const token = await session("reqfields");
+    const code = await seedCode();
+    // Valid code + nickname but no password → zodJson rejects before the handler.
+    const noPw = await rawCreate(token, { nickname: "needs-pw", code });
+    expect(noPw.status).toBe(400);
+    expect(await noPw.json()).toEqual({ error: "bad_request" });
+    // Valid password + nickname but no code.
+    const noCode = await rawCreate(token, { nickname: "needs-code", password: "hunter2" });
+    expect(noCode.status).toBe(400);
+    expect(await noCode.json()).toEqual({ error: "bad_request" });
+  });
+
+  it("unknown code → 403 invalid_code and no server row is inserted", async () => {
+    const token = await session("badcode");
+    const res = await rawCreate(token, {
+      nickname: "nocodeserver",
+      password: "hunter2",
+      code: "does-not-exist",
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "invalid_code" });
+    const row = await env.DB.prepare("SELECT id FROM servers WHERE nickname = ?")
+      .bind("nocodeserver")
+      .first();
+    expect(row).toBeNull();
+  });
+
+  it("a code is single-use: reusing a burned code → 403 invalid_code", async () => {
+    const token = await session("reusecode");
+    const code = await seedCode();
+    const first = await rawCreate(token, { nickname: "reuse-first", password: "hunter2", code });
+    expect(first.status).toBe(201);
+    const second = await rawCreate(token, { nickname: "reuse-second", password: "hunter2", code });
+    expect(second.status).toBe(403);
+    expect(await second.json()).toEqual({ error: "invalid_code" });
+  });
+
+  it("records who burned the code, when, and which server it created", async () => {
+    const token = await session("usagecode");
+    const userId = await meUserId(token);
+    const code = await seedCode();
+    const res = await rawCreate(token, { nickname: "usage-server", password: "hunter2", code });
+    expect(res.status).toBe(201);
+    const summary = ServerSummary.parse(await res.json());
+    const claim = must(
+      await env.DB.prepare(
+        "SELECT used_by_user_id, used_at, created_server_id FROM server_creation_codes WHERE code = ?",
+      )
+        .bind(code)
+        .first<{ used_by_user_id: string; used_at: number; created_server_id: string }>(),
+      "code row",
+    );
+    expect(claim.used_by_user_id).toBe(userId);
+    expect(typeof claim.used_at).toBe("number");
+    expect(claim.created_server_id).toBe(summary.id);
+  });
+
+  it("a nickname clash (409) does NOT burn the code — it stays usable", async () => {
+    const a = await session("claimclasha");
+    await createdSummary(a, { nickname: "dup-a" });
+    const b = await session("claimclashb");
+    const code = await seedCode();
+    // Reusing an existing nickname is rejected BEFORE the code is claimed.
+    const clash = await rawCreate(b, { nickname: "dup-a", password: "hunter2", code });
+    expect(clash.status).toBe(409);
+    expect(await clash.json()).toEqual({ error: "nickname_taken" });
+    // The same, still-unused code creates a non-clashing server.
+    const ok = await rawCreate(b, { nickname: "dup-b", password: "hunter2", code });
+    expect(ok.status).toBe(201);
+  });
+
   it("password stored as pbkdf2$100000$… (never plaintext), hasPassword=true in response", async () => {
     const token = await session("pwstore");
     const summary = await createdSummary(token, { nickname: "secretserver", password: "hunter2" });
@@ -173,13 +268,14 @@ describe("FR-08 create server", () => {
 
 describe("FR-09 join server", () => {
   it("join open server by nickname (case-insensitive) succeeds", async () => {
-    const admin = await session("openadmin");
-    const created = await createdSummary(admin, { nickname: "OpenServer" });
+    // Open (passwordless) servers can no longer be created through the API (password is required), so
+    // seed one directly to exercise the join route's no-password branch.
+    const createdId = await seedServer("OpenServer");
     const joiner = await session("openjoiner");
     const res = await joinServer(joiner, { nickname: "openserver" });
     expect(res.status).toBe(200);
     const summary = ServerSummary.parse(await res.json());
-    expect(summary.id).toBe(created.id);
+    expect(summary.id).toBe(createdId);
   });
 
   it("join password server: wrong → 403 wrong_password; right → 200", async () => {
@@ -204,7 +300,9 @@ describe("FR-09 join server", () => {
     const token = await session("idem");
     const userId = await meUserId(token);
     const created = await createdSummary(token, { nickname: "idemserver" });
-    const rejoin = await joinServer(token, { nickname: "idemserver" });
+    // The server carries the helper's default password; the join route checks the password before the
+    // already-a-member short-circuit, so a re-join must present it.
+    const rejoin = await joinServer(token, { nickname: "idemserver", password: "hunter2" });
     expect(rejoin.status).toBe(200);
     const summary = ServerSummary.parse(await rejoin.json());
     expect(summary.id).toBe(created.id);
@@ -254,12 +352,12 @@ describe("FR-09 join server", () => {
     await Promise.all(dummies.map((uid) => seedMembership(uid, created.id)));
 
     const outsider = await session("fulloutsider");
-    const full = await joinServer(outsider, { nickname: "fullserver" });
+    const full = await joinServer(outsider, { nickname: "fullserver", password: "hunter2" });
     expect(full.status).toBe(403);
     expect(await full.json()).toEqual({ error: "server_full" });
 
     // An existing member re-joining a full server still gets 200 (checked before the fullness guard).
-    const rejoin = await joinServer(admin, { nickname: "fullserver" });
+    const rejoin = await joinServer(admin, { nickname: "fullserver", password: "hunter2" });
     expect(rejoin.status).toBe(200);
   });
 });
