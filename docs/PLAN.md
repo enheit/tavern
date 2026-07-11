@@ -192,14 +192,24 @@ tests. Test files reference FR ids in `describe()` strings so coverage is greppa
   resolution change reflected in viewer `getStats`.
 - **FR-28 Stream audio (game audio)** captured where the OS supports it (probed via
   `capture.loopbackAudioSupported()`):
-  **Windows** — in-box: `audio: 'loopback'` in the display-media handler callback.
+  **Windows** — in-box via the display-media handler callback. Build 20348+ (Win11/Server 2022)
+  passes the Chromium device id `'loopbackWithoutChrome'` (WASAPI process loopback,
+  EXCLUDE_TARGET_PROCESS_TREE): system audio MINUS Tavern's own output, so voices/soundboard no
+  longer echo into the stream. Electron's handler forwards any audio string verbatim as the device
+  id (electron_browser_context.cc) — its d.ts union is narrower than the implementation. Older
+  Windows falls back to `'loopback'` (endpoint capture; self-audio caveat stands). Device pick is
+  the shared `loopbackAudioDevice()` (used by main capture + the preload's static
+  `loopbackSelfAudioExcluded` flag, which suppresses the caveat toast where it would be a lie).
   **macOS** — in-box since Electron 39 via the CoreAudio tap (needs `NSAudioCaptureUsageDescription`
   in Info.plist; macOS ≤12.7.6 unsupported). Electron's own docs pages disagree with each other
   here, so S8.1's DoD includes a live macOS probe; failure path is pre-authorized in §3.7.
+  macOS also gets `'loopbackWithoutChrome'`: the catap backend (14.2+, feature on by default)
+  excludes the audio service's process objects; the SCK fallback (13+) sets
+  `excludesCurrentProcessAudio` — both fail OPEN to full loopback if exclusion can't resolve.
   **Linux** — best-effort behind `app.commandLine.appendSwitch('enable-features',
   'PulseaudioLoopbackForScreenShare')` (works on PulseAudio/pipewire-pulse; experimental).
-  Known v1 limitation (pinned, shown once in UI): loopback captures ALL system audio including
-  Tavern's own output — voices/soundboard leak into the stream; per-process capture is a non-goal.
+  Known v1 limitation (old-Windows <20348 only, shown once in UI there): loopback captures ALL
+  system audio including Tavern's own output — voices/soundboard leak into the stream.
   AC: viewer hears stream audio on supporting OSes, controlled by FR-31's slider, absent otherwise.
 - **FR-29 Webcam share** appears as a normal tile on the same canvas. AC: webcam + screen can be
   shared simultaneously by the same user (two tiles).
@@ -1172,10 +1182,15 @@ High layer (`h`) = selected preset. Every encoding carries `maxBitrate` (kbps) a
 
 | preset | 15 fps | 30 fps | 60 fps |
 |---|---|---|---|
-| 480p (854×480) | 400 | 600 | 900 |
-| 720p (1280×720) | 700 | 1200 | 1800 |
-| 1080p (1920×1080) | 1200 | 2000 | 3000 |
-| 1440p (2560×1440) | 1800 | 3000 | 4500 |
+| 480p (854×480) | 400 | 800 | 1200 |
+| 720p (1280×720) | 700 | 1800 | 3000 |
+| 1080p (1920×1080) | 1200 | 3500 | 6000 |
+| 1440p (2560×1440) | 1800 | 5000 | 9000 |
+
+(30/60fps caps re-anchored 2026-07-11: streams are usually motion — the original caps starved a
+1080p60 share to ~0.02 bits/pixel, unreadable blur. 15fps rows unchanged; data tiers remain the
+cost knob. Watcher pulls PIN their layer at the SFU — `priorityOrdering:"none"` — because the SFU's
+automatic mode bounced fullscreen watchers back to the 270p l layer on every BWE dip.)
 
 Low layer (`l`, always): `scaleResolutionDownBy` → height ≈270, 15fps, 250 kbps.
 Webcam: fixed 720p30 h-layer 1000 kbps + l-layer 180p/15fps/150 kbps.
