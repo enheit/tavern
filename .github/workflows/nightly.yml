@@ -29,6 +29,9 @@ jobs:
           } > worker/.dev.vars
       - run: pnpm -F @tavern/worker run migrate:local
       - run: pnpm -F @tavern/e2e exec playwright install --with-deps chromium
+      # Diagnostic: which WebRTC egress paths does this runner have? (UDP-blocked runners must
+      # relay over TURN — attributes a red @realtime suite to network vs product.)
+      - run: node e2e/scripts/webrtc-egress-probe.mjs
       # REALTIME_APP_ID in the step env makes playwright.config.ts append the 8788 realtime webServer.
       - run: pnpm e2e:realtime    # web-realtime project (S7.4), real SFU, against wrangler dev
         env:
