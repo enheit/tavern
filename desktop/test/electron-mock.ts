@@ -138,6 +138,7 @@ export const shell = {
 
 export const safeStorage = {
   isEncryptionAvailable: vi.fn(() => true),
+  setUsePlainTextEncryption: vi.fn(),
   encryptString: vi.fn((plain: string) => Buffer.from(`enc:${plain}`, "utf8")),
   decryptString: vi.fn((buf: Buffer) => {
     const text = buf.toString("utf8");

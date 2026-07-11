@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getToken, setToken } from "../src/main/secrets";
-import { resetElectronMock, state } from "./electron-mock";
+import { resetElectronMock, safeStorage, state } from "./electron-mock";
 
 vi.mock("electron", () => import("./electron-mock"));
 
@@ -52,5 +52,27 @@ describe("A5 token storage", () => {
     await setToken("plain-value");
     const raw = readFileSync(join(dir, "secrets.bin")).toString("utf8");
     expect(raw).toBe("enc:plain-value");
+  });
+
+  // S12.4 keyring-less CI seam: e2e + linux + no OS password manager → opt into Electron's basic
+  // in-memory key (the only supported fallback); production (no TAVERN_E2E) must NOT opt in.
+  it("forces plain-text encryption only under e2e on keyring-less linux", async () => {
+    const realPlatform = process.platform;
+    try {
+      Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+      vi.stubEnv("TAVERN_E2E", "1");
+      safeStorage.isEncryptionAvailable.mockReturnValueOnce(false);
+      await setToken("ci-token");
+      expect(safeStorage.setUsePlainTextEncryption).toHaveBeenCalledWith(true);
+
+      safeStorage.setUsePlainTextEncryption.mockClear();
+      vi.unstubAllEnvs();
+      safeStorage.isEncryptionAvailable.mockReturnValueOnce(false);
+      await setToken("prod-token");
+      expect(safeStorage.setUsePlainTextEncryption).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+      vi.unstubAllEnvs();
+    }
   });
 });
