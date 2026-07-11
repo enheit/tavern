@@ -3,6 +3,19 @@
 All notable changes to Tavern are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semver.
 
+## [0.2.1] — 2026-07-11
+
+### Fixed
+
+- **Desktop release builds could never reach the server** ("Couldn't connect
+  to the server." on boot). The packaged renderer is served from the
+  `app://tavern` scheme, so relative API URLs resolved against the static-file
+  handler instead of the Worker. Release builds now bake the production Worker
+  origin in at build time (`VITE_API_URL`), and the Worker answers CORS for
+  the `app://tavern` origin (Authorization header allowed, `set-auth-token`
+  exposed for the desktop bearer flow). Affected every desktop artifact since
+  v0.1.0; the worker-served web client was never affected.
+
 ## [0.2.0] — 2026-07-11
 
 ### Added

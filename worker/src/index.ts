@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import type { ErrorCode } from "@tavern/shared";
 import { stripEmail, withAuth } from "./middleware";
 import type { AuthVars } from "./middleware";
@@ -20,6 +21,21 @@ const app = new Hono<{ Bindings: Env; Variables: AuthVars }>();
 
 // Registered first so it skips the auth middleware below (no session lookup on a liveness probe).
 app.get("/api/health", (c) => c.json({ ok: true }));
+
+// CORS for the packaged desktop renderer (origin app://tavern — PLAN §2 "HTTPS + WSS (same API)"):
+// the web client is same-origin (worker-served) and never preflights, but the desktop app fetches
+// cross-origin with an Authorization bearer header, so OPTIONS must answer BEFORE withAuth and the
+// login response's `set-auth-token` header must be exposed or the renderer can never capture it.
+// localhost:5173 covers `pnpm -F @tavern/app dev` hitting a remote worker directly.
+app.use(
+  "/api/*",
+  cors({
+    origin: ["app://tavern", "http://localhost:5173"],
+    allowHeaders: ["Content-Type", "Authorization"],
+    exposeHeaders: ["set-auth-token"],
+    credentials: true,
+  }),
+);
 
 // Build the per-request better-auth instance + resolve the session for every /api route.
 app.use("/api/*", withAuth);

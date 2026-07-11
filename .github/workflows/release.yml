@@ -23,6 +23,12 @@ jobs:
           # electron-builder's *Windows* signing vars — exposing the Apple .p12 on windows-latest
           # would try to sign the NSIS build with it; Windows is unsigned in v1, PLAN §11).
           TAVERN_MAC_UPDATES_DISABLED: ${{ matrix.os == 'macos-latest' && '1' || '' }}
+          # The packaged renderer is served from app://tavern, so relative /api URLs resolve against
+          # the static-file protocol handler and every call 404s ("Couldn't connect to the server").
+          # Bake the prod worker origin into apiClient/wsClient (deploy.yml builds WITHOUT this —
+          # the worker-served web client stays same-origin/relative). Worker-side pair: the app://tavern
+          # CORS mount in worker/src/index.ts.
+          VITE_API_URL: https://tavern.roman-mahotskyi.workers.dev
       - run: cd desktop && npx electron-builder --publish always --config.mac.notarize=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
