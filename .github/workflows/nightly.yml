@@ -136,7 +136,8 @@ jobs:
       - name: System deps (git for checkout; xvfb + Electron's GUI libs)
         run: |
           xbps-install -Syu -y xbps
-          xbps-install -Sy -y git bash curl xz tar gzip xorg-server-xvfb \
+          # libatomic: pnpm/action-setup@v6's native @pnpm/exe binary links it.
+          xbps-install -Sy -y git bash curl xz tar gzip xorg-server-xvfb libatomic \
             nss gtk+3 alsa-lib at-spi2-core libgbm libxkbcommon libdrm dbus \
             libXcomposite libXdamage libXrandr libXtst libXScrnSaver cups mesa-dri
       - uses: actions/checkout@v7
@@ -159,7 +160,8 @@ jobs:
       - name: System deps (git for checkout; xvfb + Electron's GUI libs)
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y git bash curl ca-certificates xz-utils xvfb \
+          # libatomic1: pnpm/action-setup@v6's native @pnpm/exe binary links it.
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git bash curl ca-certificates xz-utils xvfb libatomic1 \
             libnss3 libgtk-3-0t64 libasound2t64 libgbm1 libxkbcommon0 libdrm2 dbus \
             libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxss1
       - uses: actions/checkout@v7
