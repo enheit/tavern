@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Browser } from "@playwright/test";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectMemberVisible, test } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -96,7 +96,7 @@ test.describe("FR-10 FR-11 FR-12 admin e2e", () => {
       await fresh.page.getByTestId("join-password").fill(password);
       await fresh.page.getByTestId("join-submit").click();
       await expect(fresh.page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(fresh.page.getByTestId(`member-${c.userId}`)).toBeVisible();
+      await expectMemberVisible(fresh.page, c.userId);
     } finally {
       await admin.context.close();
       await fresh.context.close();
@@ -121,7 +121,7 @@ test.describe("FR-10 FR-11 FR-12 admin e2e", () => {
       await expect(admin.page).toHaveURL(new RegExp(`/s/${server.id}$`));
       await member.page.goto("/");
       await expect(member.page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(member.page.getByTestId(`member-${b.userId}`)).toBeVisible();
+      await expectMemberVisible(member.page, b.userId);
 
       // A kicks B via the admin dialog's Members section (confirm required).
       await admin.page.getByTestId("admin-settings-button").click();
@@ -141,7 +141,7 @@ test.describe("FR-10 FR-11 FR-12 admin e2e", () => {
       await member.page.getByTestId("join-password").fill(password);
       await member.page.getByTestId("join-submit").click();
       await expect(member.page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(member.page.getByTestId(`member-${b.userId}`)).toBeVisible();
+      await expectMemberVisible(member.page, b.userId);
     } finally {
       await admin.context.close();
       await member.context.close();

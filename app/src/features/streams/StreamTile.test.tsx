@@ -83,7 +83,14 @@ describe("FR-30 opt-in placeholder", () => {
   it("idle tile shows a Watch button + kind icon and opts in on click", () => {
     watchMock.state = "idle";
     const stream = makeStream();
-    render(<StreamTile stream={stream} focused={false} onToggleFocus={vi.fn()} />);
+    render(
+      <StreamTile
+        stream={stream}
+        focused={false}
+        onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
+      />,
+    );
 
     expect(screen.getByTestId(`stream-kind-${stream.trackName}`)).not.toBeNull();
     // No video / volume in the placeholder.
@@ -102,6 +109,7 @@ describe("FR-31 per-stream volume", () => {
         stream={makeStream({ hasAudio: true })}
         focused={false}
         onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
       />,
     );
 
@@ -119,6 +127,7 @@ describe("FR-31 per-stream volume", () => {
         stream={makeStream({ hasAudio: true })}
         focused={false}
         onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
       />,
     );
 
@@ -133,29 +142,42 @@ describe("FR-31 per-stream volume", () => {
         stream={makeStream({ hasAudio: false })}
         focused={false}
         onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
       />,
     );
     expect(screen.queryByTestId(`stream-volume-${UID}:screen`)).toBeNull();
   });
 });
 
-// A stateful wrapper mirroring Canvas: double-clicking the tile toggles `focused`, whose change the
+// A stateful wrapper mirroring Canvas: clicking the tile toggles `focused`, whose change the
 // tile reacts to by switching simulcast layers (FR-33).
 function FocusHarness({ stream }: { stream: StreamInfo }) {
   const [focused, setFocused] = useState(false);
   return (
-    <StreamTile stream={stream} focused={focused} onToggleFocus={() => setFocused((f) => !f)} />
+    <StreamTile
+      stream={stream}
+      focused={focused}
+      onToggleFocus={() => setFocused((f) => !f)}
+      onToggleFullscreen={vi.fn()}
+    />
   );
 }
 
-describe("FR-27 own-tile preset dropdown", () => {
+describe("FR-27 preset dropdown removed from tiles (tuning lives in the ControlsBar)", () => {
   const self = { userId: UID, username: "me", displayName: "Me", color: "#abcdef" };
 
-  it("dropdown appears on the sharer's OWN screen tile", () => {
+  it("dropdown is absent even on the sharer's OWN screen tile", () => {
     useSessionStore.setState({ profile: self });
     const stream = makeStream({ userId: UID, kind: "screen" });
-    render(<StreamTile stream={stream} focused={false} onToggleFocus={vi.fn()} />);
-    expect(screen.getByTestId(`stream-preset-${stream.trackName}`)).not.toBeNull();
+    render(
+      <StreamTile
+        stream={stream}
+        focused={false}
+        onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId(`stream-preset-${stream.trackName}`)).toBeNull();
   });
 
   it("dropdown is absent on the OWN webcam tile (webcam preset is fixed)", () => {
@@ -166,7 +188,14 @@ describe("FR-27 own-tile preset dropdown", () => {
       trackName: `cam:${UID}`,
       preset: "720p30",
     });
-    render(<StreamTile stream={stream} focused={false} onToggleFocus={vi.fn()} />);
+    render(
+      <StreamTile
+        stream={stream}
+        focused={false}
+        onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
+      />,
+    );
     expect(screen.queryByTestId(`stream-preset-${stream.trackName}`)).toBeNull();
   });
 
@@ -174,29 +203,36 @@ describe("FR-27 own-tile preset dropdown", () => {
     useSessionStore.setState({ profile: self });
     const other = "33333333-3333-4333-8333-333333333333";
     const stream = makeStream({ userId: other, kind: "screen", trackName: `screen:${other}:1` });
-    render(<StreamTile stream={stream} focused={false} onToggleFocus={vi.fn()} />);
+    render(
+      <StreamTile
+        stream={stream}
+        focused={false}
+        onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
+      />,
+    );
     expect(screen.queryByTestId(`stream-preset-${stream.trackName}`)).toBeNull();
   });
 });
 
 describe("FR-33 focus layer", () => {
-  it("double-click watched tile enters focus and calls setLayer h", () => {
+  it("click watched tile enters focus and calls setLayer h", () => {
     const stream = makeStream();
     render(<FocusHarness stream={stream} />);
 
-    fireEvent.doubleClick(screen.getByTestId(`stream-tile-${stream.trackName}`));
+    fireEvent.click(screen.getByTestId(`stream-tile-${stream.trackName}`));
 
     expect(watchMock.setLayer).toHaveBeenCalledWith("h");
   });
 
-  it("second double-click (or Esc) leaves focus, calls setLayer l and restores grid", () => {
+  it("second click (or Esc) leaves focus, calls setLayer l and restores grid", () => {
     const stream = makeStream();
     render(<FocusHarness stream={stream} />);
     const tile = screen.getByTestId(`stream-tile-${stream.trackName}`);
 
-    fireEvent.doubleClick(tile); // enter focus → 'h'
+    fireEvent.click(tile); // enter focus → 'h'
     watchMock.setLayer.mockClear();
-    fireEvent.doubleClick(tile); // leave focus → 'l'
+    fireEvent.click(tile); // leave focus → 'l'
 
     expect(watchMock.setLayer).toHaveBeenCalledWith("l");
     expect(tile.getAttribute("data-watching")).toBe("true");
@@ -223,6 +259,7 @@ describe("FR-29 self preview", () => {
         selfStream={selfStream}
         focused={false}
         onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
       />,
     );
 
@@ -239,7 +276,13 @@ describe("FR-29 self preview", () => {
     watchMock.state = "idle";
     const stream = makeStream({ kind: "webcam", trackName: `cam:${UID}` });
     render(
-      <StreamTile stream={stream} selfStream={null} focused={false} onToggleFocus={vi.fn()} />,
+      <StreamTile
+        stream={stream}
+        selfStream={null}
+        focused={false}
+        onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
+      />,
     );
 
     expect(screen.queryByTestId(`stream-watch-${stream.trackName}`)).toBeNull();
@@ -255,7 +298,13 @@ describe("FR-29 self preview", () => {
     watchMock.state = "idle";
     const stream = makeStream({ kind: "webcam", trackName: `cam:${UID}` });
     render(
-      <StreamTile stream={stream} selfStream={null} focused={false} onToggleFocus={vi.fn()} />,
+      <StreamTile
+        stream={stream}
+        selfStream={null}
+        focused={false}
+        onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
+      />,
     );
 
     expect(screen.getByTestId(`stream-watch-${stream.trackName}`)).not.toBeNull();

@@ -6,16 +6,46 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { getWebcamController } from "@/features/streams/useWebcam";
 import { m } from "@/paraglide/messages.js";
 import { useMediaStore } from "@/stores/media";
-import { type DeviceSettingsV1, useSettingsStore } from "@/stores/settings";
+import {
+  type DeviceSettingsV1,
+  isNoiseSuppressionMode,
+  type NoiseSuppressionMode,
+  useSettingsStore,
+} from "@/stores/settings";
 import { getVoiceController } from "./voiceController";
 
 // FR-21/22 Voice settings tab: input/output device pickers + noise-suppression toggle. Device labels
 // require mic permission (enumerateDevices returns blank labels otherwise, MDN). Changing input or
 // noise mid-call retoggles the mic (stop→reacquire→replaceTrack); changing output calls graph.setSink.
+// FR-22 noise-suppression modes surfaced in settings. "standard" = Chromium NS/AGC constraints;
+// "rnnoise"/"deepfilter" = WASM AudioWorklet models (see media/noiseWorklet.ts); "off" = AEC only.
+const NOISE_OPTIONS: Array<{
+  value: NoiseSuppressionMode;
+  label: () => string;
+  hint: () => string;
+}> = [
+  { value: "off", label: m.settings_voice_noise_off, hint: m.settings_voice_noise_off_hint },
+  {
+    value: "standard",
+    label: m.settings_voice_noise_standard,
+    hint: m.settings_voice_noise_standard_hint,
+  },
+  {
+    value: "rnnoise",
+    label: m.settings_voice_noise_rnnoise,
+    hint: m.settings_voice_noise_rnnoise_hint,
+  },
+  {
+    value: "deepfilter",
+    label: m.settings_voice_noise_deepfilter,
+    hint: m.settings_voice_noise_deepfilter_hint,
+  },
+];
+
 function toItems(devices: MediaDeviceInfo[]): Record<string, string> {
   const items: Record<string, string> = {};
   for (const d of devices) items[d.deviceId] = d.label || d.deviceId;
@@ -136,14 +166,31 @@ export function VoiceSettingsSection() {
           </SelectContent>
         </Select>
       </div>
-      <label className="flex items-center justify-between gap-4 text-sm">
-        <span>{m.settings_voice_noise()}</span>
-        <Switch
-          checked={deviceSettings.noiseSuppression}
+      <div className="flex flex-col gap-2">
+        <span className="text-sm font-medium">{m.settings_voice_noise()}</span>
+        <RadioGroup
+          value={deviceSettings.noiseSuppression}
           data-testid="settings-voice-noise"
-          onCheckedChange={(next) => apply({ ...deviceSettings, noiseSuppression: next }, false)}
-        />
-      </label>
+          onValueChange={(value) => {
+            if (!isNoiseSuppressionMode(value)) return;
+            apply({ ...deviceSettings, noiseSuppression: value }, false);
+          }}
+        >
+          {NOISE_OPTIONS.map((option) => (
+            <label key={option.value} className="flex items-start gap-3 text-sm">
+              <RadioGroupItem
+                value={option.value}
+                className="mt-0.5"
+                data-testid={`noise-option-${option.value}`}
+              />
+              <span className="flex flex-col gap-0.5">
+                <span>{option.label()}</span>
+                <span className="text-xs text-muted-foreground">{option.hint()}</span>
+              </span>
+            </label>
+          ))}
+        </RadioGroup>
+      </div>
     </div>
   );
 }

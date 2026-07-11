@@ -51,6 +51,7 @@ function member(userId: string, over: Partial<Member> = {}): Member {
 function seed(members: Member[], adminUserId = ADMIN, nickname = "old-name"): void {
   const hello: Extract<ServerMessage, { t: "hello.ok" }> = {
     t: "hello.ok",
+    status: "",
     self: { userId: adminUserId, username: "admin", displayName: "Admin", color: "#ffffff" },
     serverMeta: { id: SID, nickname, adminUserId },
     members,

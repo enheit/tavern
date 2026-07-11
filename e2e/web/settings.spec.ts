@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Browser, Page } from "@playwright/test";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectMemberVisible, test, withPeopleTab } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -60,7 +60,7 @@ test.describe("FR-03 FR-04 FR-05 FR-06 FR-07 settings persistence", () => {
     const openedB = await pageFor(browser, baseURL, b);
     try {
       await Promise.all([bootOnto(openedA, server.id), bootOnto(openedB, server.id)]);
-      await expect(openedB.page.getByTestId(`member-${a.userId}`)).toBeVisible();
+      await expectMemberVisible(openedB.page, a.userId);
 
       const newName = `Renamed-${hex(3)}`;
       await openSettings(openedA.page);
@@ -68,12 +68,15 @@ test.describe("FR-03 FR-04 FR-05 FR-06 FR-07 settings persistence", () => {
       await openedA.page.getByTestId("swatch-#f87171").click();
       await openedA.page.getByTestId("settings-account-save").click();
 
-      // The other client sees the new display name AND the new name color live (member.update).
-      await expect(openedB.page.getByTestId(`member-name-${a.userId}`)).toHaveText(newName);
-      await expect(openedB.page.getByTestId(`member-name-${a.userId}`)).toHaveCSS(
-        "color",
-        "rgb(248, 113, 113)",
-      );
+      // The other client sees the new display name AND the new name color live (member.update) — in
+      // the People tab (restored to Chat afterward).
+      await withPeopleTab(openedB.page, async () => {
+        await expect(openedB.page.getByTestId(`member-name-${a.userId}`)).toHaveText(newName);
+        await expect(openedB.page.getByTestId(`member-name-${a.userId}`)).toHaveCSS(
+          "color",
+          "rgb(248, 113, 113)",
+        );
+      });
     } finally {
       await openedA.context.close();
       await openedB.context.close();
@@ -132,11 +135,16 @@ test.describe("FR-03 FR-04 FR-05 FR-06 FR-07 settings persistence", () => {
       // now-stored webp then decodes (naturalWidth > 0) instead of falling back to the initial.
       await Promise.all([bootOnto(openedA, server.id), bootOnto(openedB, server.id)]);
       const assertAvatarLoaded = async (opened: Opened): Promise<void> => {
-        const img = opened.page.getByTestId(`avatar-img-${a.userId}`);
-        await expect(img).toBeVisible();
-        await expect
-          .poll(() => img.evaluate((el) => (el instanceof HTMLImageElement ? el.naturalWidth : 0)))
-          .toBeGreaterThan(0);
+        // The avatar <img> lives in the People tab now — assert while it is active.
+        await withPeopleTab(opened.page, async () => {
+          const img = opened.page.getByTestId(`avatar-img-${a.userId}`);
+          await expect(img).toBeVisible();
+          await expect
+            .poll(() =>
+              img.evaluate((el) => (el instanceof HTMLImageElement ? el.naturalWidth : 0)),
+            )
+            .toBeGreaterThan(0);
+        });
       };
       await Promise.all([assertAvatarLoaded(openedA), assertAvatarLoaded(openedB)]);
     } finally {

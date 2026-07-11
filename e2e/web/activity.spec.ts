@@ -1,5 +1,5 @@
 import { WsTicketResponse } from "@tavern/shared";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectMemberVisible, test } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL, WORKER_URL } from "../playwright.config";
 
@@ -82,7 +82,7 @@ test.describe("FR-39 activity e2e", () => {
       // will receive A's activity.new broadcasts).
       await page.goto("/");
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId(`member-${a.userId}`)).toBeVisible();
+      await expectMemberVisible(page, a.userId);
 
       // Open the Activity tab BEFORE A does anything — the rows must land live, not on refresh.
       await page.getByTestId("tab-activity").click();

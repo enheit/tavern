@@ -1,7 +1,7 @@
 /* oxlint-disable no-underscore-dangle -- reads the pinned §10 e2e hook global window.__tavernTestRtc */
 import { randomBytes } from "node:crypto";
 import type { Browser, BrowserContext, Page } from "@playwright/test";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectMemberVisible, test } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -41,7 +41,7 @@ async function bootOnto(opened: Opened, serverId: string): Promise<void> {
 // Joins voice and waits until FULLY wired (publish + voice pull connected) — a premature
 // share/watch races its own grant/pull on slow runners and reverts (nightly CI finding).
 async function joinWired(opened: Opened, userId: string): Promise<void> {
-  await opened.page.getByTestId("controls-join").click();
+  await opened.page.getByTestId("channel-voice").click();
   await expect(opened.page.getByTestId(`voice-chip-${userId}`)).toBeVisible({ timeout: 20_000 });
   await expect
     .poll(
@@ -80,7 +80,7 @@ test.describe("FR-40 stats e2e", () => {
       await bootOnto(openedA, server.id);
       await bootOnto(openedB, server.id);
       // Both sockets live before A sends — B sees A in People, so B will hold a fresh member map.
-      await expect(openedB.page.getByTestId(`member-${a.userId}`)).toBeVisible();
+      await expectMemberVisible(openedB.page, a.userId);
 
       // A sends 3 messages (paced under the rate limit). These are A's server-authoritative
       // messages-sent count (SELECT COUNT(*) … GROUP BY user_id in the DO).
@@ -125,7 +125,7 @@ test.describe("FR-40 stats e2e", () => {
     try {
       await bootOnto(openedA, server.id);
       await bootOnto(openedB, server.id);
-      await expect(openedB.page.getByTestId(`member-${a.userId}`)).toBeVisible();
+      await expectMemberVisible(openedB.page, a.userId);
 
       // Both join voice (a stream pull requires an active voice membership — G1) and are FULLY
       // wired (publish + voice pull connected) before any share/watch — a premature watch races
@@ -133,9 +133,8 @@ test.describe("FR-40 stats e2e", () => {
       await joinWired(openedA, a.userId);
       await joinWired(openedB, b.userId);
 
-      // A screen-shares (web picker variant: preset + audio hint, then Start).
+      // A screen-shares (web: the split share button starts immediately — the fake picker stands in).
       await openedA.page.getByTestId("controls-screen").click();
-      await openedA.page.getByTestId("share-start").click();
 
       // B sees A's stream tile appear and clicks Watch (opt-in — FR-30).
       const watchButton = openedB.page.locator('[data-testid^="stream-watch-"]').first();

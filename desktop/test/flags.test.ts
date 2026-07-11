@@ -72,6 +72,17 @@ describe("flags & GPU crash guard", () => {
     expect(app.setPath).toHaveBeenCalledWith("userData", "/tmp/tavern-custom");
   });
 
+  it("redirects unpackaged dev userData to its own dir so it never collides with the installed app", () => {
+    applyFlags();
+    expect(app.setPath).toHaveBeenCalledWith("userData", join("/tmp/appData", "tavern-dev"));
+  });
+
+  it("leaves userData alone when packaged and TAVERN_USER_DATA is unset", () => {
+    state.isPackaged = true;
+    applyFlags();
+    expect(app.setPath).not.toHaveBeenCalled();
+  });
+
   it("adds the PulseAudio loopback feature on linux", () => {
     setPlatform("linux");
     applyFlags();
@@ -79,6 +90,8 @@ describe("flags & GPU crash guard", () => {
   });
 
   it("disables the GPU when a prior crash flag file exists", () => {
+    // Packaged: the dev userData redirect must not fire, or the crash flag would be read elsewhere.
+    state.isPackaged = true;
     writeFileSync(join(dir, "gpu-crash"), "1");
     applyFlags();
     expect(hasSwitch("disable-gpu")).toBe(true);
@@ -86,6 +99,7 @@ describe("flags & GPU crash guard", () => {
 
   it("does not disable the GPU without a crash flag", () => {
     setPlatform("darwin");
+    state.isPackaged = true;
     applyFlags();
     expect(hasSwitch("disable-gpu")).toBe(false);
   });

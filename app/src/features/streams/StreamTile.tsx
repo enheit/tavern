@@ -1,16 +1,9 @@
-import type { PresetId, StreamInfo } from "@tavern/shared";
-import { PRESET_IDS } from "@tavern/shared";
-import { MonitorIcon, VideoIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import type { StreamInfo } from "@tavern/shared";
+import { Maximize2Icon, Minimize2Icon, MonitorIcon, VideoIcon } from "lucide-react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import { Slider } from "@/components/ui/slider";
 import { getVoiceController } from "@/features/voice/voiceController";
 import { m } from "@/paraglide/messages.js";
@@ -18,8 +11,6 @@ import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
-import { PRESET_ITEMS, isPreset } from "./SharePickerDialog";
-import { useScreenShare } from "./useScreenShare";
 import { useWatch } from "./useWatch";
 
 // FR-31: apply the tile's per-stream gain to the shared graph AND persist it under
@@ -38,24 +29,89 @@ export function StreamTile({
   focused,
   onToggleFocus,
   selfStream,
+  fullscreen = false,
+  onToggleFullscreen,
 }: {
   stream: StreamInfo;
   focused: boolean;
   onToggleFocus: () => void;
   selfStream?: MediaStream | null;
+  // Theater fullscreen: `fullscreen` marks this tile as the window-filling instance (renders its
+  // controls always-visible + a minimize affordance); `onToggleFullscreen` enters/exits it.
+  fullscreen?: boolean;
+  onToggleFullscreen: () => void;
 }) {
   const selfUserId = useSessionStore((s) => s.profile?.userId);
   if (stream.userId === selfUserId) {
-    return <SelfTile stream={stream} selfStream={selfStream ?? null} />;
+    return (
+      <SelfTile
+        stream={stream}
+        selfStream={selfStream ?? null}
+        onToggleFocus={onToggleFocus}
+        fullscreen={fullscreen}
+        onToggleFullscreen={onToggleFullscreen}
+      />
+    );
   }
-  return <RemoteTile stream={stream} focused={focused} onToggleFocus={onToggleFocus} />;
+  return (
+    <RemoteTile
+      stream={stream}
+      focused={focused}
+      onToggleFocus={onToggleFocus}
+      fullscreen={fullscreen}
+      onToggleFullscreen={onToggleFullscreen}
+    />
+  );
+}
+
+// Enter/exit theater fullscreen for one stream. Lives bottom-left of a watched/self tile's overlay;
+// stops propagation so it never also toggles the tile's focus. Icon flips maximize ↔ minimize.
+function FullscreenButton({
+  trackName,
+  fullscreen,
+  onToggle,
+}: {
+  trackName: string;
+  fullscreen: boolean;
+  onToggle: () => void;
+}) {
+  const Icon = fullscreen ? Minimize2Icon : Maximize2Icon;
+  const label = fullscreen ? m.streams_exit_fullscreen() : m.streams_fullscreen();
+  return (
+    <Button
+      size="icon-xs"
+      variant="secondary"
+      data-testid={`stream-fullscreen-${trackName}`}
+      aria-label={label}
+      title={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+    >
+      <Icon />
+    </Button>
+  );
 }
 
 // FR-29 self-preview: the local webcam (or any own stream) shown muted with a "You" badge. No Watch
-// button and no useWatch — the sharer sees their own tile without pulling from the SFU. FR-27: the
-// sharer's OWN screen tile also carries the on-the-fly quality dropdown (webcam preset is fixed, so
-// it is screen-only).
-function SelfTile({ stream, selfStream }: { stream: StreamInfo; selfStream: MediaStream | null }) {
+// button and no useWatch — the sharer sees their own tile without pulling from the SFU. On-the-fly
+// quality (FR-27) is driven from the ControlsBar res/fps groups now, not a per-tile dropdown. FR-33: a
+// single left-click toggles focus/full-size, same as a remote tile — there is no simulcast layer to
+// switch (the stream is local), it is purely a layout toggle.
+function SelfTile({
+  stream,
+  selfStream,
+  onToggleFocus,
+  fullscreen,
+  onToggleFullscreen,
+}: {
+  stream: StreamInfo;
+  selfStream: MediaStream | null;
+  onToggleFocus: () => void;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
+}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     const el = videoRef.current;
@@ -65,7 +121,8 @@ function SelfTile({ stream, selfStream }: { stream: StreamInfo; selfStream: Medi
     <div
       data-testid={`stream-tile-${stream.trackName}`}
       data-self="true"
-      className="group relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden rounded-lg bg-black/90"
+      onClick={onToggleFocus}
+      className="group relative flex h-full min-h-0 w-full cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-black/90"
     >
       <video
         ref={videoRef}
@@ -75,46 +132,81 @@ function SelfTile({ stream, selfStream }: { stream: StreamInfo; selfStream: Medi
         data-testid={`stream-self-${stream.trackName}`}
         className="h-full w-full object-contain"
       />
-      {stream.kind === "screen" && (
-        <OwnPresetControl trackName={stream.trackName} fallback={stream.preset} />
-      )}
       <span
         data-testid={`stream-self-badge-${stream.trackName}`}
         className="absolute top-2 left-2 rounded bg-black/60 px-1.5 py-0.5 text-xs font-medium text-white"
       >
         {m.streams_self()}
       </span>
+      <TileOverlay fullscreen={fullscreen}>
+        <FullscreenButton
+          trackName={stream.trackName}
+          fullscreen={fullscreen}
+          onToggle={onToggleFullscreen}
+        />
+      </TileOverlay>
+    </div>
+  );
+}
+
+// The bottom control strip shared by self + watched tiles: hover-revealed in the grid, pinned visible
+// while fullscreen (so the minimize affordance + Esc hint are always reachable). Clicks inside never
+// bubble to the tile's focus toggle. Renders the Esc hint on the right when fullscreen.
+function TileOverlay({ fullscreen, children }: { fullscreen: boolean; children: ReactNode }) {
+  return (
+    <div
+      onClick={(e) => e.stopPropagation()}
+      className={cn(
+        "absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-2 transition-opacity",
+        fullscreen ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+      )}
+    >
+      {children}
+      {fullscreen && (
+        <span className="ml-auto shrink-0 text-xs text-white/70">
+          {m.streams_fullscreen_hint()}
+        </span>
+      )}
     </div>
   );
 }
 
 // FR-30/31/33 remote canvas tile: a placeholder (Watch, FR-30) until the viewer opts in, then the live
 // video (letterboxed 16:9, muted — audio flows through the gain node) with an unwatch button and,
-// when the stream carries audio, an independent volume slider. Double-click toggles focus (FR-33).
+// when the stream carries audio, an independent volume slider. A single left-click on a watched tile
+// toggles focus/full-size (FR-33); the overlay controls stop propagation so they never toggle.
 function RemoteTile({
   stream,
   focused,
   onToggleFocus,
+  fullscreen,
+  onToggleFullscreen,
 }: {
   stream: StreamInfo;
   focused: boolean;
   onToggleFocus: () => void;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
 }) {
   const { state, mediaStream, watch, unwatch, setLayer } = useWatch(stream);
   const watching = state !== "idle";
   const streamKey = `${stream.userId}:${stream.kind}`;
 
-  // FR-33: a focused (double-clicked) tile pulls the high simulcast layer; a grid tile the low one.
+  // FR-33: a focused (clicked) OR fullscreen tile pulls the high simulcast layer; a grid tile the low
+  // one. Fullscreen fills the window, so it always wants the high layer regardless of `focused`.
   useEffect(() => {
-    if (state === "watching") setLayer(focused ? "h" : "l");
-  }, [focused, state, setLayer]);
+    if (state === "watching") setLayer(focused || fullscreen ? "h" : "l");
+  }, [focused, fullscreen, state, setLayer]);
 
   return (
     <div
       data-testid={`stream-tile-${stream.trackName}`}
       data-watching={watching}
-      onDoubleClick={watching ? onToggleFocus : undefined}
-      className="group relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden rounded-lg bg-black/90"
+      onClick={watching ? onToggleFocus : undefined}
+      className={cn(
+        "group relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden rounded-lg bg-black/90",
+        watching && "cursor-pointer",
+      )}
     >
       {watching ? (
         <WatchingView
@@ -122,6 +214,8 @@ function RemoteTile({
           streamKey={streamKey}
           mediaStream={mediaStream}
           onUnwatch={unwatch}
+          fullscreen={fullscreen}
+          onToggleFullscreen={onToggleFullscreen}
         />
       ) : (
         <Placeholder stream={stream} onWatch={watch} />
@@ -135,11 +229,15 @@ function WatchingView({
   streamKey,
   mediaStream,
   onUnwatch,
+  fullscreen,
+  onToggleFullscreen,
 }: {
   stream: StreamInfo;
   streamKey: string;
   mediaStream: MediaStream | null;
   onUnwatch: () => void;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
@@ -156,17 +254,26 @@ function WatchingView({
         data-testid={`stream-video-${stream.trackName}`}
         className="h-full w-full object-contain"
       />
-      <div className="absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-2 opacity-0 transition-opacity group-hover:opacity-100">
-        <Button
-          size="xs"
-          variant="secondary"
-          data-testid={`stream-unwatch-${stream.trackName}`}
-          onClick={onUnwatch}
-        >
-          {m.streams_unwatch()}
-        </Button>
+      <TileOverlay fullscreen={fullscreen}>
+        <FullscreenButton
+          trackName={stream.trackName}
+          fullscreen={fullscreen}
+          onToggle={onToggleFullscreen}
+        />
+        {/* Unwatch is hidden in fullscreen so unwatching can't strand the placeholder full-window —
+            exit fullscreen first, then unwatch from the grid. */}
+        {!fullscreen && (
+          <Button
+            size="xs"
+            variant="secondary"
+            data-testid={`stream-unwatch-${stream.trackName}`}
+            onClick={onUnwatch}
+          >
+            {m.streams_unwatch()}
+          </Button>
+        )}
         {stream.hasAudio && <StreamVolume streamKey={streamKey} />}
-      </div>
+      </TileOverlay>
     </>
   );
 }
@@ -188,40 +295,6 @@ function StreamVolume({ streamKey }: { streamKey: string }) {
         }}
       />
       <span className="w-9 shrink-0 text-right text-xs text-white/80 tabular-nums">{percent}%</span>
-    </div>
-  );
-}
-
-// FR-27 on-the-fly preset switch, sharer side: a compact quality dropdown overlaid on the OWN screen
-// tile. `useScreenShare().preset` is the live self-share preset (mirrored from stores/media); it falls
-// back to the StreamInfo preset before the first switch. Selecting a preset drives setPreset (fps-only
-// applyConstraints + encoder re-scale + sends stream.preset) — no restart, no viewer renegotiation.
-function OwnPresetControl({ trackName, fallback }: { trackName: string; fallback: PresetId }) {
-  const { preset, setPreset } = useScreenShare();
-  const value: PresetId = preset ?? fallback;
-  return (
-    <div
-      className="absolute top-2 right-2 z-10 opacity-0 transition-opacity group-hover:opacity-100"
-      title={m.streams_preset()}
-    >
-      <Select
-        value={value}
-        items={PRESET_ITEMS}
-        onValueChange={(next) => {
-          if (isPreset(next)) void setPreset(next);
-        }}
-      >
-        <SelectTrigger size="sm" data-testid={`stream-preset-${trackName}`}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {PRESET_IDS.map((id) => (
-            <SelectItem key={id} value={id} data-testid={`stream-preset-option-${id}`}>
-              {PRESET_ITEMS[id]}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
     </div>
   );
 }

@@ -67,30 +67,34 @@ describe("FR-22 noise toggle", () => {
       }),
     } as unknown as RTCRtpSender;
 
-    const next = await retoggleMic(current, sender, { noiseSuppression: false });
+    const next = await retoggleMic(current, sender, { noiseSuppression: "off" });
 
     expect(order).toEqual(["stop", "getUserMedia", "replaceTrack"]);
     expect(sender.replaceTrack).toHaveBeenCalledWith(next);
   });
 
-  it("echoCancellation is true in every getUserMedia call; the toggle drives NS + AGC together", async () => {
-    await getMic({ noiseSuppression: true });
-    await getMic({ noiseSuppression: false, deviceId: "mic-2" });
+  it("echoCancellation is true in every getUserMedia call; the mode drives NS/AGC", async () => {
+    await getMic({ noiseSuppression: "standard" });
+    await getMic({ noiseSuppression: "off", deviceId: "mic-2" });
     await retoggleMic(
       fakeTrack("audio"),
       { replaceTrack: vi.fn(async () => undefined) } as unknown as RTCRtpSender,
-      { noiseSuppression: true },
+      { noiseSuppression: "standard" },
     );
 
     for (const call of getUserMedia.mock.calls) {
       const audio = (call[0] as { audio: Record<string, unknown> }).audio;
       expect(audio.echoCancellation).toBe(true);
-      expect(audio.noiseSuppression).toBe(audio.autoGainControl); // NS + AGC follow one toggle
     }
-    // deviceId only appears when supplied (no undefined key)
-    const second = nthConstraints(getUserMedia, 1).audio as Record<string, unknown>;
-    expect(second.deviceId).toEqual({ exact: "mic-2" });
+    // "standard" = browser NS + AGC together; "off" = fully raw (both false)
     const first = nthConstraints(getUserMedia, 0).audio as Record<string, unknown>;
+    expect(first.noiseSuppression).toBe(true);
+    expect(first.autoGainControl).toBe(true);
+    const second = nthConstraints(getUserMedia, 1).audio as Record<string, unknown>;
+    expect(second.noiseSuppression).toBe(false);
+    expect(second.autoGainControl).toBe(false);
+    // deviceId only appears when supplied (no undefined key)
+    expect(second.deviceId).toEqual({ exact: "mic-2" });
     expect("deviceId" in first).toBe(false);
   });
 });
@@ -193,7 +197,7 @@ describe("FR-21 camera capture", () => {
 
   it("throws when the acquired stream has no track of the expected kind", async () => {
     getUserMedia.mockResolvedValueOnce(fakeStream());
-    await expect(getMic({ noiseSuppression: false })).rejects.toThrow("no audio track");
+    await expect(getMic({ noiseSuppression: "off" })).rejects.toThrow("no audio track");
     getUserMedia.mockResolvedValueOnce(fakeStream());
     await expect(getCam()).rejects.toThrow("no video track");
   });

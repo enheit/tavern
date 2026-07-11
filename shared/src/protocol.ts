@@ -10,18 +10,22 @@ import {
   RecordingState,
   CostStatus,
   ChatMessage,
+  GifAttachment,
   ActivityEntry,
   Presence,
 } from "./domain";
 
 const trackName = z.string().min(1).max(128);
 
-// ---- Client → Server (15) ----
+// ---- Client → Server (16) ----
 const hello = z.object({ t: z.literal("hello"), proto: z.literal(1) });
 const chatSend = z.object({
   t: z.literal("chat.send"),
-  body: z.string().min(1).max(LIMITS.messageMaxChars),
+  // Empty body is valid only when a `gif` accompanies it (a pure-GIF send). The DO enforces the
+  // "body non-empty OR gif present" invariant; a discriminatedUnion member cannot carry a `.refine`.
+  body: z.string().max(LIMITS.messageMaxChars),
   nonce: z.uuid(),
+  gif: GifAttachment.optional(),
 });
 const chatHistory = z.object({
   t: z.literal("chat.history"),
@@ -53,6 +57,12 @@ const watchStop = z.object({ t: z.literal("watch.stop"), trackName });
 const soundPlay = z.object({ t: z.literal("sound.play"), soundId: z.uuid() });
 const recStart = z.object({ t: z.literal("rec.start") });
 const recStop = z.object({ t: z.literal("rec.stop") });
+// Shared server status (§ header status): any connected member may set the free-text status (≤128
+// chars); last write wins. Empty string clears it. Persisted per-server; broadcast as `status.updated`.
+const statusSet = z.object({
+  t: z.literal("status.set"),
+  text: z.string().max(LIMITS.statusMaxChars),
+});
 const ping = z.object({ t: z.literal("ping") });
 
 export const clientMessageSchema = z.discriminatedUnion("t", [
@@ -70,11 +80,12 @@ export const clientMessageSchema = z.discriminatedUnion("t", [
   soundPlay,
   recStart,
   recStop,
+  statusSet,
   ping,
 ]);
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
-// ---- Server → Client (20) ----
+// ---- Server → Client (23) ----
 const helloOk = z.object({
   t: z.literal("hello.ok"),
   self: UserProfile,
@@ -83,6 +94,7 @@ const helloOk = z.object({
   voice: VoiceState,
   streams: z.array(StreamInfo),
   recording: RecordingState,
+  status: z.string(),
   lastMessageId: z.number().int().nullable(),
   costStatus: CostStatus,
 });
@@ -129,6 +141,14 @@ const streamUpdated = z.object({
   at: z.number(),
 });
 const streamRemoved = z.object({ t: z.literal("stream.removed"), trackName, at: z.number() });
+// Who watches what (§ watching indicator): the FULL snapshot of live (viewer → trackName) watch
+// grants, broadcast on every grant mutation (watch.start/stop, disconnect sweep, stream close).
+// Snapshot-not-delta mirrors voice.state; pairs for since-removed tracks are filtered out.
+const watchState = z.object({
+  t: z.literal("watch.state"),
+  watching: z.array(z.object({ userId: z.uuid(), trackName })),
+  at: z.number(),
+});
 const soundPlayed = z.object({
   t: z.literal("sound.played"),
   soundId: z.uuid(),
@@ -136,10 +156,18 @@ const soundPlayed = z.object({
   at: z.number(),
 });
 const soundUpdated = z.object({ t: z.literal("sound.updated"), at: z.number() });
+// The "screenshots list changed" nudge — broadcast after a screenshot is captured or deleted so every
+// client's Screenshots tab refetches (App-A has no dedicated screenshot frame, mirrors `sound.updated`).
+const screenshotUpdated = z.object({ t: z.literal("screenshot.updated"), at: z.number() });
 const recState = z.object({ t: z.literal("rec.state"), recording: RecordingState, at: z.number() });
 const serverUpdated = z.object({
   t: z.literal("server.updated"),
   nickname: z.string(),
+  at: z.number(),
+});
+const statusUpdated = z.object({
+  t: z.literal("status.updated"),
+  text: z.string(),
   at: z.number(),
 });
 const kicked = z.object({ t: z.literal("kicked"), at: z.number() });
@@ -147,6 +175,13 @@ const costWarning = z.object({
   t: z.literal("cost.warning"),
   usedGB: z.number(),
   capGB: z.number(),
+  at: z.number(),
+});
+// Periodic egress-meter refresh for the Stats tab — broadcast on the 60s alarm tick while voice has
+// members (hello.ok carries the same CostStatus for the join-time value; this keeps it live).
+const costUpdate = z.object({
+  t: z.literal("cost.update"),
+  cost: CostStatus,
   at: z.number(),
 });
 
@@ -165,12 +200,16 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
   streamAdded,
   streamUpdated,
   streamRemoved,
+  watchState,
   soundPlayed,
   soundUpdated,
+  screenshotUpdated,
   recState,
   serverUpdated,
+  statusUpdated,
   kicked,
   costWarning,
+  costUpdate,
 ]);
 export type ServerMessage = z.infer<typeof serverMessageSchema>;
 
@@ -184,6 +223,9 @@ export function parseServerMessage(raw: unknown): ServerMessage {
 
 // WS close codes (App-A).
 export const CLOSE_PROTOCOL_VIOLATION = 1008;
+// Standard 1011: an uncaught server-side handler failure. The client treats it as a normal drop and
+// reconnects (fresh ticket → the DO re-seeds a wiped cache from D1, so the retry can heal).
+export const CLOSE_INTERNAL_ERROR = 1011;
 export const CLOSE_KICKED = 4001;
 export const CLOSE_BAD_TICKET = 4002;
 export const CLOSE_REPLACED = 4003;

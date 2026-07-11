@@ -1,5 +1,7 @@
+import { LIMITS } from "@tavern/shared";
 import { LogOutIcon, SettingsIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useStore } from "zustand";
 import { buttonVariants } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -15,6 +17,7 @@ import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { cn } from "@/lib/utils";
 import type { WsStatus } from "@/lib/wsClient";
 import { m } from "@/paraglide/messages.js";
+import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
 
@@ -24,15 +27,91 @@ export function Header() {
   return (
     <header
       data-testid="app-header"
-      className="col-span-full flex items-center gap-2 border-b bg-card px-2"
+      className="col-span-full grid grid-cols-3 items-center gap-2 border-b bg-card px-2"
     >
-      <ServerSwitcher />
-      <div className="flex-1" />
-      <UpdatePill />
-      <AdminSettings />
-      <ConnectionDot />
-      <UserMenu />
+      {/* Three equal 1fr columns: the center cell is truly header-centered regardless of how wide the
+          left (server switcher) or right (controls) groups are — the status no longer drifts. */}
+      <div className="flex min-w-0 items-center gap-2 justify-self-start">
+        <ServerSwitcher />
+      </div>
+      <div className="flex min-w-0 items-center justify-center">
+        <ServerStatus />
+      </div>
+      <div className="flex items-center gap-2 justify-self-end">
+        <UpdatePill />
+        <AdminSettings />
+        <ConnectionDot />
+        <UserMenu />
+      </div>
     </header>
+  );
+}
+
+// §header status: the shared, inline-editable server status, centered in the header. Gated on an
+// active server (its room store holds the live `status`). Anyone connected may edit it.
+function ServerStatus() {
+  const activeServerId = useServersStore((s) => s.activeServerId);
+  if (activeServerId === null) return null;
+  return <ServerStatusEditor serverId={activeServerId} />;
+}
+
+// Click the text → inline <input> seeded with the current status. Enter saves (fires `status.set`;
+// the authoritative value returns via the `status.updated` broadcast). Escape or blur cancels. Empty
+// status renders a muted placeholder. maxLength mirrors the wire cap (the DO re-validates + trims).
+function ServerStatusEditor({ serverId }: { serverId: string }) {
+  const status = useStore(roomStore(serverId), (s) => s.status);
+  const setStatus = useStore(roomStore(serverId), (s) => s.setStatus);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Select-all on entering edit so the user can retype or extend the current status.
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        data-testid="server-status-input"
+        value={draft}
+        maxLength={LIMITS.statusMaxChars}
+        placeholder={m.shell_status_placeholder()}
+        aria-label={m.shell_status_edit_label()}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            setStatus(draft);
+            setEditing(false);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            setEditing(false);
+          }
+        }}
+        onBlur={() => setEditing(false)}
+        className="h-7 w-full max-w-md rounded-md border border-input bg-transparent px-2 text-center text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      data-testid="server-status"
+      aria-label={m.shell_status_edit_label()}
+      onClick={() => {
+        setDraft(status);
+        setEditing(true);
+      }}
+      className={cn(
+        "max-w-md truncate rounded-md px-2 py-1 text-center text-sm hover:bg-accent hover:text-accent-foreground",
+        status === "" && "text-muted-foreground",
+      )}
+    >
+      {status === "" ? m.shell_status_placeholder() : status}
+    </button>
   );
 }
 

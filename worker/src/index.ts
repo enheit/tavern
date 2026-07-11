@@ -8,8 +8,11 @@ import { mediaRoute } from "./routes/media";
 import { serversRoute } from "./routes/servers";
 import { soundsRoute } from "./routes/sounds";
 import { recordingsRoute } from "./routes/recordings";
+import { screenshotsRoute } from "./routes/screenshots";
+import { screenshotViewRoute } from "./routes/screenshotView";
 import { wsTicketRoute } from "./routes/wsTicket";
 import { rtcRoute } from "./routes/rtc";
+import { gifsRoute } from "./routes/gifs";
 import { testSeedRoute } from "./routes/testSeed";
 import { ServerRoom } from "./do/ServerRoom";
 
@@ -52,9 +55,21 @@ app.route("/api/servers", soundsRoute);
 // paths (`/:id/recordings…`) do not overlap serversRoute's or soundsRoute's.
 app.route("/api/servers", recordingsRoute);
 
+// Screenshots (§ screenshots tab): member-gated list/capture/delete of stream stills. requireMember is
+// applied inside the router; its paths (`/:id/screenshots…`) don't overlap the other /api/servers routers.
+app.route("/api/servers", screenshotsRoute);
+
+// PUBLIC screenshot image bytes (capability URL keyed by two UUIDs) — no auth so the still opens in a
+// plain browser tab (web) or the OS browser (Electron). Distinct from /api/servers/:id/screenshots.
+app.route("/api/screenshots", screenshotViewRoute);
+
 // RTC proxy to the Cloudflare Realtime SFU (S7.1, A3): session/tracks/renegotiate/close + ICE creds.
 // Membership + the rtc rate limit are applied inside the router; the DO enforces §8 caps.
 app.route("/api/rtc", rtcRoute);
+
+// GIF picker search proxy (§ GIF picker): GET /api/gifs/search → Klipy, normalized. requireAuth is
+// applied inside the router (search is not server-scoped, so any authed user may query).
+app.route("/api/gifs", gifsRoute);
 
 // WS ticket issuance + upgrade forwarding (S3.1, A4). Mounted at /api so it owns both
 // POST /api/ws-ticket and GET /api/servers/:id/ws (distinct from serversRoute's paths — no overlap).

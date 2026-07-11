@@ -56,7 +56,7 @@ async function seedPair(
 // Join + wait until FULLY wired (publish + voice pull connected) — the §7.1 registration races make
 // anything sequenced after a bare chip-visible wait flaky on slow runners.
 async function joinVoice(client: Client): Promise<void> {
-  await client.page.getByTestId("controls-join").click();
+  await client.page.getByTestId("channel-voice").click();
   await expect(client.page.getByTestId(`voice-chip-${client.user.userId}`)).toBeVisible({
     timeout: 20_000,
   });

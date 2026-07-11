@@ -1,5 +1,6 @@
 appId: com.tavern.app
 productName: Tavern
+copyright: Copyright © 2026 Roman Mahotskyi
 directories:
   output: dist-electron
   buildResources: build

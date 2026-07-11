@@ -7,3 +7,6 @@ TURN_KEY_API_TOKEN=
 TAVERN_TEST_FAST_ALARM=
 # Static better-auth base URL for the local dev worker (see worker/src/auth.ts).
 BETTER_AUTH_URL=http://localhost:8787
+# Klipy GIF API key (§ GIF picker). Optional: /api/gifs/search serves a mock set when unset. Get a
+# free key at partner.klipy.com. Prod: `wrangler secret put KLIPY_API_KEY`.
+KLIPY_API_KEY=

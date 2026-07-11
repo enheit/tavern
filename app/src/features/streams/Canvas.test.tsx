@@ -101,7 +101,7 @@ describe("FR-32 canvas auto-layout", () => {
 });
 
 describe("FR-33 focus mode layout", () => {
-  it("focused stream fills, others collapse into the right strip", () => {
+  it("focused stream fills the top; others render as thumbnails in the bottom filmstrip", () => {
     seed([stream("s1"), stream("s2"), stream("s3")], "s2");
     render(<Canvas />);
     const canvas = screen.getByTestId("canvas");

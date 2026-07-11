@@ -5,12 +5,12 @@ import { m } from "@/paraglide/messages.js";
 export function LiteralClean() {
   return (
     <button
-      title={m.boot_loading()}
-      aria-label={m.boot_loading()}
+      title={m.boot_retry()}
+      aria-label={m.boot_retry()}
       data-testid="literal-clean"
       className="flex items-center"
     >
-      {m.boot_loading()}
+      {m.boot_retry()}
     </button>
   );
 }

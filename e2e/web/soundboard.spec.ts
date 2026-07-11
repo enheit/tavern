@@ -52,20 +52,24 @@ async function seedRoom(
       await page.goto(`/?e2e=1`);
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
       await expect(page.getByTestId("controls-bar")).toBeVisible();
-      await expect(page.getByTestId("soundboard-panel")).toBeVisible();
+      // The soundboard temporarily lives as a tab (moved out from under the chat) — the panel
+      // mounts only once the tab is selected, so boot-readiness gates on the trigger instead.
+      await expect(page.getByTestId("tab-soundboard")).toBeVisible();
       return { user, context, page };
     }),
   );
   await Promise.all(
-    clients.map((client) =>
-      Promise.all(
+    clients.map(async (client) => {
+      await client.page.getByTestId("tab-people").click();
+      await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
             expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
           ),
-      ),
-    ),
+      );
+      await client.page.getByTestId("tab-chat").click();
+    }),
   );
   return { serverId: server.id, clients };
 }
@@ -73,7 +77,7 @@ async function seedRoom(
 // Clicks Join and waits until FULLY wired (self in voice + publish & voice-pull `connected`) — the same
 // race-free gate the voice spec uses (a too-early return lets a later joiner pull an unpublished mic).
 async function joinVoice(client: Client): Promise<void> {
-  await client.page.getByTestId("controls-join").click();
+  await client.page.getByTestId("channel-voice").click();
   await expect(client.page.getByTestId(`voice-chip-${client.user.userId}`)).toBeVisible({
     timeout: 20_000,
   });
@@ -87,6 +91,13 @@ async function joinVoice(client: Client): Promise<void> {
       { timeout: 20_000 },
     )
     .toEqual({ publish: "connected", pull: "connected" });
+}
+
+// Selects the soundboard tab and waits for the panel to mount (its content unmounts when another
+// tab is active, so every soundboard interaction must run behind this).
+async function openSoundboard(client: Client): Promise<void> {
+  await client.page.getByTestId("tab-soundboard").click();
+  await expect(client.page.getByTestId("soundboard-panel")).toBeVisible();
 }
 
 // Uploads beep.mp3 via the panel's upload dialog; resolves once the multipart POST returns 201.
@@ -133,6 +144,8 @@ test.describe("FR-36 soundboard e2e", () => {
     const [a, b] = clients;
     if (!a || !b) throw new Error("expected two clients");
     try {
+      await openSoundboard(a);
+      await openSoundboard(b);
       await uploadSound(a, "beep");
       // B learns of the new sound via the DO's sound.updated broadcast → list refetch (no voice).
       await expect(
@@ -157,6 +170,8 @@ test.describe("FR-36 soundboard e2e", () => {
     try {
       await joinVoice(a);
       await joinVoice(b);
+      await openSoundboard(a);
+      await openSoundboard(b);
       await uploadSound(a, "beep");
       const id = await soundId(a);
       await expect(b.page.getByTestId(`sound-${id}`)).toBeVisible({ timeout: 10_000 });
@@ -192,6 +207,8 @@ test.describe("FR-36 soundboard e2e", () => {
     try {
       await joinVoice(a);
       await joinVoice(b);
+      await openSoundboard(a);
+      await openSoundboard(b);
       await uploadSound(a, "beep");
       const id = await soundId(a);
       await expect(b.page.getByTestId(`sound-${id}`)).toBeVisible({ timeout: 10_000 });
@@ -225,6 +242,7 @@ test.describe("FR-36 soundboard e2e", () => {
           ).soundboard,
       );
     try {
+      await openSoundboard(a);
       // Drive the soundboard slider to its max (200% → gain 2.0). Press directly on the Base UI
       // a11y range input (Playwright focuses it first — more robust than a thumb click + page-level
       // key), and End is deterministic (no step counting) — moving it off the 100% default.

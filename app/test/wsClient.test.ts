@@ -52,6 +52,7 @@ function uid(): string {
 function helloOk(memberIds: string[]): unknown {
   return {
     t: "hello.ok",
+    status: "",
     self: { userId: uid(), username: "user_a", displayName: "Alice", color: "#aabbcc" },
     serverMeta: { id: uid(), nickname: "tavern", adminUserId: uid() },
     members: memberIds.map((id) => ({

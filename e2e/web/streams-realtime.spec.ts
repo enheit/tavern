@@ -57,18 +57,16 @@ async function seedPair(
 }
 
 async function joinVoice(client: Client): Promise<void> {
-  await client.page.getByTestId("controls-join").click();
+  await client.page.getByTestId("channel-voice").click();
   await expect(client.page.getByTestId(`voice-chip-${client.user.userId}`)).toBeVisible({
     timeout: 20_000,
   });
 }
 
 async function startScreenShare(client: Client, preset: PresetId): Promise<string> {
-  await client.page.getByTestId("controls-screen").click();
-  await expect(client.page.getByTestId("share-start")).toBeVisible();
-  await client.page.getByTestId("share-preset").click();
+  await client.page.getByTestId("controls-screen-preset").click();
   await client.page.getByTestId(`preset-option-${preset}`).click();
-  await client.page.getByTestId("share-start").click();
+  await client.page.getByTestId("controls-screen").click();
   const trackName = `screen:${client.user.userId}:1`;
   await expect(client.page.getByTestId(`stream-tile-${trackName}`)).toBeVisible({
     timeout: 20_000,
@@ -135,7 +133,7 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
       // h once the viewer's bandwidth estimate clears the h bitrate (1200 kbps here), and that ramp
       // regularly needs >20s on constrained CI runners (S12.4 docker probe) — the upswitch itself is
       // SFU/BWE-governed, not product logic.
-      await b.page.getByTestId(`stream-tile-${track}`).dblclick();
+      await b.page.getByTestId(`stream-tile-${track}`).click();
       await expect
         .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 40_000 })
         .toBeGreaterThan(480);
@@ -197,11 +195,11 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
         .poll(async () => (await videoStats(b.page, track)).framesDecoded, { timeout: 20_000 })
         .toBeGreaterThan(0);
 
-      // Focus (double-click) → tracks/update to the high layer → inbound frameHeight climbs above the
+      // Focus (single click) → tracks/update to the high layer → inbound frameHeight climbs above the
       // low layer (>270), with no publisher involvement. 40s: the SFU forwards h only after the
       // viewer's bandwidth estimate clears the h bitrate — the same BWE ramp window as FR-27's
       // precondition poll (S12.4).
-      await b.page.getByTestId(`stream-tile-${track}`).dblclick();
+      await b.page.getByTestId(`stream-tile-${track}`).click();
       await expect
         .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 40_000 })
         .toBeGreaterThan(270);

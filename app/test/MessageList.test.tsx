@@ -75,6 +75,7 @@ function chatMessage(over: Partial<ChatMessage>): ChatMessage {
 function seedHello(members: Member[], lastMessageId: number): void {
   const hello: Extract<ServerMessage, { t: "hello.ok" }> = {
     t: "hello.ok",
+    status: "",
     self: member(SELF),
     serverMeta: { id: SID, nickname: "tavern", adminUserId: SELF },
     members,

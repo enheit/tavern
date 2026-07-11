@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import type { ErrorCode } from "@tavern/shared";
+import type { ErrorCode, MemberInit } from "@tavern/shared";
 import { requireAuth, zodJson } from "../middleware";
 import type { AuthVars } from "../middleware";
 
@@ -23,19 +23,58 @@ wsTicketRoute.post("/ws-ticket", requireAuth, zodJson(WsTicketRequest), async (c
   const { serverId } = WsTicketRequest.parse(await c.req.json());
 
   const membership = await c.env.DB.prepare(
-    "SELECT 1 FROM memberships WHERE user_id = ? AND server_id = ?",
+    "SELECT joined_at FROM memberships WHERE user_id = ? AND server_id = ?",
   )
     .bind(userId, serverId)
-    .first();
+    .first<{ joined_at: number }>();
   if (membership === null) {
     return c.json({ error: "not_member" satisfies ErrorCode }, 403);
   }
+
+  // §9.5 cache rebuild: the DO's meta/member cache can be empty even though D1 (the source of truth)
+  // has the membership — a create/join-time /internal/member-join seed is non-fatal on failure, and
+  // local-dev DO state can be wiped independently of D1. Ship the D1 truth with every ticket so the
+  // DO can fill missing cache pieces BEFORE the hello — without meta the DO cannot build hello.ok.
+  const server = invariant(
+    await c.env.DB.prepare("SELECT nickname, admin_user_id FROM servers WHERE id = ?")
+      .bind(serverId)
+      .first<{ nickname: string; admin_user_id: string }>(),
+    "membership row implies server row",
+  );
+  const profile = invariant(
+    await c.env.DB.prepare(
+      "SELECT username, display_name, color, avatar_key FROM user WHERE id = ?",
+    )
+      .bind(userId)
+      .first<{
+        username: string;
+        display_name: string;
+        color: string;
+        avatar_key: string | null;
+      }>(),
+    "session implies user row",
+  );
+  const member: MemberInit = {
+    userId,
+    username: profile.username,
+    displayName: profile.display_name,
+    color: profile.color,
+    ...(profile.avatar_key !== null ? { avatarKey: profile.avatar_key } : {}),
+    isAdmin: server.admin_user_id === userId,
+    joinedAt: membership.joined_at,
+  };
 
   const stub = c.env.SERVER_ROOM.get(c.env.SERVER_ROOM.idFromName(serverId));
   const res = await stub.fetch("https://do.internal/internal/ticket", {
     method: "POST",
     headers: { "content-type": "application/json", "X-Tavern-Internal": "1" },
-    body: JSON.stringify({ userId }),
+    body: JSON.stringify({
+      userId,
+      seed: {
+        member,
+        serverMeta: { id: serverId, nickname: server.nickname, adminUserId: server.admin_user_id },
+      },
+    }),
   });
   const body: { ticket: string } = await res.json();
   return c.json({ ticket: body.ticket });

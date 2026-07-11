@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
-import { m } from "@/paraglide/messages.js";
+import { Spinner } from "@/components/ui/spinner";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
 import { MessageRow } from "./MessageRow";
@@ -75,8 +75,8 @@ export function MessageList({ serverId }: { serverId: string }) {
       >
         <div ref={sentinelRef} data-testid="message-top-sentinel" className="h-px w-full" />
         {hasMore ? (
-          <div className="py-1 text-center text-xs text-muted-foreground">
-            {m.chat_history_loading()}
+          <div className="flex justify-center py-1 text-muted-foreground">
+            <Spinner />
           </div>
         ) : null}
         <ul className="flex flex-col">

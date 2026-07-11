@@ -1,8 +1,28 @@
 import { randomBytes } from "node:crypto";
-import { test as base } from "@playwright/test";
+import { test as base, expect } from "@playwright/test";
 import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
 import { ServerSummary } from "@tavern/shared";
 import { WEB_URL } from "../playwright.config";
+
+// People moved into the right-column ChatTabs (temporary): the member list is now the "People" tab,
+// mutually exclusive with "Chat". These helpers flip to People for a presence assertion, then restore
+// the default Chat tab so downstream composer/message flows keep working.
+export async function withPeopleTab<T>(page: Page, fn: () => Promise<T>): Promise<T> {
+  await page.getByTestId("tab-people").click();
+  try {
+    return await fn();
+  } finally {
+    await page.getByTestId("tab-chat").click();
+  }
+}
+
+export async function expectMemberVisible(page: Page, userId: string): Promise<void> {
+  await withPeopleTab(page, () => expect(page.getByTestId(`member-${userId}`)).toBeVisible());
+}
+
+export async function expectMemberAbsent(page: Page, userId: string): Promise<void> {
+  await withPeopleTab(page, () => expect(page.getByTestId(`member-${userId}`)).toHaveCount(0));
+}
 
 // The frozen harness surface every later e2e step reuses (PLAN §10). Fixtures `api` and
 // `twoContexts` are pinned by name — later steps EXTEND them, never rename. Everything talks to the

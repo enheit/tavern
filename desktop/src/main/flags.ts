@@ -16,6 +16,11 @@ export function applyFlags(): void {
   const userData = process.env.TAVERN_USER_DATA;
   if (userData !== undefined && userData.length > 0) {
     app.setPath("userData", userData);
+  } else if (!app.isPackaged) {
+    // package.json `productName: "Tavern"` makes dev app.name match the installed app, which would
+    // also collapse their default userData dirs into one — dev would then contend the single-instance
+    // lock and clobber the installed app's secrets.bin. Keep dev state in its own dir.
+    app.setPath("userData", join(app.getPath("appData"), "tavern-dev"));
   }
 
   if (process.env.TAVERN_E2E === "1") {

@@ -34,6 +34,7 @@ const clientFixtures = [
   { t: "sound.play", soundId: UUID },
   { t: "rec.start" },
   { t: "rec.stop" },
+  { t: "status.set", text: "brb in 5" },
   { t: "ping" },
 ];
 
@@ -46,6 +47,7 @@ const serverFixtures = [
     voice,
     streams: [streamInfo],
     recording,
+    status: "",
     lastMessageId: null,
     costStatus: cost,
   },
@@ -66,20 +68,21 @@ const serverFixtures = [
   { t: "sound.updated", at: 1 },
   { t: "rec.state", recording, at: 1 },
   { t: "server.updated", nickname: "tavern", at: 1 },
+  { t: "status.updated", text: "brb in 5", at: 1 },
   { t: "kicked", at: 1 },
   { t: "cost.warning", usedGB: 1, capGB: 2, at: 1 },
 ];
 
 describe("App-A protocol round-trips", () => {
-  it("parses all 15 client message fixtures", () => {
-    expect(clientFixtures.length).toBe(15);
+  it("parses all 16 client message fixtures", () => {
+    expect(clientFixtures.length).toBe(16);
     for (const f of clientFixtures) {
       expect(() => parseClientMessage(f)).not.toThrow();
     }
   });
 
-  it("parses all 20 server message fixtures", () => {
-    expect(serverFixtures.length).toBe(20);
+  it("parses all 21 server message fixtures", () => {
+    expect(serverFixtures.length).toBe(21);
     for (const f of serverFixtures) {
       expect(() => parseServerMessage(f)).not.toThrow();
     }

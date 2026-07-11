@@ -21,6 +21,10 @@ const tabsListVariants = cva(
       variant: {
         default: "bg-muted",
         line: "gap-1 bg-transparent",
+        // Chip strip: standalone pill triggers on a transparent track (no underline, no box). The
+        // h-auto override (same variant prefix as the base h-8, so twMerge picks it) lets the
+        // taller pills size the row.
+        chip: "gap-1.5 bg-transparent group-data-horizontal/tabs:h-auto",
       },
     },
     defaultVariants: {
@@ -53,6 +57,10 @@ function TabsTrigger({ className, ...props }: TabsPrimitive.Tab.Props) {
         "group-data-[variant=line]/tabs-list:bg-transparent group-data-[variant=line]/tabs-list:data-active:bg-transparent dark:group-data-[variant=line]/tabs-list:data-active:border-transparent dark:group-data-[variant=line]/tabs-list:data-active:bg-transparent",
         "data-active:bg-background data-active:text-foreground dark:data-active:border-input dark:data-active:bg-input/30 dark:data-active:text-foreground",
         "after:absolute after:bg-foreground after:opacity-0 after:transition-opacity group-data-horizontal/tabs:after:inset-x-0 group-data-horizontal/tabs:after:bottom-[-5px] group-data-horizontal/tabs:after:h-0.5 group-data-vertical/tabs:after:inset-y-0 group-data-vertical/tabs:after:-right-1 group-data-vertical/tabs:after:w-0.5 group-data-[variant=line]/tabs-list:data-active:after:opacity-100",
+        // Chip variant: rounded-full outlined pills; active = the app's soft blue fill (same
+        // language as the ControlsBar segmented groups). The underline `after` never shows here
+        // (its opacity-100 rule is line-variant-scoped).
+        "group-data-[variant=chip]/tabs-list:rounded-full group-data-[variant=chip]/tabs-list:border-border group-data-[variant=chip]/tabs-list:px-3 group-data-[variant=chip]/tabs-list:py-1 group-data-[variant=chip]/tabs-list:hover:bg-muted/60 group-data-[variant=chip]/tabs-list:data-active:border-blue-500/25 group-data-[variant=chip]/tabs-list:data-active:bg-blue-500/15 group-data-[variant=chip]/tabs-list:data-active:text-blue-600 dark:group-data-[variant=chip]/tabs-list:data-active:border-blue-500/25 dark:group-data-[variant=chip]/tabs-list:data-active:bg-blue-500/15 dark:group-data-[variant=chip]/tabs-list:data-active:text-blue-400",
         className,
       )}
       {...props}

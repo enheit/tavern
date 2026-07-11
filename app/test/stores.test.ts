@@ -24,6 +24,7 @@ function member(userId: string, over?: Partial<Member>): Member {
 
 const baseHello: Extract<ServerMessage, { t: "hello.ok" }> = {
   t: "hello.ok",
+  status: "",
   self: profile("u1"),
   serverMeta: { id: "sid", nickname: "tavern", adminUserId: "u1" },
   members: [member("u1", { isAdmin: true })],

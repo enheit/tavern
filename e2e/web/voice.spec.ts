@@ -84,15 +84,17 @@ async function seedRoom(
   );
   // Every socket is live once each client sees the others in People (so voice.state broadcasts land).
   await Promise.all(
-    clients.map((client) =>
-      Promise.all(
+    clients.map(async (client) => {
+      await client.page.getByTestId("tab-people").click();
+      await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
             expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
           ),
-      ),
-    ),
+      );
+      await client.page.getByTestId("tab-chat").click();
+    }),
   );
   return { serverId: server.id, clients };
 }
@@ -103,7 +105,7 @@ async function seedRoom(
 // member already listed), and pulling a not-yet-published mic is `pull_denied` → the join reverts.
 // Serializing on the fully-connected state removes that race.
 async function joinVoice(client: Client): Promise<void> {
-  await client.page.getByTestId("controls-join").click();
+  await client.page.getByTestId("channel-voice").click();
   await expect(client.page.getByTestId(`voice-chip-${client.user.userId}`)).toBeVisible({
     timeout: 20_000,
   });
@@ -263,6 +265,8 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
       // that tick lands late enough for a blind Home press to miss the input entirely (S11.1 found
       // this: the gain ended at the 200% clamp). So assert focus before pressing, and assert the
       // input value after every stage instead of pressing keys blind.
+      // People now lives in a tab — open it before right-clicking B's row.
+      await a.page.getByTestId("tab-people").click();
       await a.page.getByTestId(`member-${b.user.userId}`).click({ button: "right" });
       await expect(a.page.getByTestId(`volume-menu-${b.user.userId}`)).toBeVisible();
       const thumb = a.page

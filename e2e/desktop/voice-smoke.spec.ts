@@ -48,7 +48,7 @@ test.describe("FR-18 desktop voice smoke", () => {
     await expect(page.getByTestId("controls-bar")).toBeVisible({ timeout: 30_000 });
 
     // Join voice with the fake mic.
-    await page.getByTestId("controls-join").click();
+    await page.getByTestId("channel-voice").click();
     await expect(page.getByTestId(`voice-chip-${user.userId}`)).toBeVisible({ timeout: 20_000 });
 
     // Publish session reaches connected (mock SFU answer accepted; signaling path complete).

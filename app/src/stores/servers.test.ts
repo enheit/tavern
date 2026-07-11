@@ -19,6 +19,7 @@ function summary(over: Partial<ServerSummary> = {}): ServerSummary {
 function seedRoom(serverId: string, nickname: string): void {
   const hello: Extract<ServerMessage, { t: "hello.ok" }> = {
     t: "hello.ok",
+    status: "",
     self: { userId: "u1", username: "admin", displayName: "Admin", color: "#ffffff" },
     serverMeta: { id: serverId, nickname, adminUserId: "u1" },
     members: [],

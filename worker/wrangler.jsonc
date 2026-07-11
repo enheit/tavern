@@ -38,7 +38,11 @@
       "REALTIME_APP_ID",
       "REALTIME_APP_SECRET",
       "TURN_KEY_ID",
-      "TURN_KEY_API_TOKEN"
+      "TURN_KEY_API_TOKEN",
+      // GIF picker's Klipy key. Declared here so `wrangler dev` loads it from .dev.vars (wrangler only
+      // surfaces .dev.vars keys named in this list). Prod: `wrangler secret put KLIPY_API_KEY`. The
+      // /api/gifs/search proxy still degrades to a mock set if it is ever absent (route-level guard).
+      "KLIPY_API_KEY"
     ]
   },
   // S7.4 e2e environment (`wrangler dev --env e2e`, picks `.dev.vars.e2e` → TAVERN_SFU_MOCK=1 +

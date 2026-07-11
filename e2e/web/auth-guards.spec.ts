@@ -1,3 +1,4 @@
+/* oxlint-disable no-await-in-loop -- one Page navigates guarded routes sequentially; Promise.all on a single page would interleave navigations */
 import type { Browser } from "@playwright/test";
 import { expect, test } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";

@@ -247,6 +247,14 @@ interface WatchEntry {
 }
 const watchRegistry = new Map<string, WatchEntry>();
 
+// Non-reactive read of a stream's live watch state — used by the `f` fullscreen key to target the first
+// stream that is actually showing video (a watched remote) rather than an unwatched placeholder. Safe as
+// an on-demand keypress read of the module registry (no subscription needed).
+export function isWatchingTrack(trackName: string): boolean {
+  const entry = watchRegistry.get(trackName);
+  return entry !== undefined && entry.controller.state !== "idle";
+}
+
 // Test seam: clears the module registry between unit tests (the deferred teardown is timer-based).
 export function resetWatchRegistry(): void {
   for (const entry of watchRegistry.values()) {

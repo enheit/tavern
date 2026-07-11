@@ -57,15 +57,17 @@ async function seedRoom(
   );
   // Every socket is live once each client sees the others in People (so stream broadcasts land).
   await Promise.all(
-    clients.map((client) =>
-      Promise.all(
+    clients.map(async (client) => {
+      await client.page.getByTestId("tab-people").click();
+      await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
             expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
           ),
-      ),
-    ),
+      );
+      await client.page.getByTestId("tab-chat").click();
+    }),
   );
   return { serverId: server.id, nickname: server.nickname, clients };
 }
@@ -73,7 +75,7 @@ async function seedRoom(
 // Joins voice and waits until fully wired (self chip + publish/voice-pull connected) — identical to the
 // voice.spec gate. A watcher must be in voice (a pull needs an SFU session.new, in-voice only, §7.1/G1).
 async function joinVoice(client: Client): Promise<void> {
-  await client.page.getByTestId("controls-join").click();
+  await client.page.getByTestId("channel-voice").click();
   await expect(client.page.getByTestId(`voice-chip-${client.user.userId}`)).toBeVisible({
     timeout: 20_000,
   });
@@ -98,17 +100,15 @@ function camTrackOf(user: SeededUser): string {
   return `cam:${user.userId}`;
 }
 
-// Opens the SharePickerDialog and starts a screen share (web variant: no source grid; the fake
-// getDisplayMedia device stands in for the browser picker). Optionally selects a preset. Resolves once
-// the sharer's own self tile appears (publish succeeded → stream.added round-tripped).
+// Starts a screen share via the split share button (web: clicking it starts immediately — the fake
+// getDisplayMedia device stands in for the browser picker; no dialog). Optionally picks a preset first
+// through the caret menu. Resolves once the sharer's own self tile appears (publish → stream.added).
 async function startScreenShare(client: Client, preset?: PresetId): Promise<string> {
-  await client.page.getByTestId("controls-screen").click();
-  await expect(client.page.getByTestId("share-start")).toBeVisible();
   if (preset !== undefined) {
-    await client.page.getByTestId("share-preset").click();
+    await client.page.getByTestId("controls-screen-preset").click();
     await client.page.getByTestId(`preset-option-${preset}`).click();
   }
-  await client.page.getByTestId("share-start").click();
+  await client.page.getByTestId("controls-screen").click();
   const trackName = screenTrackOf(client.user);
   await expect(client.page.getByTestId(`stream-tile-${trackName}`)).toBeVisible({
     timeout: 20_000,
@@ -248,8 +248,8 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
         })
         .toBe("connected");
 
-      // Double-click focuses → the watcher requests the high simulcast layer (FR-33).
-      await b.page.getByTestId(`stream-tile-${track}`).dblclick();
+      // A single click focuses → the watcher requests the high simulcast layer (FR-33).
+      await b.page.getByTestId(`stream-tile-${track}`).click();
       await expect.poll(() => lastLayerRid(b.page), { timeout: 10_000 }).toBe("h");
 
       // Esc leaves focus → back to the low grid layer.
@@ -361,8 +361,6 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
       expect(await seed.json()).toEqual({ screens: 4 });
 
       await a.page.getByTestId("controls-screen").click();
-      await expect(a.page.getByTestId("share-start")).toBeVisible();
-      await a.page.getByTestId("share-start").click();
 
       // The publish is rejected with error.share_cap → an i18n toast; no tile appears.
       await expect(a.page.getByText("Too many screens are being shared")).toBeVisible({

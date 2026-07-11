@@ -44,6 +44,7 @@ function seed(voiceMembers: VoiceMember[], members: Member[]): void {
     .getState()
     .apply({
       t: "hello.ok",
+      status: "",
       self: profile(SELF),
       serverMeta: { id: SID, nickname: "cave", adminUserId: SELF },
       members,
@@ -116,5 +117,49 @@ describe("FR-18 row click", () => {
     render(<VoiceChannelRow serverId={SID} />);
 
     expect(screen.getByTestId(`voice-chip-${REMOTE}`)).toBeTruthy();
+  });
+});
+
+describe("FR-26 voice status icons", () => {
+  it("deafened member shows BOTH can't-talk (mic) and can't-hear (headphones)", () => {
+    seed([{ userId: REMOTE, muted: true, deafened: true }], [member(REMOTE)]);
+    render(<VoiceChannelRow serverId={SID} />);
+
+    expect(screen.getByTestId(`voice-muted-${REMOTE}`)).toBeTruthy();
+    expect(screen.getByTestId(`voice-deafened-${REMOTE}`)).toBeTruthy();
+  });
+
+  it("muted-only member shows just the mic icon", () => {
+    seed([{ userId: REMOTE, muted: true, deafened: false }], [member(REMOTE)]);
+    render(<VoiceChannelRow serverId={SID} />);
+
+    expect(screen.getByTestId(`voice-muted-${REMOTE}`)).toBeTruthy();
+    expect(screen.queryByTestId(`voice-deafened-${REMOTE}`)).toBeNull();
+  });
+
+  it("unmuted member shows no status icon", () => {
+    seed([{ userId: REMOTE, muted: false, deafened: false }], [member(REMOTE)]);
+    render(<VoiceChannelRow serverId={SID} />);
+
+    expect(screen.queryByTestId(`voice-muted-${REMOTE}`)).toBeNull();
+    expect(screen.queryByTestId(`voice-deafened-${REMOTE}`)).toBeNull();
+  });
+});
+
+describe("FR-24 session timer on the row", () => {
+  it("renders the timer inside the voice row while a session is active", () => {
+    // seed() sets sessionStartedAt when there are voice members.
+    seed([{ userId: REMOTE, muted: false, deafened: false }], [member(REMOTE)]);
+    render(<VoiceChannelRow serverId={SID} />);
+
+    const row = screen.getByTestId("channel-voice");
+    expect(row.querySelector('[data-testid="voice-timer"]')).not.toBeNull();
+  });
+
+  it("shows no timer when no session is active", () => {
+    seed([], []);
+    render(<VoiceChannelRow serverId={SID} />);
+
+    expect(screen.queryByTestId("voice-timer")).toBeNull();
   });
 });

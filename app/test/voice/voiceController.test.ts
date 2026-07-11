@@ -248,6 +248,7 @@ function seedVoice(serverId: string, members: VoiceMember[]): void {
     .getState()
     .apply({
       t: "hello.ok",
+      status: "",
       self,
       serverMeta: { id: serverId, nickname: "cave", adminUserId: SELF },
       members: [],
@@ -281,7 +282,7 @@ beforeEach(() => {
     muted: false,
     deafened: false,
     speakingUserIds: new Set<string>(),
-    deviceSelection: { noiseSuppression: true },
+    deviceSelection: { noiseSuppression: "standard" },
   });
   useSettingsStore.setState({
     volumes: { v: 1, users: {}, streams: {}, soundboard: 1, mutedUsers: [] },
@@ -428,6 +429,7 @@ describe("FR-18 join/leave", () => {
 
     h.ws.emit({
       t: "hello.ok",
+      status: "",
       self: { userId: SELF, username: "self", displayName: "Self", color: "#123456" },
       serverMeta: { id: "A", nickname: "cave", adminUserId: SELF },
       members: [],
@@ -514,12 +516,12 @@ describe("FR-22", () => {
     const controller = new VoiceController(h.deps);
     seedVoice("A", []);
     await controller.join("A");
-    useMediaStore.getState().setDeviceSelection({ noiseSuppression: false });
+    useMediaStore.getState().setDeviceSelection({ noiseSuppression: "off" });
 
     await controller.retoggleMic();
 
     expect(h.retoggleMic).toHaveBeenCalledWith(h.localMic, h.publishes[0]?.sender, {
-      noiseSuppression: false,
+      noiseSuppression: "off",
     });
     // the reacquired track is re-attached to the graph analyser (2× total: join + retoggle).
     expect(h.graph.localAttachCount).toBe(2);
@@ -536,11 +538,11 @@ describe("FR-21", () => {
     await controller.setSink("sink-2");
     expect(h.graph.sink).toBe("sink-2");
 
-    useMediaStore.getState().setDeviceSelection({ micId: "mic-2", noiseSuppression: true });
+    useMediaStore.getState().setDeviceSelection({ micId: "mic-2", noiseSuppression: "standard" });
     await controller.retoggleMic();
     expect(h.retoggleMic).toHaveBeenCalledWith(h.localMic, h.publishes[0]?.sender, {
       deviceId: "mic-2",
-      noiseSuppression: true,
+      noiseSuppression: "standard",
     });
   });
 });

@@ -1,7 +1,15 @@
 {
   "name": "@tavern/desktop",
+  "productName": "Tavern",
+  "description": "Tavern — voice, video and screen-share hangouts for your crew.",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.2.0",
+  "license": "MIT",
+  "author": {
+    "name": "Roman Mahotskyi",
+    "email": "roman.mahotskyi@gmail.com"
+  },
+  "homepage": "https://github.com/enheit/tavern",
   "repository": "https://github.com/enheit/tavern.git",
   "main": "out/main/index.js",
   "scripts": {

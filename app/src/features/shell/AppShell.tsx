@@ -1,11 +1,14 @@
 import type { CSSProperties } from "react";
 import { ChatTabs } from "@/features/chat/ChatTabs";
 import { ChannelsPanel } from "@/features/servers/ChannelsPanel";
-import { PeoplePanel } from "@/features/servers/PeoplePanel";
 import { Canvas } from "@/features/streams/Canvas";
+import { VoicePanel } from "@/features/voice/VoicePanel";
 import { ControlsBar } from "./ControlsBar";
 import { CostBanner } from "./CostBanner";
 import { Header } from "./Header";
+
+// People moved into the right-column ChatTabs (temporary) — the left column is now Channels over a
+// flexible spacer, with the voice controls pinned to the very bottom.
 
 // The persistent app shell laid out exactly per §7.6. Pinned CSS grid: header spans all columns; the
 // left column (rows 2–3) stacks Channels over People; the center splits into a canvas slot (row 2) and
@@ -13,7 +16,7 @@ import { Header } from "./Header";
 // a tab inside ChatTabs — temporary, pending restructure). Slots are filled by S6.1/S7.3/S8.2/S9.1.
 const GRID: CSSProperties = {
   display: "grid",
-  gridTemplateRows: "40px 1fr 56px",
+  gridTemplateRows: "40px 1fr 64px",
   gridTemplateColumns: "240px 1fr 320px",
   gridTemplateAreas: [
     '"header header header"',
@@ -34,7 +37,9 @@ export function AppShell({ serverId }: { serverId: string }) {
       <Header />
       <div style={{ gridArea: "left" }} className="flex min-h-0 flex-col border-r bg-card">
         <ChannelsPanel serverId={serverId} />
-        <PeoplePanel serverId={serverId} />
+        <div className="min-h-0 flex-1" />
+        {/* Discord-style voice controls pinned to the very bottom — only while connected to voice. */}
+        <VoicePanel serverId={serverId} />
       </div>
       <div
         data-testid="slot-canvas"
@@ -43,11 +48,7 @@ export function AppShell({ serverId }: { serverId: string }) {
       >
         <Canvas />
       </div>
-      <div
-        data-testid="slot-controls"
-        style={{ gridArea: "controls" }}
-        className="border-t bg-card"
-      >
+      <div data-testid="slot-controls" style={{ gridArea: "controls" }} className="bg-card">
         <ControlsBar serverId={serverId} />
       </div>
       <div style={{ gridArea: "right" }} className="flex min-h-0 flex-col border-l bg-card">

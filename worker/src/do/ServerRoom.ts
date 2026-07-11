@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   clientMessageSchema,
   CLOSE_BAD_TICKET,
+  CLOSE_INTERNAL_ERROR,
   CLOSE_KICKED,
   CLOSE_PROTOCOL_VIOLATION,
   LIMITS,
@@ -19,6 +20,7 @@ import { ActivityModule } from "./activity";
 import { StatsModule } from "./stats";
 import { CostMeter } from "./costMeter";
 import { RecordingsModule } from "./recordings";
+import { createScreenshot, deleteScreenshot, listScreenshots } from "./screenshots";
 import {
   createSound,
   deleteSound,
@@ -40,6 +42,19 @@ const recDeleteBody = z.object({
   userId: z.string(),
   isAdmin: z.boolean(),
   recordingId: z.string(),
+});
+
+// Internal screenshot route bodies (Worker → DO). The Worker route already PUT the image bytes to R2
+// and derived `r2Key`; the DO owns the registry row + the per-user upload rate limit + the broadcast.
+const screenshotCreateBody = z.object({
+  userId: z.string(),
+  screenshotId: z.string(),
+  r2Key: z.string(),
+});
+const screenshotDeleteBody = z.object({
+  userId: z.string(),
+  isAdmin: z.boolean(),
+  screenshotId: z.string(),
 });
 
 // Test-only seed body (S8.5): register `count` synthetic active screen shares. Reachable only via the
@@ -124,6 +139,10 @@ export class ServerRoom extends DurableObject<Env> {
   // userId → recent upload timestamps (sliding window, §S9.1 task 4). In-memory like the chat bucket:
   // a DO eviction only ever REFILLS a user's upload budget (never revokes) — acceptable at our scale.
   private readonly uploadTimes = new Map<string, number[]>();
+  // userId → recent screenshot-capture timestamps (sliding window, § screenshots rate limit). Separate
+  // from the sound-upload budget so rapid Space captures don't starve sound uploads (or vice versa).
+  // In-memory per DO like the other buckets — a DO eviction only ever refills the budget, never revokes.
+  private readonly screenshotTimes = new Map<string, number[]>();
   // userId → last accepted sound.play timestamp (FR-36 per-user rate limit; in-memory per DO like the
   // upload/chat buckets — a DO eviction only ever refills the budget, never revokes, fine at our scale).
   private readonly soundPlayTimes = new Map<string, number>();
@@ -164,6 +183,7 @@ export class ServerRoom extends DurableObject<Env> {
       "sound.play": (ws, att, msg) => this.handleSoundPlay(ws, att, msg),
       "rec.start": (ws, att) => this.handleRecStart(ws, att),
       "rec.stop": (ws, att) => this.handleRecStop(ws, att),
+      "status.set": (_ws, _att, msg) => this.handleStatusSet(msg),
       ping: (ws) => this.notImplemented(ws),
     };
     ctx.blockConcurrencyWhile(async () => {
@@ -225,7 +245,14 @@ export class ServerRoom extends DurableObject<Env> {
     const at = Date.now();
     switch (url.pathname) {
       case "/internal/ticket": {
-        const body: { userId: string } = await request.json();
+        const body: { userId: string; seed?: { member: unknown; serverMeta: RoomMeta } } =
+          await request.json();
+        // §9.5 cache rebuild: the route ships the D1 truth with every ticket; adopt only the pieces
+        // missing from the cache (meta / the caller's member row) so a live cache is never clobbered
+        // and an in-flight stale seed can't resurrect a just-kicked member.
+        if (body.seed !== undefined) {
+          await this.room.seedIfMissing(MemberInit.parse(body.seed.member), body.seed.serverMeta);
+        }
         return Response.json({ ticket: await this.room.createTicket(body.userId) });
       }
       case "/internal/member-join": {
@@ -411,6 +438,45 @@ export class ServerRoom extends DurableObject<Env> {
         const body = recDeleteBody.parse(await request.json());
         return Response.json(this.recordings.remove(body.userId, body.isAdmin, body.recordingId));
       }
+      // § screenshots (§6.1). The Worker route PUTs the image to R2 + resolves the caller/admin; the DO
+      // owns the registry row, the per-user capture rate limit, and the `screenshot.updated` broadcast.
+      // GET /internal/screenshots → list (newest first).
+      case "/internal/screenshots":
+        return Response.json({ screenshots: listScreenshots(this.ctx.storage.sql) });
+      // POST /internal/screenshots/create → rate-limit the capturer, insert the row, broadcast the nudge.
+      // On a rate-limit reject the Worker deletes the R2 object it already PUT (mirrors sounds/create).
+      case "/internal/screenshots/create": {
+        const body = screenshotCreateBody.parse(await request.json());
+        if (!this.allowScreenshot(body.userId, at)) {
+          return Response.json({ error: "rate_limited" satisfies ErrorCode }, { status: 429 });
+        }
+        const screenshot = createScreenshot(this.ctx.storage.sql, {
+          id: body.screenshotId,
+          capturedBy: body.userId,
+          r2Key: body.r2Key,
+          createdAt: at,
+        });
+        this.recordScreenshot(body.userId, at);
+        this.room.broadcast({ t: "screenshot.updated", at });
+        return Response.json({ screenshot });
+      }
+      // POST /internal/screenshots/delete → capturer/admin delete; returns its R2 key + broadcasts.
+      case "/internal/screenshots/delete": {
+        const body = screenshotDeleteBody.parse(await request.json());
+        try {
+          const { r2Key } = deleteScreenshot(this.ctx.storage.sql, body.screenshotId, {
+            userId: body.userId,
+            isAdmin: body.isAdmin,
+          });
+          this.room.broadcast({ t: "screenshot.updated", at });
+          return Response.json({ r2Key });
+        } catch (err: unknown) {
+          if (err instanceof TavernError) {
+            return Response.json({ error: err.code }, { status: soundErrorStatus(err.code) });
+          }
+          throw err;
+        }
+      }
       // POST /internal/test/seed-shares (S8.5, mock-SFU only) → register `count` synthetic active screen
       // shares in the RTC registry (G4 cap exercise). Guarded upstream by the /api/__test env gate.
       case "/internal/test/seed-shares": {
@@ -454,7 +520,17 @@ export class ServerRoom extends DurableObject<Env> {
       this.rejectFrame(ws);
       return;
     }
-    await this.routes[msg.t](ws, att, msg);
+    try {
+      await this.routes[msg.t](ws, att, msg);
+    } catch (err: unknown) {
+      // §9.5: an uncaught handler failure must never strand the socket silently — during the
+      // handshake the client blocks its entire boot on the hello.ok reply (and handleHello clears
+      // the server-side hello timer BEFORE building the snapshot, so nothing else would ever close
+      // this socket). Close 1011 → the client reconnects with a fresh ticket, and ticket issuance
+      // re-seeds a wiped meta/member cache from D1 (seedIfMissing), so the retry heals.
+      console.error("ws route failed", msg.t, err);
+      ws.close(CLOSE_INTERNAL_ERROR, "internal");
+    }
   }
 
   async webSocketClose(ws: WebSocket): Promise<void> {
@@ -516,6 +592,7 @@ export class ServerRoom extends DurableObject<Env> {
       nonce: msg.nonce,
       members: this.room.listMembers(),
       now: Date.now(),
+      ...(msg.gif === undefined ? {} : { gif: msg.gif }),
     });
     if (!result.ok) {
       // rate_limited (and the defense-in-depth bad_message) reply on this socket only; it stays open.
@@ -618,6 +695,17 @@ export class ServerRoom extends DurableObject<Env> {
     if (code !== null) this.room.send(ws, { t: "error", code });
   }
 
+  // status.set (§ header status): any member sets the shared free-text server status. The wire schema
+  // caps it at 128 chars; we trim surrounding whitespace, persist to KV, and broadcast `status.updated`
+  // to every socket. Last write wins (a single KV value — a concurrent set just overwrites). Empty text
+  // clears the status. No admin gate: the socket is already authenticated as a server member.
+  private async handleStatusSet(msg: ClientMessage): Promise<void> {
+    if (msg.t !== "status.set") return;
+    const text = msg.text.trim();
+    await this.room.setStatus(text);
+    this.room.broadcast({ t: "status.updated", text, at: Date.now() });
+  }
+
   // voice.state (FR-26): relay the caller's self mute/deafen flags into the snapshot; broadcast to all.
   private async handleVoiceState(
     ws: WebSocket,
@@ -714,6 +802,8 @@ export class ServerRoom extends DurableObject<Env> {
     await this.room.rtcAddGrant(att.userId, msg.trackName, "l");
     await this.costMeter.openWatch(att.userId, msg.trackName, info.preset, "l", at);
     await this.stats.noteWatchStart(att.userId, info.streamerId, at);
+    // § watching indicator: the grant set changed — fan the fresh watch.state snapshot to everyone.
+    await this.room.broadcastWatching(at);
   }
 
   // watch.stop (G1/FR-40): close the cost-meter watch + the watch-stat pair, and release the grant so a
@@ -726,6 +816,8 @@ export class ServerRoom extends DurableObject<Env> {
     const streamerId = streamerIdOf(msg.trackName);
     if (streamerId !== null) await this.stats.noteWatchStop(att.userId, streamerId, at);
     await this.room.rtcRemoveGrant(att.userId, msg.trackName);
+    // § watching indicator: the grant set changed — fan the fresh watch.state snapshot to everyone.
+    await this.room.broadcastWatching(at);
   }
 
   // stream.preset (FR-27): the publisher changed their screen preset on the fly. Validate ownership of a
@@ -778,6 +870,9 @@ export class ServerRoom extends DurableObject<Env> {
           at: now,
         });
       }
+      // Live egress readout for the Stats tab — same CostStatus shape hello.ok snapshots, refreshed
+      // every tick while anyone is in voice (the only time the meter can move).
+      this.room.broadcast({ t: "cost.update", cost: this.costMeter.status(now), at: now });
     }
     // (c) Re-arm iff work remains (members or open intervals); otherwise let the alarm lapse.
     const stillActive =
@@ -810,6 +905,22 @@ export class ServerRoom extends DurableObject<Env> {
     const recent = this.uploadTimes.get(userId) ?? [];
     recent.push(now);
     this.uploadTimes.set(userId, recent);
+  }
+
+  // Sliding-window screenshot gate (§ screenshots / LIMITS.rateScreenshotsPerMin): true when the user
+  // has captured fewer than the cap in the last minute. Read-only — the timestamp is recorded only after
+  // a successful create (`recordScreenshot`), so a rejected capture never consumes budget.
+  private allowScreenshot(userId: string, now: number): boolean {
+    const cutoff = now - 60_000;
+    const recent = (this.screenshotTimes.get(userId) ?? []).filter((t) => t > cutoff);
+    this.screenshotTimes.set(userId, recent);
+    return recent.length < LIMITS.rateScreenshotsPerMin;
+  }
+
+  private recordScreenshot(userId: string, now: number): void {
+    const recent = this.screenshotTimes.get(userId) ?? [];
+    recent.push(now);
+    this.screenshotTimes.set(userId, recent);
   }
 
   private rejectFrame(ws: WebSocket): void {

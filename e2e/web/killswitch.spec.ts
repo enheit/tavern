@@ -53,21 +53,23 @@ async function seedRoom(
     }),
   );
   await Promise.all(
-    clients.map((client) =>
-      Promise.all(
+    clients.map(async (client) => {
+      await client.page.getByTestId("tab-people").click();
+      await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
             expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
           ),
-      ),
-    ),
+      );
+      await client.page.getByTestId("tab-chat").click();
+    }),
   );
   return { serverId: server.id, clients };
 }
 
 async function joinVoice(client: Client): Promise<void> {
-  await client.page.getByTestId("controls-join").click();
+  await client.page.getByTestId("channel-voice").click();
   await expect(client.page.getByTestId(`voice-chip-${client.user.userId}`)).toBeVisible({
     timeout: 20_000,
   });
@@ -85,8 +87,6 @@ async function joinVoice(client: Client): Promise<void> {
 
 async function startScreenShare(client: Client): Promise<string> {
   await client.page.getByTestId("controls-screen").click();
-  await expect(client.page.getByTestId("share-start")).toBeVisible();
-  await client.page.getByTestId("share-start").click();
   const trackName = `screen:${client.user.userId}:1`;
   await expect(client.page.getByTestId(`stream-tile-${trackName}`)).toBeVisible({
     timeout: 20_000,

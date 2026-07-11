@@ -26,3 +26,9 @@ Before asking a human to do something on their own, you must check if the gaol c
 - using exising MCP server or MCP server can be installed and used
 - using exising CLI tool
 - using browser by controlling the tab
+
+**Veryfing a result and running tests**
+
+- You MUST only run those tests that you think you could affect
+- NEVER run all tests blidnly. All tests can be run only be CI/CD pipeline
+- Do not run tests when you work. Run tests only after all features are implemented and ready

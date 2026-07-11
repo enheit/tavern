@@ -1,4 +1,4 @@
-import type { Member } from "@tavern/shared";
+import type { GifResult, Member } from "@tavern/shared";
 import { LIMITS } from "@tavern/shared";
 import { SmileIcon } from "lucide-react";
 import {
@@ -21,6 +21,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
+import { GifPicker } from "./GifPicker";
 import { MentionAutocomplete } from "./MentionAutocomplete";
 
 // FR-14/15 message composer: auto-growing textarea (1–5 rows), Enter-to-send / Shift+Enter newline,
@@ -54,6 +55,7 @@ export function Composer({ serverId }: { serverId: string }) {
 
   const [value, setValue] = useState("");
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [gifOpen, setGifOpen] = useState(false);
   const [mention, setMention] = useState<MentionState | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
@@ -113,6 +115,19 @@ export function Composer({ serverId }: { serverId: string }) {
     sendMessage(value);
     setValue("");
     setMention(null);
+  }
+
+  // § GIF picker: a picked GIF sends immediately as its own message (empty body + gif attachment,
+  // Discord-style), independent of whatever text is currently typed. Strips the provider `id` — only
+  // the `GifAttachment` fields are persisted.
+  function pickGif(result: GifResult): void {
+    sendMessage("", {
+      url: result.url,
+      previewUrl: result.previewUrl,
+      width: result.width,
+      height: result.height,
+    });
+    setGifOpen(false);
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
@@ -195,7 +210,24 @@ export function Composer({ serverId }: { serverId: string }) {
             className="min-h-9 flex-1 resize-none rounded-md border bg-transparent px-3 py-1.5 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
         </div>
-        <div className="flex justify-end">
+        <div className="flex items-center justify-between">
+          <Popover open={gifOpen} onOpenChange={setGifOpen}>
+            <PopoverTrigger
+              data-testid="composer-gif"
+              aria-label={m.chat_gif_label()}
+              className="flex h-8 items-center rounded-md px-2.5 text-xs font-bold text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+            >
+              {m.chat_gif_label()}
+            </PopoverTrigger>
+            <PopoverContent
+              data-testid="gif-popover"
+              align="start"
+              side="top"
+              className="w-[340px] p-0"
+            >
+              <GifPicker onPick={pickGif} />
+            </PopoverContent>
+          </Popover>
           <Button
             type="button"
             size="sm"

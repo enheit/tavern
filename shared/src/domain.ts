@@ -67,12 +67,27 @@ export const RecordingState = z.object({
 });
 export type RecordingState = z.infer<typeof RecordingState>;
 
+// A GIF attachment on a chat message (§ GIF picker). `url` is the animated media (GIF) shown inline,
+// `previewUrl` a smaller variant used in the picker grid; the dimensions drive a fixed aspect-ratio
+// box so the row does not reflow once the image loads. Always provider-sourced via the Worker GIF
+// proxy (normalized, never user free-text), so the URLs are trusted CDN links.
+export const GifAttachment = z.object({
+  url: z.url().max(2048),
+  previewUrl: z.url().max(2048),
+  width: z.number().int().positive().max(4096),
+  height: z.number().int().positive().max(4096),
+});
+export type GifAttachment = z.infer<typeof GifAttachment>;
+
 export const ChatMessage = z.object({
   id: z.number().int(),
   userId: z.uuid(),
-  body: z.string().min(1).max(LIMITS.messageMaxChars),
+  // Empty allowed only alongside a `gif` (a pure-GIF message carries no text); the DO re-checks the
+  // "body non-empty OR gif present" invariant on send. `.min(1)` is intentionally dropped here.
+  body: z.string().max(LIMITS.messageMaxChars),
   mentions: z.array(z.uuid()),
   at: z.number(),
+  gif: GifAttachment.optional(),
 });
 export type ChatMessage = z.infer<typeof ChatMessage>;
 

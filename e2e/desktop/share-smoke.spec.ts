@@ -39,7 +39,7 @@ test.describe("FR-28 desktop share smoke", () => {
     await expect(page.getByTestId("controls-bar")).toBeVisible({ timeout: 30_000 });
 
     // The screen-share control is enabled only while in voice — join first.
-    await page.getByTestId("controls-join").click();
+    await page.getByTestId("channel-voice").click();
     await expect(page.getByTestId(`voice-chip-${user.userId}`)).toBeVisible({ timeout: 20_000 });
 
     // Open the SharePickerDialog (desktop variant renders Screens/Windows tabs + the preset select).

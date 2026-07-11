@@ -34,14 +34,14 @@ describe("shell layout", () => {
     );
 
     const shell = screen.getByTestId("app-shell");
-    expect(shell.style.gridTemplateRows).toBe("40px 1fr 56px");
+    expect(shell.style.gridTemplateRows).toBe("40px 1fr 64px");
     expect(shell.style.gridTemplateColumns).toBe("240px 1fr 320px");
 
-    // Every §7.6 region is present as a named slot/panel, ready for later steps to fill.
+    // Every §7.6 region is present as a named slot/panel, ready for later steps to fill. People moved
+    // into the ChatTabs (a non-default tab), so it is not asserted here.
     for (const id of [
       "app-header",
       "channels-panel",
-      "people-panel",
       "slot-canvas",
       "slot-controls",
       "slot-tabs",

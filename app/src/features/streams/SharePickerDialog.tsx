@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { PresetId, ScreenSource } from "@tavern/shared";
-import { DEFAULT_SCREEN_PRESET, PRESET_IDS } from "@tavern/shared";
+import type { BasePresetId, PresetId, ScreenSource } from "@tavern/shared";
+import { BASE_PRESET_IDS, DEFAULT_SCREEN_PRESET, PRESET_IDS } from "@tavern/shared";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -25,7 +25,9 @@ import type { ShareSelection } from "./types";
 
 // Preset option labels (technical resolution×fps identifiers, kept as data — like the AppSection
 // language endonyms — so they stay out of the i18n catalog; rendered via {expression}, never JSX text).
-export const PRESET_ITEMS: Record<PresetId, string> = {
+// Keyed by the 12 BASE ids only — the picker never offers data tiers; those are tuned live in the
+// ControlsBar after the share is up.
+export const PRESET_ITEMS: Record<BasePresetId, string> = {
   "480p15": "480p · 15fps",
   "480p30": "480p · 30fps",
   "480p60": "480p · 60fps",
@@ -129,7 +131,7 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {PRESET_IDS.map((id) => (
+                {BASE_PRESET_IDS.map((id) => (
                   <SelectItem key={id} value={id} data-testid={`preset-option-${id}`}>
                     {PRESET_ITEMS[id]}
                   </SelectItem>

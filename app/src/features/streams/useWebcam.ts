@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { connectRoom } from "@/lib/wsClient";
 import { getCam } from "@/media/capture";
 import { getVoiceController } from "@/features/voice/voiceController";
+import { updateVoiceSession } from "@/features/voice/voiceSession";
 import { useMediaStore } from "@/stores/media";
 import { useSettingsStore } from "@/stores/settings";
 
@@ -105,6 +106,9 @@ export class WebcamController {
       this.deps
         .wsFor(serverId)
         .send({ t: "stream.start", kind: "webcam", trackName: name.trackName, preset: "720p30" });
+      // Refresh auto-resume (voiceSession.ts): mark the cam live so a reload restarts it. No-op
+      // when no voice session blob exists (unit-test fakes join without one).
+      updateVoiceSession({ camOn: true });
     } finally {
       this.starting = false;
     }
@@ -126,6 +130,9 @@ export class WebcamController {
       this.serverId = null;
       this.stopping = false;
       useWebcamStore.getState().set({ active: false, trackName: null, stream: null });
+      // Covers the explicit toggle AND the track "ended" path (device unplugged) — a reload after
+      // either must not restart the cam. No-op after voice leave (blob already cleared).
+      updateVoiceSession({ camOn: false });
     }
   }
 

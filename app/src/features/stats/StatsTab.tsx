@@ -1,6 +1,7 @@
-import type { Member, StatsResponse as StatsResponseType } from "@tavern/shared";
-import { StatsResponse } from "@tavern/shared";
+import type { CostStatus, Member, StatsResponse as StatsResponseType } from "@tavern/shared";
+import { LIMITS, StatsResponse } from "@tavern/shared";
 import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { useStore } from "zustand";
 import {
@@ -13,6 +14,7 @@ import {
 } from "@/components/ui/table";
 import { apiClient } from "@/lib/apiClient";
 import { formatHoursMinutes } from "@/lib/time";
+import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
@@ -81,6 +83,49 @@ function MemberCell({ member }: { member: Member | undefined }) {
   );
 }
 
+// §8 G5 live free-limit readout: seeded by hello.ok's costStatus, refreshed by the 60s cost.update
+// broadcast while voice is active. The figure is the DO meter's ESTIMATE (App-D bitrate × watch
+// time, video pulls only): it over-counts vs real Cloudflare egress (encoders send under their caps)
+// and skips audio — the note under the bar says exactly that. Warn marker at 700 GB, cap at 900.
+function EgressMeter({ cost }: { cost: CostStatus | null }) {
+  if (cost === null) return null;
+  const pct = Math.min(100, (cost.usedGB / cost.capGB) * 100);
+  const warnPct = Math.min(100, (LIMITS.egressWarnGB / cost.capGB) * 100);
+  const warned = cost.usedGB >= LIMITS.egressWarnGB;
+  return (
+    <section data-testid="stats-egress" className="border-b px-3 py-3">
+      <h3 className="pb-2 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+        {m.stats_egress_title()}
+      </h3>
+      <div className="relative h-2 overflow-hidden rounded-full bg-muted">
+        <div
+          data-testid="stats-egress-bar"
+          className={cn(
+            "h-full rounded-full",
+            cost.blocked ? "bg-destructive" : warned ? "bg-amber-500" : "bg-primary",
+          )}
+          style={{ width: `${pct}%` }}
+        />
+        <div className="absolute inset-y-0 w-px bg-border" style={{ left: `${warnPct}%` }} />
+      </div>
+      <div className="flex items-baseline justify-between gap-2 pt-1.5">
+        <span data-testid="stats-egress-used" className="text-sm tabular-nums">
+          {m.stats_egress_used({ used: cost.usedGB.toFixed(1), cap: cost.capGB })}
+        </span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {m.stats_egress_warn({ warn: LIMITS.egressWarnGB })}
+        </span>
+      </div>
+      {cost.blocked && (
+        <p data-testid="stats-egress-blocked" className="pt-1 text-xs text-destructive">
+          {m.stats_egress_blocked()}
+        </p>
+      )}
+      <p className="pt-1 text-xs text-muted-foreground">{m.stats_egress_note()}</p>
+    </section>
+  );
+}
+
 // "You watch most" (FR-40): the viewer's own watch pairs, seconds DESC, capped at 5.
 function WatchMost({
   watchPairs,
@@ -132,6 +177,7 @@ function WatchMost({
 
 export function StatsTab({ serverId, active }: { serverId: string; active: boolean }) {
   const members = useStore(roomStore(serverId), (s) => s.members);
+  const cost = useStore(roomStore(serverId), (s) => s.cost);
   const selfUserId = useSessionStore((s) => s.profile?.userId);
 
   const query = useQuery({
@@ -141,59 +187,66 @@ export function StatsTab({ serverId, active }: { serverId: string; active: boole
     staleTime: 10_000,
   });
 
+  // The egress meter renders regardless of the FR-40 query (it is store-fed, live even while the
+  // per-member snapshot loads); the query drives only the body below it.
   const stats = query.data;
+  let body: ReactNode;
   if (stats === undefined) {
     // No text while the first snapshot is still loading (or the tab has never been activated).
-    return <div data-testid="stats-loading" className="h-full" />;
-  }
-
-  if (stats.perUser.length === 0) {
-    return (
+    body = <div data-testid="stats-loading" className="flex-1" />;
+  } else if (stats.perUser.length === 0) {
+    body = (
       <div
         data-testid="stats-empty"
-        className="flex h-full items-center justify-center p-6 text-sm text-muted-foreground"
+        className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground"
       >
         {m.stats_empty()}
       </div>
     );
+  } else {
+    const byId = new Map<string, Member>(members.map((mem): [string, Member] => [mem.userId, mem]));
+    const rows = toSortedRows(stats.perUser, byId);
+    body = (
+      <>
+        <Table data-testid="stats-members-table">
+          <TableHeader>
+            <TableRow>
+              <TableHead>{m.stats_member()}</TableHead>
+              <TableHead className="text-right">{m.stats_messages()}</TableHead>
+              <TableHead className="text-right">{m.stats_hours_streamed()}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow key={row.userId} data-testid="stats-row" data-user-id={row.userId}>
+                <TableCell>
+                  <MemberCell member={row.member} />
+                </TableCell>
+                <TableCell
+                  data-testid={`stats-messages-${row.userId}`}
+                  className="text-right tabular-nums"
+                >
+                  {row.messages}
+                </TableCell>
+                <TableCell
+                  data-testid={`stats-hours-${row.userId}`}
+                  className="text-right tabular-nums"
+                >
+                  {formatHoursMinutes(row.streamSeconds)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        <WatchMost watchPairs={stats.watchPairs} selfUserId={selfUserId} byId={byId} />
+      </>
+    );
   }
-
-  const byId = new Map<string, Member>(members.map((mem): [string, Member] => [mem.userId, mem]));
-  const rows = toSortedRows(stats.perUser, byId);
 
   return (
     <div data-testid="stats-tab" className="flex h-full min-h-0 flex-col overflow-y-auto">
-      <Table data-testid="stats-members-table">
-        <TableHeader>
-          <TableRow>
-            <TableHead>{m.stats_member()}</TableHead>
-            <TableHead className="text-right">{m.stats_messages()}</TableHead>
-            <TableHead className="text-right">{m.stats_hours_streamed()}</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((row) => (
-            <TableRow key={row.userId} data-testid="stats-row" data-user-id={row.userId}>
-              <TableCell>
-                <MemberCell member={row.member} />
-              </TableCell>
-              <TableCell
-                data-testid={`stats-messages-${row.userId}`}
-                className="text-right tabular-nums"
-              >
-                {row.messages}
-              </TableCell>
-              <TableCell
-                data-testid={`stats-hours-${row.userId}`}
-                className="text-right tabular-nums"
-              >
-                {formatHoursMinutes(row.streamSeconds)}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-      <WatchMost watchPairs={stats.watchPairs} selfUserId={selfUserId} byId={byId} />
+      <EgressMeter cost={cost} />
+      {body}
     </div>
   );
 }

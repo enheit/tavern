@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Browser, Page } from "@playwright/test";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectMemberVisible, test } from "../harness/fixtures";
 import type { Api, SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -46,9 +46,9 @@ async function bootPair(browser: Browser, baseURL: string | undefined, api: Api)
   const openedA = await pageFor(browser, baseURL, a);
   const openedB = await pageFor(browser, baseURL, b);
   await Promise.all([bootOnto(openedA, server.id), bootOnto(openedB, server.id)]);
-  // Both sockets live: each sees the other in the People panel.
-  await expect(openedA.page.getByTestId(`member-${b.userId}`)).toBeVisible();
-  await expect(openedB.page.getByTestId(`member-${a.userId}`)).toBeVisible();
+  // Both sockets live: each sees the other in the People tab (restored to Chat afterward).
+  await expectMemberVisible(openedA.page, b.userId);
+  await expectMemberVisible(openedB.page, a.userId);
 
   return { a, b, server, openedA, openedB };
 }
@@ -114,6 +114,9 @@ test.describe("FR-14 FR-15 FR-17 chat", () => {
   });
 
   test("picked emoji appears in the delivered message", async ({ browser, baseURL, api }) => {
+    // The composer's emoji picker is temporarily hidden (SHOW_EMOJI=false in Composer.tsx, per
+    // request) — re-enable this test when the flag flips back.
+    test.skip(true, "emoji picker temporarily hidden (Composer.tsx SHOW_EMOJI=false)");
     const { openedA, openedB } = await bootPair(browser, baseURL, api);
     try {
       await openedA.page.getByTestId("composer-emoji").click();

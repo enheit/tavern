@@ -17,7 +17,13 @@ import { micTrackName } from "@/media/trackName";
 import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
-import { useSettingsStore } from "@/stores/settings";
+import { type NoiseSuppressionMode, useSettingsStore } from "@/stores/settings";
+import {
+  clearVoiceSession,
+  loadVoiceSession,
+  saveVoiceSession,
+  updateVoiceSession,
+} from "./voiceSession";
 
 // Thrown by `join` when the client is already in voice on a DIFFERENT server (single-voice rule is
 // CLIENT-enforced — §1.4). The confirm flow catches it, leaves there, then joins here.
@@ -32,7 +38,11 @@ export class VoiceElsewhereError extends Error {
 
 interface MicOpts {
   deviceId?: string;
-  noiseSuppression: boolean;
+  noiseSuppression: NoiseSuppressionMode;
+  // The shared app AudioContext (§7.3) that the WASM noise-suppression worklet modes run in.
+  // Absent when the graph is a unit-test fake or not initialized — worklet modes then degrade to
+  // raw capture inside the capture layer.
+  audioContext?: AudioContext;
 }
 
 // Structural subsets of the S7.2 engine — the real PublishSession / PullSession / AudioGraph satisfy
@@ -199,7 +209,7 @@ export class VoiceController {
       // the freshly-created sbGain node starts at the user's saved level.
       const prefs = useMediaStore.getState().deviceSelection;
       await this.deps.graph.init(prefs.sinkId);
-      await this.deps.graph.resume();
+      await this.resumeGraph();
       this.graphReady = true;
       this.deps.graph.setSoundboardGain(useSettingsStore.getState().volumes.soundboard);
 
@@ -238,6 +248,16 @@ export class VoiceController {
       this.unsubVoiceState = ws.on("voice.state", (m) => this.onVoiceState(m.voice.members));
       this.unsubReconnect = ws.on("hello.ok", () => void this.onReconnect());
       useMediaStore.getState().setVoiceStatus("joined");
+      // Refresh auto-resume snapshot (per-tab, voiceSession.ts): a rejoin on the SAME server keeps
+      // camOn (the WebcamController re-asserts it right after its own restart); any other join
+      // starts with it off. Written only on join SUCCESS so a failed join never leaves a blob.
+      const prev = loadVoiceSession();
+      saveVoiceSession({
+        serverId,
+        muted: this.userMuted,
+        deafened: this.deafened,
+        camOn: prev !== null && prev.serverId === serverId && prev.camOn,
+      });
     } catch (err) {
       await this.teardown();
       // voice.join may already have registered us in the roster (any later step can be the failure),
@@ -263,6 +283,8 @@ export class VoiceController {
     await this.teardown();
     ws?.send({ t: "voice.leave" });
     this.resetState();
+    // Explicit leave = user intent — a refresh after this must NOT rejoin.
+    clearVoiceSession();
     const media = useMediaStore.getState();
     media.setVoiceStatus("idle");
     media.setInVoiceServerId(null);
@@ -289,6 +311,7 @@ export class VoiceController {
     this.applyMuteState();
     this.sendVoiceState();
     useMediaStore.getState().setMuted(this.effectiveMuted());
+    updateVoiceSession({ muted });
   }
 
   setDeafened(deafened: boolean): void {
@@ -302,6 +325,7 @@ export class VoiceController {
     const media = useMediaStore.getState();
     media.setDeafened(deafened);
     media.setMuted(this.effectiveMuted());
+    updateVoiceSession({ deafened });
   }
 
   // FR-38 soundboard volume: applies the gain (0..2) to the app graph's soundboard node. The panel
@@ -385,11 +409,38 @@ export class VoiceController {
     await this.deps.graph.setSink(sinkId);
   }
 
+  // Autoplay policy: ctx.resume() resolves instantly inside a join-click gesture, but the refresh
+  // auto-resume path (voiceResume.ts) has NO gesture — Chrome then parks the resume() promise until
+  // the next user activation, and awaiting it would hang the rejoin at step ②. Race a short
+  // deadline; when blocked, continue the join (publish/pull wire fine on a suspended context) and
+  // arm one-time gesture listeners so the first click/keypress unblocks graph output + the WASM mic
+  // worklet modes.
+  private async resumeGraph(): Promise<void> {
+    const resumed = this.deps.graph.resume().then(() => "ok" as const);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const blocked = new Promise<"blocked">((resolve) => {
+      timer = setTimeout(() => resolve("blocked"), 500);
+    });
+    const result = await Promise.race([resumed, blocked]);
+    if (timer !== null) clearTimeout(timer);
+    if (result === "ok") return;
+    // The parked promise may still reject much later (context closed by teardown) — not actionable.
+    resumed.catch(() => undefined);
+    const retry = (): void => void this.deps.graph.resume();
+    window.addEventListener("pointerdown", retry, { once: true });
+    window.addEventListener("keydown", retry, { once: true });
+  }
+
   private micOpts(): MicOpts {
     const prefs = useMediaStore.getState().deviceSelection;
+    // instanceof narrows GraphLike → AudioGraph without a cast (§9.1, recorderInputs precedent);
+    // unit-test fake graphs are not AudioGraphs, so tests exercise the no-context path.
+    const graph = this.deps.graph;
+    const ctx = graph instanceof AudioGraph ? graph.micProcessingContext() : null;
     return {
       ...(prefs.micId ? { deviceId: prefs.micId } : {}),
       noiseSuppression: prefs.noiseSuppression,
+      ...(ctx ? { audioContext: ctx } : {}),
     };
   }
 

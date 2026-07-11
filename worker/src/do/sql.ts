@@ -17,6 +17,10 @@ export function migrate(sql: SqlStorage): void {
        mentions TEXT NOT NULL DEFAULT '[]',
        created_at INTEGER NOT NULL)`,
   );
+  // Additive GIF-attachment column (nullable JSON of the shared `GifAttachment`). ALTER is not
+  // idempotent, so this runs only when the column is missing — brand-new DOs get it right after the
+  // CREATE above; DOs that predate this migration (production) get it on their next construction.
+  addColumnIfMissing(sql, "messages", "gif", "TEXT");
   sql.exec(
     `CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT,
        type TEXT NOT NULL,
@@ -38,6 +42,10 @@ export function migrate(sql: SqlStorage): void {
        duration_ms INTEGER, started_at INTEGER NOT NULL, ended_at INTEGER)`,
   );
   sql.exec(
+    `CREATE TABLE IF NOT EXISTS screenshots(id TEXT PRIMARY KEY, captured_by TEXT NOT NULL,
+       r2_key TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+  );
+  sql.exec(
     `CREATE TABLE IF NOT EXISTS voice_sessions(id INTEGER PRIMARY KEY AUTOINCREMENT,
        channel_id TEXT NOT NULL DEFAULT 'main',
        started_at INTEGER NOT NULL, ended_at INTEGER)`,
@@ -53,6 +61,17 @@ export function migrate(sql: SqlStorage): void {
     `CREATE TABLE IF NOT EXISTS egress_log(month TEXT PRIMARY KEY,
        bytes INTEGER NOT NULL DEFAULT 0)`,
   );
+}
+
+// Idempotent single-column `ALTER TABLE … ADD COLUMN`: a no-op when the column already exists (SQLite
+// has no `ADD COLUMN IF NOT EXISTS`, and a blind ALTER throws on re-run). `table`/`column`/`type` are
+// module-internal string constants (never user input), so the interpolation carries no injection risk.
+function addColumnIfMissing(sql: SqlStorage, table: string, column: string, type: string): void {
+  const columns = sql
+    .exec<Record<string, SqlStorageValue>>(`PRAGMA table_info(${table})`)
+    .toArray();
+  if (columns.some((c) => c["name"] === column)) return;
+  sql.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }
 
 // Typed row-mapper for the `members` cache table → the shared `Member` wire type. Presence is not a

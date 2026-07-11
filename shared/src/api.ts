@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { LIMITS } from "./limits";
 import { errorCodeSchema } from "./errors";
-import { UserProfile, UserSettings, ServerSummary, ActivityEntry } from "./domain";
+import { UserProfile, UserSettings, ServerSummary, ActivityEntry, GifAttachment } from "./domain";
 
 const atLeastOneKey = (o: object) => Object.keys(o).length >= 1;
 
@@ -121,6 +121,37 @@ export type Recording = z.infer<typeof Recording>;
 
 export const RecordingsResponse = z.object({ recordings: z.array(Recording) });
 export type RecordingsResponse = z.infer<typeof RecordingsResponse>;
+
+// A stream screenshot (§ screenshots tab): a single still frame a member captured from the focused
+// stream, stored in R2 under `{serverId}/screenshots/{id}.webp`. The row records who captured it and
+// when (the image bytes themselves are served by the public capability route keyed by the two UUIDs).
+export const Screenshot = z.object({
+  id: z.uuid(),
+  capturedBy: z.uuid(),
+  createdAt: z.number(),
+});
+export type Screenshot = z.infer<typeof Screenshot>;
+
+export const ScreenshotsResponse = z.object({ screenshots: z.array(Screenshot) });
+export type ScreenshotsResponse = z.infer<typeof ScreenshotsResponse>;
+
+// GET /api/gifs/search — the Worker proxies a GIF provider (Klipy) and returns THIS normalized shape
+// so the client never couples to a specific vendor's JSON (swapping providers stays worker-only). A
+// result is a `GifAttachment` (the exact struct persisted on a message) plus the provider's item id.
+// `next` is an opaque pagination cursor to pass back as `?pos=`; null when there is no further page.
+export const GifResult = GifAttachment.extend({ id: z.string() });
+export type GifResult = z.infer<typeof GifResult>;
+
+export const GifSearchResponse = z.object({
+  results: z.array(GifResult),
+  next: z.string().nullable(),
+});
+export type GifSearchResponse = z.infer<typeof GifSearchResponse>;
+
+// POST /api/servers/:id/screenshots returns the freshly-created row (the tab also refetches on the
+// `screenshot.updated` broadcast, but the capturer's own upload resolves with the row immediately).
+export const CreateScreenshotResponse = z.object({ screenshot: Screenshot });
+export type CreateScreenshotResponse = z.infer<typeof CreateScreenshotResponse>;
 
 export const OpenRecordingResponse = z.object({ recordingId: z.uuid(), uploadId: z.string() });
 export type OpenRecordingResponse = z.infer<typeof OpenRecordingResponse>;

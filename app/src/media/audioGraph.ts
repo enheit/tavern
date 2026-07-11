@@ -236,6 +236,13 @@ export class AudioGraph {
     this.recordingDest = null;
   }
 
+  // FR-22 WASM noise-suppression modes run their AudioWorklet in the ONE app context (§7.3 — the
+  // mic pipeline never builds a second AudioContext). Null before init/after close; the capture
+  // layer then falls back to raw capture.
+  micProcessingContext(): AudioContext | null {
+    return this.ctx;
+  }
+
   getUserAnalyser(userId: string): AnalyserNode | null {
     return this.remotes.get(userId)?.analyser ?? null;
   }

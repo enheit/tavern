@@ -5,13 +5,18 @@ import type { ShareSelection } from "@/features/streams/types";
 // directly (aliased to avoid shadowing getScreen's `platform` parameter). getScreen keeps DI.
 import { platform as platformBridge } from "@/platform/types";
 import type { PlatformBridge } from "@/platform/types";
+import type { NoiseSuppressionMode } from "@/stores/settings";
+import { applyNoiseWorklet } from "./noiseWorklet";
 
 // Capture acquisition (PLAN §7.2). This module + ports.ts are the only app files permitted to call
 // getUserMedia / getDisplayMedia (DoD grep gate).
 
 interface MicOpts {
   deviceId?: string;
-  noiseSuppression: boolean;
+  noiseSuppression: NoiseSuppressionMode;
+  // Shared app AudioContext (§7.3) hosting the WASM worklet modes. When absent (unit tests, graph
+  // not initialized) the worklet modes degrade to raw capture — never a second AudioContext here.
+  audioContext?: AudioContext;
 }
 
 function firstAudioTrack(stream: MediaStream): MediaStreamTrack {
@@ -26,8 +31,9 @@ function firstVideoTrack(stream: MediaStream): MediaStreamTrack {
   return track;
 }
 
-// echoCancellation is ALWAYS on (off + speakers = feedback); the single FR-22 toggle drives
-// noiseSuppression + autoGainControl together.
+// echoCancellation is ALWAYS on (off + speakers = feedback); FR-22 "standard" drives Chromium's
+// noiseSuppression + autoGainControl together. The WASM modes ("rnnoise"/"deepfilter") turn the
+// browser NS/AGC OFF so the model sees the unprocessed signal (double suppression = artifacts).
 // §10 e2e seam: the harness's fake mic is a STEADY 440 Hz sine (tone WAV), and Chromium's audio
 // processing treats a stationary tone as noise — NS/AEC adapt it to near-silence within seconds
 // (measured: RMS 0.36 raw → 0.04 at 3 s and falling), which zeroes the remote audioLevel the
@@ -41,17 +47,26 @@ function micConstraints(opts: MicOpts): MediaTrackConstraints {
       ...(opts.deviceId ? { deviceId: { exact: opts.deviceId } } : {}),
     };
   }
+  const worklet = opts.noiseSuppression === "rnnoise" || opts.noiseSuppression === "deepfilter";
   return {
     echoCancellation: true,
-    noiseSuppression: opts.noiseSuppression,
-    autoGainControl: opts.noiseSuppression,
+    noiseSuppression: opts.noiseSuppression === "standard",
+    // AGC stays on for the WASM modes (Jitsi ships AEC+AGC on, NS off, model after) — the models
+    // want a leveled signal; only "off" is fully raw.
+    autoGainControl: opts.noiseSuppression !== "off",
+    // The models are mono (voice is mono over Opus anyway) — don't capture stereo just to downmix.
+    ...(worklet ? { channelCount: { ideal: 1 } } : {}),
     ...(opts.deviceId ? { deviceId: { exact: opts.deviceId } } : {}),
   };
 }
 
 export async function getMic(opts: MicOpts): Promise<MediaStreamTrack> {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(opts) });
-  return firstAudioTrack(stream);
+  const raw = firstAudioTrack(stream);
+  // §10: the worklet pipeline never runs under the e2e harness — the sine seam must stay raw.
+  if (platformBridge.isE2E || !opts.audioContext) return raw;
+  if (opts.noiseSuppression !== "rnnoise" && opts.noiseSuppression !== "deepfilter") return raw;
+  return applyNoiseWorklet(opts.audioContext, raw, opts.noiseSuppression);
 }
 
 // FR-22 retoggle: applyConstraints is a Chromium WontFix no-op for these (crbug 327472528), so

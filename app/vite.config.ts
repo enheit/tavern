@@ -41,5 +41,12 @@ export default defineConfig({
     proxy: { "/api": { target: "http://localhost:8787", ws: true } },
   },
   resolve: { alias: { "@": path.resolve(__dirname, "./src") } },
-  build: { target: "es2022" },
+  build: {
+    target: "es2022",
+    // The rnnoise worklet module (~2 KB) imports as ?url and is fed to audioWorklet.addModule —
+    // inlining it as a data: URL (default for assets <4 KB) breaks addModule under the CSP
+    // (script-src has no data:). Keep every asset of that package a real file.
+    assetsInlineLimit: (filePath) =>
+      filePath.includes("web-noise-suppressor") ? false : undefined,
+  },
 });

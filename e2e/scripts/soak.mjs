@@ -210,7 +210,7 @@ async function main() {
 
   log("all clients joining voice");
   for (const c of clients) {
-    await c.page.click('[data-testid="controls-join"]');
+    await c.page.click('[data-testid="channel-voice"]');
     await waitFor(c.page, `[data-testid="voice-chip-${c.user.userId}"]`);
     // Fully wired (publish + voice pull connected) before any share/watch — a premature watch's
     // REST pull races the grant and 403s (same gate as the e2e suites).
@@ -228,8 +228,6 @@ async function main() {
   const tracks = [];
   for (const c of sharers) {
     await c.page.click('[data-testid="controls-screen"]');
-    await waitFor(c.page, '[data-testid="share-start"]');
-    await c.page.click('[data-testid="share-start"]');
     const track = `screen:${c.user.userId}:1`;
     await waitFor(c.page, `[data-testid="stream-tile-${track}"]`);
     tracks.push(track);

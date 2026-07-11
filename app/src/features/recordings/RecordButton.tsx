@@ -10,7 +10,7 @@ import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
 
-// FR-25 record toggle + the red REC indicator. The recorder mixes the shared audio graph + the live
+// FR-25 record toggle. The recorder mixes the shared audio graph + the live
 // mic (via the voice controller's seam) into a MediaRecorder, uploading R2 parts as it records. One
 // active session per client; the module singleton lets the ControlsBar leave-flow stop it gracefully.
 
@@ -66,45 +66,39 @@ export async function stopRecording(serverId: string): Promise<void> {
   await current.sink.finish(durationMs);
 }
 
-export function RecordButton({ serverId, inVoice }: { serverId: string; inVoice: boolean }) {
+export function RecordButton({
+  serverId,
+  inVoice,
+  className,
+}: {
+  serverId: string;
+  inVoice: boolean;
+  className?: string;
+}) {
   const recording = useStore(roomStore(serverId), (s) => s.recording);
   const selfId = useSessionStore((s) => s.profile?.userId ?? null);
-  const members = useStore(roomStore(serverId), (s) => s.members);
 
   const active = recording.active;
   const ownedBySelf = active && recording.startedBy === selfId;
-  const starter = members.find((mem) => mem.userId === recording.startedBy);
 
   const onClick = (): void => {
     if (ownedBySelf) void stopRecording(serverId);
     else if (!active) beginRecording(serverId);
   };
 
+  // The red REC indicator itself lives next to the session timer (VoiceChannelRow), not here.
   return (
-    <>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        data-testid="controls-record"
-        aria-label={ownedBySelf ? m.voice_record_stop() : m.voice_record_start()}
-        aria-pressed={ownedBySelf}
-        // Enabled only in voice; while another member records (already_recording) it is inert.
-        disabled={!inVoice || (active && !ownedBySelf)}
-        className={cn(ownedBySelf && "text-destructive")}
-        onClick={onClick}
-      >
-        <CircleIcon className={cn(ownedBySelf && "fill-current")} />
-      </Button>
-      {active && inVoice && (
-        <span
-          data-testid="rec-indicator"
-          className="flex animate-pulse items-center gap-1 rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive"
-        >
-          <span className="size-2 rounded-full bg-destructive" aria-hidden={true} />
-          {m.recording_indicator()}
-          {starter !== undefined && <span className="font-normal">{starter.displayName}</span>}
-        </span>
-      )}
-    </>
+    <Button
+      variant="secondary"
+      data-testid="controls-record"
+      aria-label={ownedBySelf ? m.voice_record_stop() : m.voice_record_start()}
+      aria-pressed={ownedBySelf}
+      // Enabled only in voice; while another member records (already_recording) it is inert.
+      disabled={!inVoice || (active && !ownedBySelf)}
+      className={cn(className, ownedBySelf && "text-destructive")}
+      onClick={onClick}
+    >
+      <CircleIcon className={cn(ownedBySelf && "fill-current")} />
+    </Button>
   );
 }

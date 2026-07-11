@@ -82,29 +82,44 @@ export function MessageRow({ message, member, selfUserId, selfUsername }: Messag
   const pending = message.id < 0;
   const displayName = member?.displayName ?? message.userId;
   return (
-    <li
-      data-testid={`message-${message.id}`}
-      className={cn("px-3 py-1", pending && "opacity-60")}
-    >
+    <li data-testid={`message-${message.id}`} className={cn("px-3 py-1", pending && "opacity-60")}>
       <div className="min-w-0">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">
             <RowAvatar member={member} />
-            <span
-              className="min-w-0 truncate text-sm font-medium"
-              style={{ color: member?.color }}
-            >
+            <span className="min-w-0 truncate text-sm font-medium" style={{ color: member?.color }}>
               {displayName}
             </span>
           </div>
           <time className="shrink-0 text-xs text-muted-foreground">{formatTime(message.at)}</time>
         </div>
-        <div
-          data-testid={`message-body-${message.id}`}
-          className="text-sm break-words whitespace-pre-wrap"
-        >
-          {renderBody(message, selfUserId, selfUsername)}
-        </div>
+        {message.body.length > 0 ? (
+          <div
+            data-testid={`message-body-${message.id}`}
+            className="text-sm break-words whitespace-pre-wrap"
+          >
+            {renderBody(message, selfUserId, selfUsername)}
+          </div>
+        ) : null}
+        {message.gif ? (
+          <img
+            data-testid="message-gif"
+            src={message.gif.url}
+            alt=""
+            loading="lazy"
+            width={message.gif.width}
+            height={message.gif.height}
+            // Intrinsic w/h + a fixed aspect-ratio box reserve space so the row doesn't jump when the
+            // GIF loads; CSS caps the on-screen size while preserving ratio. `min(320px, 100%)` caps at
+            // 320px OR the chat column width, whichever is smaller — a wide GIF in a narrow column can
+            // never overflow (a bare `320px` would, forcing the whole chat to scroll horizontally).
+            style={{
+              aspectRatio: `${message.gif.width} / ${message.gif.height}`,
+              maxWidth: "min(320px, 100%)",
+            }}
+            className="mt-1 block h-auto max-h-80 w-auto rounded-md bg-muted"
+          />
+        ) : null}
       </div>
     </li>
   );

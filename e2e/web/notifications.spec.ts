@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Browser, Page } from "@playwright/test";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectMemberVisible, test } from "../harness/fixtures";
 import type { Api, SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -52,9 +52,9 @@ async function bootPair(browser: Browser, baseURL: string | undefined, api: Api)
   const openedA = await pageFor(browser, baseURL, a);
   const openedB = await pageFor(browser, baseURL, b);
   await Promise.all([bootOnto(openedA, server.id), bootOnto(openedB, server.id)]);
-  // Both sockets live: each sees the other in People.
-  await expect(openedA.page.getByTestId(`member-${b.userId}`)).toBeVisible();
-  await expect(openedB.page.getByTestId(`member-${a.userId}`)).toBeVisible();
+  // Both sockets live: each sees the other in the People tab (restored to Chat afterward).
+  await expectMemberVisible(openedA.page, b.userId);
+  await expectMemberVisible(openedB.page, a.userId);
   return { a, b, server, openedA, openedB };
 }
 

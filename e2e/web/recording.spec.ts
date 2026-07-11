@@ -73,15 +73,17 @@ async function seedRoom(
     }),
   );
   await Promise.all(
-    clients.map((client) =>
-      Promise.all(
+    clients.map(async (client) => {
+      await client.page.getByTestId("tab-people").click();
+      await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
             expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
           ),
-      ),
-    ),
+      );
+      await client.page.getByTestId("tab-chat").click();
+    }),
   );
   return { serverId: server.id, nickname: server.nickname, clients };
 }
@@ -89,7 +91,7 @@ async function seedRoom(
 // Clicks Join and waits until the joiner is fully wired (self chip + both sessions connected) — the
 // same serialization voice.spec uses so a later joiner never races the pull of a not-yet-published mic.
 async function joinVoice(client: Client): Promise<void> {
-  await client.page.getByTestId("controls-join").click();
+  await client.page.getByTestId("channel-voice").click();
   await expect(client.page.getByTestId(`voice-chip-${client.user.userId}`)).toBeVisible({
     timeout: 20_000,
   });

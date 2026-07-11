@@ -119,6 +119,11 @@ export class RoomState {
   // replaced on every voice mutation (each mutator then persisted via `persistVoice()` by the caller).
   private voice: VoiceState = { members: [], sessionStartedAt: null };
 
+  // In-memory mirror of the ctx.storage KV `status` value — the free-text shared server status any
+  // member may set (§ header status). Loaded in `load()`, kept synchronous for `helloSnapshot`, and
+  // replaced + persisted on every `setStatus`. Last write wins (a single KV value, no merge).
+  private status = "";
+
   constructor(
     private readonly ctx: DurableObjectState,
     private readonly env: Env,
@@ -127,6 +132,7 @@ export class RoomState {
   // Loads the persisted room meta + voice state into memory (call once from blockConcurrencyWhile).
   async load(): Promise<void> {
     this.meta = (await this.ctx.storage.get<RoomMeta>("meta")) ?? null;
+    this.status = (await this.ctx.storage.get<string>("status")) ?? "";
     await this.loadVoice();
   }
 
@@ -167,6 +173,15 @@ export class RoomState {
     this.meta = meta;
   }
 
+  // §9.5 rebuild-from-D1: ticket issuance ships the Worker-read D1 truth on every call. Fill ONLY
+  // the missing pieces — meta when the create/join-time member-join seed never landed (its failure
+  // is deliberately non-fatal) and the caller's member row when the profile cache is empty. A live
+  // cache is never overwritten, so an in-flight stale seed can't undo a kick or a rename.
+  async seedIfMissing(member: MemberInit, meta: RoomMeta): Promise<void> {
+    if (this.meta === null) await this.setMeta(meta);
+    if (!this.hasMember(member.userId)) this.upsertMember(member);
+  }
+
   // The server's stable id (from the cached meta), used by RecordingsModule to build R2 keys
   // (`recordings/{serverId}/…`, §5.3). Null before the first member-join seeds meta.
   serverId(): string | null {
@@ -179,6 +194,18 @@ export class RoomState {
     const next: RoomMeta = { ...current, nickname };
     await this.ctx.storage.put("meta", next);
     this.meta = next;
+  }
+
+  // ---- Shared server status (§ header status). Any member may set it (no admin gate); last write
+  // wins. `setStatus` persists to KV + updates the mirror; the caller broadcasts `status.updated`.
+
+  statusValue(): string {
+    return this.status;
+  }
+
+  async setStatus(text: string): Promise<void> {
+    this.status = text;
+    await this.ctx.storage.put("status", text);
   }
 
   // ---- Voice (FR-18/24/26). Mutators are synchronous (in-memory mirror + SQLite); the caller awaits
@@ -323,6 +350,20 @@ export class RoomState {
     return Object.values(reg.tracks).filter((t) => t.kind === "screen").length;
   }
 
+  // § watching indicator: flatten the grants registry into (viewer, trackName) pairs — only for
+  // tracks that still exist (a grant may outlive its stream until the viewer's watch.stop lands) —
+  // and broadcast the full `watch.state` snapshot. Called after every grant/track mutation.
+  async broadcastWatching(at: number): Promise<void> {
+    const reg = await this.readRtc();
+    const watching: Array<{ userId: string; trackName: string }> = [];
+    for (const [viewerId, grants] of Object.entries(reg.grants)) {
+      for (const name of Object.keys(grants)) {
+        if (reg.tracks[name] !== undefined) watching.push({ userId: viewerId, trackName: name });
+      }
+    }
+    this.broadcast({ t: "watch.state", watching, at });
+  }
+
   // Resolve a watchable video track (screen/cam) → its publisher + current preset, for watch.start's
   // grant seed + meter openWatch. Null for an unknown track or a non-video kind (mic/screenAudio).
   async rtcWatchable(trackName: string): Promise<{ streamerId: string; preset: PresetId } | null> {
@@ -456,7 +497,12 @@ export class RoomState {
             this.broadcast({ t: "stream.removed", trackName: name, at });
           }
         }
-        if (changed) await this.writeRtc(reg);
+        if (changed) {
+          await this.writeRtc(reg);
+          // Closing a track invalidates its watchers' pairs — refresh the watch.state snapshot
+          // immediately (the viewers' own watch.stop frames land later).
+          await this.broadcastWatching(at);
+        }
         return { ok: true };
       }
       default:
@@ -488,7 +534,11 @@ export class RoomState {
       delete reg.grants[userId];
       changed = true;
     }
-    if (changed) await this.writeRtc(reg);
+    if (changed) {
+      await this.writeRtc(reg);
+      // Their grants (and/or their published tracks) are gone — refresh everyone's watch.state.
+      await this.broadcastWatching(at);
+    }
     await meter.closeWatchesForViewer(userId, at);
   }
 
@@ -608,6 +658,7 @@ export class RoomState {
       voice: this.voice,
       streams: [],
       recording,
+      status: this.status,
       lastMessageId,
       costStatus,
     };

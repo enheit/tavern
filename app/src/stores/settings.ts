@@ -12,16 +12,33 @@ export const VOLUMES_STORAGE_KEY = "settings.volumes.v1";
 // is validated structurally on read (§9.8 boundary parse without adding a shared/ schema).
 export const DEVICE_SETTINGS_KEY = "tavern.settings.v1";
 
+// FR-22 noise-suppression mode: "standard" = Chromium's built-in NS+AGC constraints; "rnnoise" /
+// "deepfilter" = WASM AudioWorklet models applied after capture (browser NS off so the model sees
+// the raw signal); "off" = no suppression at all. AEC is always on regardless of mode.
+export const NOISE_SUPPRESSION_MODES = ["off", "standard", "rnnoise", "deepfilter"] as const;
+export type NoiseSuppressionMode = (typeof NOISE_SUPPRESSION_MODES)[number];
+
+export function isNoiseSuppressionMode(value: unknown): value is NoiseSuppressionMode {
+  return (NOISE_SUPPRESSION_MODES as readonly unknown[]).includes(value);
+}
+
+// Pre-enum records persisted a boolean (the FR-22 on/off switch) — map it onto the enum.
+function parseNoiseSuppression(value: unknown): NoiseSuppressionMode {
+  if (isNoiseSuppressionMode(value)) return value;
+  if (typeof value === "boolean") return value ? "standard" : "off";
+  return "standard";
+}
+
 export interface DeviceSettingsV1 {
   micId?: string;
   sinkId?: string;
   // FR-29 selected webcam (videoinput deviceId); undefined = the browser default camera.
   cameraDeviceId?: string;
-  noiseSuppression: boolean;
+  noiseSuppression: NoiseSuppressionMode;
 }
 
 function defaultDeviceSettings(): DeviceSettingsV1 {
-  return { noiseSuppression: true };
+  return { noiseSuppression: "standard" };
 }
 
 export function loadDeviceSettings(): DeviceSettingsV1 {
@@ -32,7 +49,7 @@ export function loadDeviceSettings(): DeviceSettingsV1 {
     if (typeof parsed !== "object" || parsed === null) return defaultDeviceSettings();
     const rec = parsed as Record<string, unknown>;
     const next: DeviceSettingsV1 = {
-      noiseSuppression: typeof rec.noiseSuppression === "boolean" ? rec.noiseSuppression : true,
+      noiseSuppression: parseNoiseSuppression(rec.noiseSuppression),
     };
     if (typeof rec.micId === "string") next.micId = rec.micId;
     if (typeof rec.sinkId === "string") next.sinkId = rec.sinkId;
