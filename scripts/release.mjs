@@ -11,14 +11,29 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
   process.exit(1);
 }
 
+const git = (...args) => execFileSync("git", args, { stdio: "inherit" });
+const gitOut = (...args) => execFileSync("git", args).toString().trim();
+
+// Preflight BEFORE mutating anything: a pre-existing tag (local or origin) means this version was
+// already cut — v0.1.0 exists from the pre-rewrite Tauri build, for example. Pick the next number.
+git("fetch", "--tags", "--quiet", "origin");
+if (gitOut("tag", "-l", `v${version}`) !== "") {
+  console.error(`release: tag v${version} already exists (locally or on origin) — pick a new version`);
+  process.exit(1);
+}
+
 for (const file of ["package.json", "desktop/package.json"]) {
   const pkg = JSON.parse(readFileSync(file, "utf8"));
   pkg.version = version;
   writeFileSync(file, `${JSON.stringify(pkg, null, 2)}\n`);
 }
 
-const git = (...args) => execFileSync("git", args, { stdio: "inherit" });
 git("add", "package.json", "desktop/package.json");
-git("commit", "-m", `chore(release): v${version}`);
+// A re-run after a half-failed release may find the bump already committed — skip the empty commit.
+if (gitOut("status", "--porcelain", "package.json", "desktop/package.json") !== "") {
+  git("commit", "-m", `chore(release): v${version}`);
+} else {
+  console.log(`release: versions already at ${version} — skipping commit`);
+}
 git("tag", `v${version}`);
 git("push", "--follow-tags");
