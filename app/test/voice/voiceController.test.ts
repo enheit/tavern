@@ -580,3 +580,83 @@ describe("FR-20", () => {
     expect(parsed.mutedUsers).toContain(REMOTE);
   });
 });
+
+describe("FR-36 soundboard playback", () => {
+  // A fake player that records each play — the controller wires this to the live `sound.played`
+  // broadcast so a member hears a sound WITHOUT ever opening the soundboard panel (the bug fix).
+  function harnessWithSoundboard() {
+    const h = makeHarness();
+    const plays: { id: string; trimStartMs: number; trimEndMs: number }[] = [];
+    const stops: number[] = [];
+    const deps: VoiceDeps = {
+      ...h.deps,
+      createSoundboardPlayer: () => ({
+        serverId: "A",
+        play: async (s) => {
+          plays.push(s);
+        },
+        stopAll: () => stops.push(1),
+      }),
+    };
+    return { h, plays, stops, deps };
+  }
+
+  it("plays a `sound.played` broadcast while joined even if the panel never mounted", async () => {
+    const { h, plays, deps } = harnessWithSoundboard();
+    const controller = new VoiceController(deps);
+    seedVoice("A", []);
+    await controller.join("A");
+
+    h.ws.emit({
+      t: "sound.played",
+      soundId: "s9",
+      byUserId: REMOTE,
+      at: 1,
+      trimStartMs: 100,
+      trimEndMs: 700,
+    });
+    await flush();
+
+    expect(plays).toEqual([{ id: "s9", trimStartMs: 100, trimEndMs: 700 }]);
+  });
+
+  it("does not play when deafened", async () => {
+    const { h, plays, deps } = harnessWithSoundboard();
+    const controller = new VoiceController(deps);
+    seedVoice("A", []);
+    await controller.join("A");
+    controller.setDeafened(true);
+
+    h.ws.emit({
+      t: "sound.played",
+      soundId: "s9",
+      byUserId: REMOTE,
+      at: 1,
+      trimStartMs: 0,
+      trimEndMs: 500,
+    });
+    await flush();
+
+    expect(plays).toEqual([]);
+  });
+
+  it("stops listening after leave (no play on a late broadcast)", async () => {
+    const { h, plays, deps } = harnessWithSoundboard();
+    const controller = new VoiceController(deps);
+    seedVoice("A", []);
+    await controller.join("A");
+    await controller.leave();
+
+    h.ws.emit({
+      t: "sound.played",
+      soundId: "s9",
+      byUserId: REMOTE,
+      at: 1,
+      trimStartMs: 0,
+      trimEndMs: 500,
+    });
+    await flush();
+
+    expect(plays).toEqual([]);
+  });
+});

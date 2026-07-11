@@ -1,7 +1,7 @@
 import type { ClientMessage, PresetId, ServerMessage, VoiceMember } from "@tavern/shared";
 import { apiClient } from "@/lib/apiClient";
 import { installTestHooks } from "@/lib/testHooks";
-import type { VoiceStats } from "@/lib/testHooks";
+import type { OutboundVideoLayer, VoiceStats } from "@/lib/testHooks";
 import { connectRoom } from "@/lib/wsClient";
 import { AudioGraph } from "@/media/audioGraph";
 import { getMic as browserGetMic, retoggleMic as browserRetoggleMic } from "@/media/capture";
@@ -75,9 +75,7 @@ interface PublishLike {
   readonly state?: PublishState;
   // Optional (test fakes omit it) — per-rid outbound-rtp video summary for the §10 @realtime hook
   // (publisher-side FR-27 fault-domain split; see PublishSession.outboundVideoStats).
-  outboundVideoStats?(
-    trackName: string,
-  ): Promise<Array<{ rid: string | null; frameHeight: number | null; framesSent: number }>>;
+  outboundVideoStats?(trackName: string): Promise<OutboundVideoLayer[]>;
 }
 interface PullLike {
   connect(): Promise<void>;
@@ -172,6 +170,7 @@ export class VoiceController {
   private unsubVoiceState: (() => void) | null = null;
   private unsubReconnect: (() => void) | null = null;
   private unsubTrack: (() => void) | null = null;
+  private unsubSoundPlayed: (() => void) | null = null;
 
   constructor(deps: VoiceDeps) {
     this.deps = deps;
@@ -247,6 +246,16 @@ export class VoiceController {
 
       this.unsubVoiceState = ws.on("voice.state", (m) => this.onVoiceState(m.voice.members));
       this.unsubReconnect = ws.on("hello.ok", () => void this.onReconnect());
+      // FR-36: play soundboard broadcasts for EVERY in-voice member, not only those who opened the
+      // soundboard panel. The frame is self-contained (trims included) so playback needs no query cache;
+      // playSoundboard re-guards inVoice + !deafened. Torn down with the rest of the join in teardown().
+      this.unsubSoundPlayed = ws.on("sound.played", (m) => {
+        void this.playSoundboard(serverId, {
+          id: m.soundId,
+          trimStartMs: m.trimStartMs,
+          trimEndMs: m.trimEndMs,
+        });
+      });
       useMediaStore.getState().setVoiceStatus("joined");
       // Refresh auto-resume snapshot (per-tab, voiceSession.ts): a rejoin on the SAME server keeps
       // camOn (the WebcamController re-asserts it right after its own restart); any other join
@@ -540,9 +549,11 @@ export class VoiceController {
     this.unsubVoiceState?.();
     this.unsubReconnect?.();
     this.unsubTrack?.();
+    this.unsubSoundPlayed?.();
     this.unsubVoiceState = null;
     this.unsubReconnect = null;
     this.unsubTrack = null;
+    this.unsubSoundPlayed = null;
     for (const stop of this.speakingSubs.values()) stop();
     this.speakingSubs.clear();
     for (const id of this.pulledMics) this.deps.graph.detachRemoteMic(id);
@@ -583,9 +594,7 @@ export class VoiceController {
     );
   }
 
-  outboundVideoStatsForTest(
-    trackName: string,
-  ): Promise<Array<{ rid: string | null; frameHeight: number | null; framesSent: number }>> {
+  outboundVideoStatsForTest(trackName: string): Promise<OutboundVideoLayer[]> {
     return this.publish?.outboundVideoStats?.(trackName) ?? Promise.resolve([]);
   }
 

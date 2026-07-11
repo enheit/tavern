@@ -154,6 +154,10 @@ const soundPlayed = z.object({
   soundId: z.uuid(),
   byUserId: z.uuid(),
   at: z.number(),
+  // FR-36: the play frame is self-contained so ANY in-voice client can play it without the soundboard
+  // panel (and its query cache) being mounted — the voice controller plays straight off this receipt.
+  trimStartMs: z.number(),
+  trimEndMs: z.number(),
 });
 const soundUpdated = z.object({ t: z.literal("sound.updated"), at: z.number() });
 // The "screenshots list changed" nudge — broadcast after a screenshot is captured or deleted so every

@@ -24,10 +24,10 @@ import { createScreenshot, deleteScreenshot, listScreenshots } from "./screensho
 import {
   createSound,
   deleteSound,
+  getSoundPlayback,
   listSounds,
   patchSound,
   recordPlay,
-  soundExists,
   TavernError,
 } from "./soundboard";
 import type { Actor, SoundPatch } from "./soundboard";
@@ -557,7 +557,7 @@ export class ServerRoom extends DurableObject<Env> {
     if (!otherLive) await this.leaveVoice(att.userId, now);
   }
 
-  private handleHello(ws: WebSocket, att: ConnAttachment): void {
+  private async handleHello(ws: WebSocket, att: ConnAttachment): Promise<void> {
     const at = Date.now();
     const firstHello = !att.hello;
     if (firstHello) {
@@ -569,7 +569,11 @@ export class ServerRoom extends DurableObject<Env> {
         this.helloTimers.delete(att.connId);
       }
     }
-    // Reconnect replays the full snapshot (§6.2 no delta sync); a repeat hello is idempotent.
+    // Reconnect replays the full snapshot (§6.2 no delta sync); a repeat hello is idempotent. The
+    // active-streams list is read from the RTC registry (async KV) so a client connecting AFTER a
+    // share started still learns it (`stream.added` fires once, at publish). The hello timer was
+    // cleared above (before the await), so nothing closes this socket during the read.
+    const streams = await this.room.activeStreams();
     this.room.send(
       ws,
       this.room.helloSnapshot(
@@ -577,6 +581,7 @@ export class ServerRoom extends DurableObject<Env> {
         this.chat.lastMessageId(),
         this.costMeter.status(at),
         this.recordings.state(),
+        streams,
       ),
     );
     if (firstHello) this.room.presenceOnHello(ws, att.userId, at);
@@ -627,13 +632,21 @@ export class ServerRoom extends DurableObject<Env> {
       this.room.send(ws, { t: "error", code: "rate_limited" });
       return;
     }
-    if (!soundExists(this.ctx.storage.sql, msg.soundId)) {
+    const playback = getSoundPlayback(this.ctx.storage.sql, msg.soundId);
+    if (playback === null) {
       this.room.send(ws, { t: "error", code: "not_found" });
       return;
     }
     this.soundPlayTimes.set(att.userId, at);
     recordPlay(this.ctx.storage.sql, msg.soundId, att.userId, at);
-    this.room.broadcast({ t: "sound.played", soundId: msg.soundId, byUserId: att.userId, at });
+    this.room.broadcast({
+      t: "sound.played",
+      soundId: msg.soundId,
+      byUserId: att.userId,
+      at,
+      trimStartMs: playback.trimStartMs,
+      trimEndMs: playback.trimEndMs,
+    });
   }
 
   // voice.join (FR-18/24): idempotent. A genuinely new join appends the member, opens the session on

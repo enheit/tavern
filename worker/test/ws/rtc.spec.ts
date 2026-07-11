@@ -1,6 +1,6 @@
 import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import { serverMessageSchema } from "@tavern/shared";
+import { DEFAULT_SCREEN_PRESET, serverMessageSchema } from "@tavern/shared";
 import type { MemberInit, ServerMessage } from "@tavern/shared";
 
 const HELLO = JSON.stringify({ t: "hello", proto: 1 });
@@ -150,6 +150,116 @@ describe("FR-19 publish broadcast", () => {
 
     wsA.close();
     wsB.close();
+  });
+});
+
+// The reported bug: a stream started, then a peer joins LATE or REFRESHES → they never saw the
+// one-shot `stream.added`, so their `hello.ok` snapshot must carry the in-progress streams (rebuilt
+// from the RTC registry). Publisher A stays connected throughout (its last-socket close would
+// `rtcCleanupFor` the track away).
+describe("late-join / reconnect stream discovery (hello.ok snapshot)", () => {
+  it("a member connecting AFTER a webcam started sees it in hello.ok (no stream.added for them)", async () => {
+    const stub = freshRoom();
+    const a = memberInit();
+    const b = memberInit();
+    const meta = metaFor(a.userId);
+    await seed(stub, a, meta);
+    await seed(stub, b, meta);
+
+    // A connects, joins voice, and publishes — all BEFORE B ever connects.
+    const { ws: wsA, col: colA } = await connect(stub, a.userId);
+    wsA.send(JSON.stringify({ t: "voice.join" }));
+    await colA.waitForType("voice.state");
+    const pub = await internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish",
+      userId: a.userId,
+      sessionId: "sess-a",
+      tracks: [{ trackName: `cam:${a.userId}`, kind: "cam" }],
+    });
+    expect(await pub.json()).toEqual({ ok: true });
+
+    const { ws: wsB, col: colB } = await connect(stub, b.userId);
+    const helloB = await colB.waitForType("hello.ok");
+    expect(helloB.streams).toContainEqual({
+      trackName: `cam:${a.userId}`,
+      kind: "webcam",
+      userId: a.userId,
+      hasAudio: false,
+      preset: "720p30",
+    });
+
+    wsA.close();
+    wsB.close();
+  });
+
+  it("a screen share with audio surfaces (hasAudio true, screen preset); the audio companion does not", async () => {
+    const stub = freshRoom();
+    const a = memberInit();
+    const b = memberInit();
+    const meta = metaFor(a.userId);
+    await seed(stub, a, meta);
+    await seed(stub, b, meta);
+
+    const { ws: wsA, col: colA } = await connect(stub, a.userId);
+    wsA.send(JSON.stringify({ t: "voice.join" }));
+    await colA.waitForType("voice.state");
+    const pub = await internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish",
+      userId: a.userId,
+      sessionId: "sess-a",
+      tracks: [
+        { trackName: `screen:${a.userId}:1`, kind: "screen" },
+        { trackName: `screenAudio:${a.userId}:1`, kind: "screenAudio" },
+      ],
+    });
+    expect(await pub.json()).toEqual({ ok: true });
+
+    const { ws: wsB, col: colB } = await connect(stub, b.userId);
+    const helloB = await colB.waitForType("hello.ok");
+    expect(helloB.streams).toContainEqual({
+      trackName: `screen:${a.userId}:1`,
+      kind: "screen",
+      userId: a.userId,
+      hasAudio: true,
+      preset: DEFAULT_SCREEN_PRESET,
+    });
+    // screenAudio is audio-only → not a StreamInfo; only the video track surfaces.
+    expect(helloB.streams).toHaveLength(1);
+
+    wsA.close();
+    wsB.close();
+  });
+
+  it("a reconnecting socket still sees the stream on its SECOND hello.ok (refresh)", async () => {
+    const stub = freshRoom();
+    const a = memberInit();
+    const b = memberInit();
+    const meta = metaFor(a.userId);
+    await seed(stub, a, meta);
+    await seed(stub, b, meta);
+
+    const { ws: wsA, col: colA } = await connect(stub, a.userId);
+    wsA.send(JSON.stringify({ t: "voice.join" }));
+    await colA.waitForType("voice.state");
+    await internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish",
+      userId: a.userId,
+      sessionId: "sess-a",
+      tracks: [{ trackName: `cam:${a.userId}`, kind: "cam" }],
+    });
+
+    const { ws: wsB } = await connect(stub, b.userId);
+    wsB.close(); // B refreshes the page.
+
+    // B reconnects with a fresh ticket + socket; its second hello.ok must still carry the stream.
+    const wsB2 = await openSocket(stub, await mintTicket(stub, b.userId));
+    const colB2 = new Collector(wsB2);
+    wsB2.send(HELLO);
+    const helloB2 = await colB2.waitForType("hello.ok");
+    expect(helloB2.streams.some((s) => s.trackName === `cam:${a.userId}`)).toBe(true);
+
+    wsA.close();
+    wsB2.close();
   });
 });
 

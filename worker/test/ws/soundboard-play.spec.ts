@@ -169,8 +169,19 @@ describe("FR-36 sound.play", () => {
     // Broadcast reaches BOTH the sender (A) and the peer (B) — the sender plays on its own receipt.
     const onA = await ca.col.waitForType("sound.played");
     const onB = await cb.col.waitForType("sound.played");
-    expect(onA).toMatchObject({ soundId: sound.id, byUserId: a.userId });
-    expect(onB).toMatchObject({ soundId: sound.id, byUserId: a.userId });
+    // The frame is self-contained (trims included) so any in-voice client plays without the panel.
+    expect(onA).toMatchObject({
+      soundId: sound.id,
+      byUserId: a.userId,
+      trimStartMs: 0,
+      trimEndMs: 1000,
+    });
+    expect(onB).toMatchObject({
+      soundId: sound.id,
+      byUserId: a.userId,
+      trimStartMs: 0,
+      trimEndMs: 1000,
+    });
     expect(typeof onA.at).toBe("number");
     // A row was inserted (playCount reflects it).
     expect(await playCountOf(stub, sound.id)).toBe(1);

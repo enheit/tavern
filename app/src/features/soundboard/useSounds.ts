@@ -5,7 +5,6 @@ import { ApiErrorBody, Sound as SoundSchema, SoundsResponse } from "@tavern/shar
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { authTransport } from "@/lib/authTransport";
 import { connectRoom } from "@/lib/wsClient";
-import { getVoiceController } from "@/features/voice/voiceController";
 
 // FR-34/35/37 soundboard data hook: TanStack Query over the list GET, invalidated on the DO's
 // `sound.updated` broadcast (any client's create/patch/delete), plus upload/patch/delete mutations.
@@ -92,18 +91,16 @@ export function useSounds(serverId: string): UseSounds {
     return conn.on("sound.updated", invalidate);
   }, [serverId, invalidate]);
 
-  // FR-36/37: on a `sound.played` broadcast, always bump the badge (no reorder), then play locally —
-  // the controller guards on inVoice && !deafened, so non-voice/deafened members only see the badge.
+  // FR-37: on a `sound.played` broadcast, bump the badge in place (no reorder). Playback is NOT wired
+  // here — the voice controller plays the self-contained frame for every in-voice member, so a member
+  // who never opened this panel still hears it (the old panel-scoped listener silently dropped audio
+  // for them). The controller guards on inVoice && !deafened.
   useEffect(() => {
     const conn = connectRoom(serverId);
     return conn.on("sound.played", (msg) => {
       queryClient.setQueryData<SoundsResponse>(soundsKey(serverId), (prev) =>
         bumpPlayCount(prev, msg.soundId),
       );
-      const sound = queryClient
-        .getQueryData<SoundsResponse>(soundsKey(serverId))
-        ?.sounds.find((s) => s.id === msg.soundId);
-      if (sound !== undefined) void getVoiceController().playSoundboard(serverId, sound);
     });
   }, [serverId, queryClient]);
 

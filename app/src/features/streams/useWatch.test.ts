@@ -94,6 +94,23 @@ class FakeWs {
   }
 }
 
+// A full room resnapshot frame (§6.2). Only its `t` matters to the controller; the FakeWs relays
+// it unvalidated, so the remaining fields just satisfy the ServerMessage type.
+function helloOk(): Extract<ServerMessage, { t: "hello.ok" }> {
+  return {
+    t: "hello.ok",
+    self: { userId: UID, username: "u", displayName: "U", color: "#abcdef" },
+    serverMeta: { id: "srv", nickname: "n", adminUserId: UID },
+    members: [],
+    voice: { members: [], sessionStartedAt: null },
+    streams: [makeStream()],
+    recording: { active: false },
+    status: "",
+    lastMessageId: null,
+    costStatus: { usedGB: 0, capGB: 100, blocked: false },
+  };
+}
+
 function makeSink(): {
   attachStreamAudio: ReturnType<typeof vi.fn<(streamKey: string, stream: MediaStream) => void>>;
   detachStreamAudio: ReturnType<typeof vi.fn<(streamKey: string) => void>>;
@@ -227,6 +244,29 @@ describe("FR-30 opt-in watching", () => {
     // A stream.removed for a DIFFERENT track leaves an idle controller untouched.
     h.ws.emit({ t: "stream.removed", trackName: "screen:other:1", at: 2 });
     expect(controller.state).toBe("idle");
+  });
+
+  it("a hello.ok resnapshot resets a live watch to idle (no zombie on transient reconnect)", async () => {
+    const stream = makeStream({ hasAudio: true });
+    const h = harness();
+    const controller = new WatchController(stream, h.deps);
+    controller.watch();
+    await flush();
+    expect(controller.state).toBe("watching");
+
+    // A transient reconnect replays the full snapshot; the server already swept this viewer's
+    // grant/session/meter on the preceding disconnect, so the live pull is orphaned. The controller
+    // must reset to idle (Placeholder + Watch) instead of sitting stuck in `watching`.
+    h.ws.emit(helloOk());
+    await flush();
+
+    expect(controller.state).toBe("idle");
+    expect(controller.mediaStream).toBeNull();
+    expect(h.pull.closed).toBe(true);
+    expect(h.sink.detachStreamAudio).toHaveBeenCalledWith(`${UID}:screen`);
+    expect(h.ws.sent.some((mm) => mm.t === "watch.stop" && mm.trackName === stream.trackName)).toBe(
+      true,
+    );
   });
 
   it("grant error surfaces typed store status and returns to idle", async () => {

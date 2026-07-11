@@ -32,9 +32,14 @@ interface PullLike {
   ): () => void;
   addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>): Promise<void>;
   setLayer(trackName: string, rid: "h" | "l"): Promise<void>;
-  // Inbound-video getStats (framesDecoded/frameHeight) — surfaced to the §10 @realtime hook. Optional so
-  // a test double may omit it; the real PullSession implements it.
-  inboundVideoStats?(): Promise<{ framesDecoded: number; frameHeight: number | null }>;
+  // Inbound-video getStats (framesDecoded/frameHeight/bytes/fps) — surfaced to the §10 @realtime hook.
+  // Optional so a test double may omit it; the real PullSession implements it.
+  inboundVideoStats?(): Promise<{
+    framesDecoded: number;
+    frameHeight: number | null;
+    bytesReceived: number;
+    framesPerSecond: number | null;
+  }>;
   close(): Promise<void>;
 }
 
@@ -67,6 +72,7 @@ export class WatchController {
   private unsubTrack: (() => void) | null = null;
   private unsubRemoved: (() => void) | null = null;
   private unsubError: (() => void) | null = null;
+  private unsubResnapshot: (() => void) | null = null;
 
   constructor(stream: StreamInfo, deps: WatchDeps) {
     this.stream = stream;
@@ -141,6 +147,16 @@ export class WatchController {
       )
         this.failGrant(msg.code);
     });
+    // A `hello.ok` resnapshot (§6.2) means the server REPLACED room state — including revoking THIS
+    // viewer's pull grant, SFU session, and cost-meter watch during the disconnect that preceded the
+    // reconnect (rtcCleanupFor). Our dedicated pull is now orphaned. On a FULL page reload this
+    // controller does not exist (new JS context, empty watchRegistry); this fires only on a TRANSIENT
+    // reconnect in the SAME context, where the snapshot re-lists the same trackName so the tile
+    // re-renders IN PLACE (stable key) instead of unmounting — without this we would sit stuck in
+    // `watching` over a dead grant (a "zombie watch": frozen video, setLayer no-ops, wrong indicator).
+    // Reset to idle so the tile shows the Placeholder + Watch button; the user re-arms once voice has
+    // rejoined (a pull needs an SFU session, granted only to in-voice users).
+    this.unsubResnapshot = ws.on("hello.ok", () => this.onResnapshot());
     void this.startPull(serverId);
   }
 
@@ -151,7 +167,14 @@ export class WatchController {
     // §10 @realtime hook: expose this watch pull's inbound-video getStats by trackName (FR-27/32/33).
     setWatchVideoStats(
       this.stream.trackName,
-      () => pull.inboundVideoStats?.() ?? Promise.resolve({ framesDecoded: 0, frameHeight: null }),
+      () =>
+        pull.inboundVideoStats?.() ??
+        Promise.resolve({
+          framesDecoded: 0,
+          frameHeight: null,
+          bytesReceived: 0,
+          framesPerSecond: null,
+        }),
     );
     // G3: grid tiles pin the low simulcast layer; audio (screen loopback) has no rid.
     const tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }> = [
@@ -190,6 +213,14 @@ export class WatchController {
     this.finish();
   }
 
+  // Revert a live watch to idle when the room resnapshots (transient reconnect). Same clean teardown
+  // as unwatch(): closes the orphaned pull and sends watch.stop (a no-op server-side, the grant was
+  // already swept), leaving the tile on its Placeholder + Watch button.
+  private onResnapshot(): void {
+    if (this.stateValue === "idle") return;
+    this.finish();
+  }
+
   // FR-33: quality follows tile size — a focused tile pulls the high layer, a grid tile the low one.
   // tracks/update on the existing pull, no PC teardown.
   setLayer(rid: "h" | "l"): void {
@@ -203,9 +234,11 @@ export class WatchController {
     this.unsubTrack?.();
     this.unsubRemoved?.();
     this.unsubError?.();
+    this.unsubResnapshot?.();
     this.unsubTrack = null;
     this.unsubRemoved = null;
     this.unsubError = null;
+    this.unsubResnapshot = null;
     this.deps.sink()?.detachStreamAudio(this.streamKey());
     clearWatchVideoStats(this.stream.trackName);
     void this.pull?.close();

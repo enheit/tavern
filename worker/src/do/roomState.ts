@@ -399,6 +399,28 @@ export class RoomState {
     return null;
   }
 
+  // The active watchable streams (screen/cam) for the `hello.ok` snapshot (§6.2): every video track
+  // still registered in the RTC registry, rebuilt into StreamInfo via the SAME mapping the live
+  // `stream.added` broadcast uses (`hasAudio` read straight from the registered track, baked at publish
+  // in `rtcAuthorize` op:publish). This is how a LATE joiner or a RECONNECTING client learns about a
+  // share that started BEFORE they connected — `stream.added` fires once, at publish time, so a client
+  // absent then would otherwise never see it. mic/screenAudio are audio-only (streamInfoFor → null).
+  async activeStreams(): Promise<StreamInfo[]> {
+    const reg = await this.readRtc();
+    const streams: StreamInfo[] = [];
+    for (const [trackName, track] of Object.entries(reg.tracks)) {
+      const info = this.streamInfoFor(
+        trackName,
+        track.kind,
+        track.preset,
+        track.userId,
+        track.hasAudio ?? false,
+      );
+      if (info !== null) streams.push(info);
+    }
+    return streams;
+  }
+
   // The single authorize entry (dispatched from ServerRoom's /internal/rtc/authorize). Ordering pins
   // per §6.1 task 5. `meter` gates the pull kill switch (G5) + reprices on layer.
   async rtcAuthorize(req: RtcAuthorizeReq, meter: CostMeter, at: number): Promise<RtcAuthorizeRes> {
@@ -641,6 +663,7 @@ export class RoomState {
     lastMessageId: number,
     costStatus: CostStatus,
     recording: RecordingState,
+    streams: StreamInfo[],
   ): HelloOk {
     const meta = invariant(this.meta, "room meta not initialized");
     const members = this.listMembers();
@@ -654,9 +677,11 @@ export class RoomState {
       serverMeta: meta,
       members,
       // Live voice snapshot (S3.4) + live cost meter (S7.1) + live recording pointer (S9.3, from
-      // RecordingsModule.state). Remaining stub: streams (S8). lastMessageId from ChatModule (S3.2).
+      // RecordingsModule.state) + the active streams (S8), passed in by the caller from
+      // `activeStreams()` so a late joiner / reconnect learns in-progress shares. lastMessageId from
+      // ChatModule (S3.2).
       voice: this.voice,
-      streams: [],
+      streams,
       recording,
       status: this.status,
       lastMessageId,

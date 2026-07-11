@@ -150,9 +150,18 @@ export function deleteSound(sql: SqlStorage, soundId: string, actor: Actor): { r
   return { r2Key: owner.r2Key };
 }
 
-// True when a sound row with this id exists (FR-36 `sound.play` guard: unknown soundId → not_found).
-export function soundExists(sql: SqlStorage, soundId: string): boolean {
-  return sql.exec(`SELECT 1 FROM sounds WHERE id = ? LIMIT 1`, soundId).toArray().length > 0;
+// FR-36 playback trims for a `sound.played` broadcast — null when the sound is gone (also serves as the
+// `sound.play` existence guard: unknown soundId → not_found). Sent in the frame so every in-voice client
+// plays without the panel.
+export function getSoundPlayback(
+  sql: SqlStorage,
+  soundId: string,
+): { trimStartMs: number; trimEndMs: number } | null {
+  const row = sql
+    .exec<SoundRow>(`SELECT trim_start_ms, trim_end_ms FROM sounds WHERE id = ? LIMIT 1`, soundId)
+    .toArray()[0];
+  if (row === undefined) return null;
+  return { trimStartMs: Number(row["trim_start_ms"]), trimEndMs: Number(row["trim_end_ms"]) };
 }
 
 // Records one play (FR-36/37): appends a `sound_plays` detail row (who/when RETAINED per §5.2). The
