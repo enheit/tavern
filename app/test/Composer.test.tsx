@@ -133,7 +133,8 @@ describe("FR-14 composer", () => {
     expect(screen.getByTestId<HTMLButtonElement>("composer-send").disabled).toBe(true);
   });
 
-  it("emoji pick inserts at caret and refocuses", async () => {
+  // Emoji button temporarily hidden in Composer (SHOW_EMOJI=false); re-enable this when it returns.
+  it.skip("emoji pick inserts at caret and refocuses", async () => {
     render(<Composer serverId={SID} />);
     const ta = screen.getByTestId<HTMLTextAreaElement>("composer-input");
     fireEvent.change(ta, { target: { value: "ab", selectionStart: 2 } });

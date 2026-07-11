@@ -31,6 +31,8 @@ const COUNTER_THRESHOLD = 1800; // the live counter appears strictly above this 
 const MAX_ROWS = 5;
 // The word immediately left of the caret, when it is an `@handle` — opens the autocomplete.
 const MENTION_WORD = /(?:^|\s)(@[a-z0-9_]*)$/i;
+// Emoji picker temporarily hidden (per request); flip back to re-enable the button + popover.
+const SHOW_EMOJI = false;
 
 interface MentionState {
   query: string;
@@ -145,7 +147,7 @@ export function Composer({ serverId }: { serverId: string }) {
   }
 
   return (
-    <div data-testid="composer" className="relative border-t p-2">
+    <div data-testid="composer" className="relative p-2">
       {autocompleteOpen ? (
         <MentionAutocomplete
           suggestions={suggestions}
@@ -153,51 +155,57 @@ export function Composer({ serverId }: { serverId: string }) {
           onPick={pickMention}
         />
       ) : null}
-      <div className="flex items-end gap-2">
-        <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
-          <PopoverTrigger
-            data-testid="composer-emoji"
-            aria-label={m.chat_emoji_label()}
-            className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+      <div className="flex flex-col gap-2">
+        <div className="flex items-end gap-2">
+          {SHOW_EMOJI ? (
+            <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
+              <PopoverTrigger
+                data-testid="composer-emoji"
+                aria-label={m.chat_emoji_label()}
+                className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              >
+                <SmileIcon className="size-5" />
+              </PopoverTrigger>
+              <PopoverContent
+                data-testid="emoji-popover"
+                align="start"
+                side="top"
+                className="w-[320px] p-0"
+              >
+                <EmojiPicker
+                  emojibaseUrl="/emojibase"
+                  onEmojiSelect={(picked) => insertEmoji(picked.emoji)}
+                  className="h-[352px]"
+                >
+                  <EmojiPickerSearch />
+                  <EmojiPickerContent />
+                  <EmojiPickerFooter />
+                </EmojiPicker>
+              </PopoverContent>
+            </Popover>
+          ) : null}
+          <textarea
+            ref={textareaRef}
+            data-testid="composer-input"
+            value={value}
+            rows={rows}
+            onChange={onChange}
+            onKeyDown={onKeyDown}
+            placeholder={m.chat_composer_placeholder()}
+            className="min-h-9 flex-1 resize-none rounded-md border bg-transparent px-3 py-1.5 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+        </div>
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            size="sm"
+            data-testid="composer-send"
+            disabled={!canSend}
+            onClick={submit}
           >
-            <SmileIcon className="size-5" />
-          </PopoverTrigger>
-          <PopoverContent
-            data-testid="emoji-popover"
-            align="start"
-            side="top"
-            className="w-[320px] p-0"
-          >
-            <EmojiPicker
-              emojibaseUrl="/emojibase"
-              onEmojiSelect={(picked) => insertEmoji(picked.emoji)}
-              className="h-[352px]"
-            >
-              <EmojiPickerSearch />
-              <EmojiPickerContent />
-              <EmojiPickerFooter />
-            </EmojiPicker>
-          </PopoverContent>
-        </Popover>
-        <textarea
-          ref={textareaRef}
-          data-testid="composer-input"
-          value={value}
-          rows={rows}
-          onChange={onChange}
-          onKeyDown={onKeyDown}
-          placeholder={m.chat_composer_placeholder()}
-          className="min-h-9 flex-1 resize-none rounded-md border bg-transparent px-3 py-1.5 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        />
-        <Button
-          type="button"
-          size="sm"
-          data-testid="composer-send"
-          disabled={!canSend}
-          onClick={submit}
-        >
-          {m.chat_composer_send()}
-        </Button>
+            {m.chat_composer_send()}
+          </Button>
+        </div>
       </div>
       {showCounter ? (
         <div

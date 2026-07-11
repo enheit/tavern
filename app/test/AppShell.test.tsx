@@ -7,8 +7,8 @@ import { resetRoomStores } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
 import { closeAllRooms } from "@/lib/wsClient";
 
-// The slot-soundboard region now mounts SoundboardPanel → useSounds (TanStack Query), so the shell
-// needs a QueryClientProvider; retries off so the failing test-env fetch does not schedule work.
+// The tabs render TanStack Query consumers (e.g. the soundboard tab now mounts SoundboardPanel →
+// useSounds), so the shell needs a QueryClientProvider; retries off so failing test-env fetches don't schedule work.
 const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 beforeEach(() => {
@@ -45,7 +45,6 @@ describe("shell layout", () => {
       "slot-canvas",
       "slot-controls",
       "slot-tabs",
-      "slot-soundboard",
     ]) {
       expect(screen.getByTestId(id)).toBeDefined();
     }

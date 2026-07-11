@@ -3,7 +3,7 @@ import { type ReactNode, useState } from "react";
 import { cn } from "@/lib/utils";
 import { getLocale } from "@/paraglide/runtime.js";
 
-// One chat row (FR-14/15/17): 32px avatar, displayName in the member's color, HH:mm time, and a
+// One chat row (FR-14/15/17): a small avatar + displayName in the member's color, HH:mm time, and a
 // pre-wrapped body with `@mention` highlighting. A row with a negative (synthetic) id is a pending
 // optimistic echo (§ room store) and renders at 60% opacity until the server echo replaces it.
 interface MessageRowProps {
@@ -52,6 +52,8 @@ function renderBody(
   });
 }
 
+// A really small (16px) avatar rendered inline before the nickname; falls back to a colored
+// initial block when the member is unknown or the avatar image 404s.
 function RowAvatar({ member }: { member: Member | undefined }) {
   const [failed, setFailed] = useState(false);
   const color = member?.color ?? "#71717a";
@@ -59,7 +61,7 @@ function RowAvatar({ member }: { member: Member | undefined }) {
   if (member === undefined || failed) {
     return (
       <span
-        className="flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-medium text-white"
+        className="flex size-4 shrink-0 items-center justify-center rounded-full text-[9px] font-medium text-white"
         style={{ backgroundColor: color }}
       >
         {initial}
@@ -71,7 +73,7 @@ function RowAvatar({ member }: { member: Member | undefined }) {
       src={`/api/media/avatars/${member.userId}.webp`}
       alt={member.displayName}
       onError={() => setFailed(true)}
-      className="size-8 shrink-0 rounded-full bg-muted object-cover"
+      className="size-4 shrink-0 rounded-full bg-muted object-cover"
     />
   );
 }
@@ -82,14 +84,19 @@ export function MessageRow({ message, member, selfUserId, selfUsername }: Messag
   return (
     <li
       data-testid={`message-${message.id}`}
-      className={cn("flex gap-2 px-3 py-1", pending && "opacity-60")}
+      className={cn("px-3 py-1", pending && "opacity-60")}
     >
-      <RowAvatar member={member} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="truncate text-sm font-medium" style={{ color: member?.color }}>
-            {displayName}
-          </span>
+      <div className="min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <RowAvatar member={member} />
+            <span
+              className="min-w-0 truncate text-sm font-medium"
+              style={{ color: member?.color }}
+            >
+              {displayName}
+            </span>
+          </div>
           <time className="shrink-0 text-xs text-muted-foreground">{formatTime(message.at)}</time>
         </div>
         <div

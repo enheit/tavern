@@ -2,7 +2,6 @@ import type { CSSProperties } from "react";
 import { ChatTabs } from "@/features/chat/ChatTabs";
 import { ChannelsPanel } from "@/features/servers/ChannelsPanel";
 import { PeoplePanel } from "@/features/servers/PeoplePanel";
-import { SoundboardPanel } from "@/features/soundboard/SoundboardPanel";
 import { Canvas } from "@/features/streams/Canvas";
 import { ControlsBar } from "./ControlsBar";
 import { CostBanner } from "./CostBanner";
@@ -10,8 +9,8 @@ import { Header } from "./Header";
 
 // The persistent app shell laid out exactly per §7.6. Pinned CSS grid: header spans all columns; the
 // left column (rows 2–3) stacks Channels over People; the center splits into a canvas slot (row 2) and
-// a controls slot (row 3); the right column (rows 2–3) stacks a tabs slot over a fixed soundboard slot.
-// The canvas/controls/tabs/soundboard slots are empty named placeholders filled by S6.1/S7.3/S8.2/S9.1.
+// a controls slot (row 3); the right column (rows 2–3) holds the tabs slot (the soundboard now lives as
+// a tab inside ChatTabs — temporary, pending restructure). Slots are filled by S6.1/S7.3/S8.2/S9.1.
 const GRID: CSSProperties = {
   display: "grid",
   gridTemplateRows: "40px 1fr 56px",
@@ -54,9 +53,6 @@ export function AppShell({ serverId }: { serverId: string }) {
       <div style={{ gridArea: "right" }} className="flex min-h-0 flex-col border-l bg-card">
         <div data-testid="slot-tabs" className="min-h-0 flex-1 overflow-hidden">
           <ChatTabs serverId={serverId} />
-        </div>
-        <div data-testid="slot-soundboard" className="h-[280px] shrink-0 border-t">
-          <SoundboardPanel serverId={serverId} />
         </div>
       </div>
     </div>

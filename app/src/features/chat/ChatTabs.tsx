@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ActivityTab } from "@/features/activity/ActivityTab";
 import { RecordingsTab } from "@/features/recordings/RecordingsTab";
+import { SoundboardPanel } from "@/features/soundboard/SoundboardPanel";
 import { StatsTab } from "@/features/stats/StatsTab";
 import { m } from "@/paraglide/messages.js";
 import { Composer } from "./Composer";
@@ -32,6 +33,9 @@ export function ChatTabs({ serverId }: { serverId: string }) {
         <TabsTrigger value="recordings" data-testid="tab-recordings">
           {m.tabs_recordings()}
         </TabsTrigger>
+        <TabsTrigger value="soundboard" data-testid="tab-soundboard">
+          {m.soundboard_title()}
+        </TabsTrigger>
       </TabsList>
       <TabsContent value="chat" className="flex min-h-0 flex-1 flex-col">
         <MessageList serverId={serverId} />
@@ -45,6 +49,11 @@ export function ChatTabs({ serverId }: { serverId: string }) {
       </TabsContent>
       <TabsContent value="recordings" className="min-h-0 flex-1">
         <RecordingsTab serverId={serverId} />
+      </TabsContent>
+      {/* Soundboard temporarily lives as a tab (moved out from under the chat); will be
+          restructured. Reuses the existing `soundboard_title` message for the label. */}
+      <TabsContent value="soundboard" className="min-h-0 flex-1">
+        <SoundboardPanel serverId={serverId} />
       </TabsContent>
     </Tabs>
   );
