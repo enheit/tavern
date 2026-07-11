@@ -130,7 +130,15 @@ const report = {
 //   the client retries until it lands (S12.3 voiceController fix). Chrome logs every failed HTTP
 //   response to the console — the entry itself is not a failure. A pull that NEVER recovers still
 //   fails the soak: the unhandled rejection surfaces as a pageerror and watches never connect.
-const NOISE = [/\/api\/media\/avatars\//, /403.*\/api\/rtc\/.+\/tracks/];
+// - 503 on /api/rtc/:id/tracks — LOCAL wrangler dev under the 10-client join burst answers sporadic
+//   503s before the request reaches Worker code (S12.4 nightly ×2: worker code emits no 503 anywhere;
+//   an upstream-SFU failure maps to the enveloped 502 since the bounded-retry change, so an observed
+//   503 is provably the dev runtime). Same recovery story + backstop as the 403 line above.
+const NOISE = [
+  /\/api\/media\/avatars\//,
+  /403.*\/api\/rtc\/.+\/tracks/,
+  /503.*\/api\/rtc\/.+\/tracks/,
+];
 function recordError(source, text) {
   if (NOISE.some((re) => re.test(text))) return;
   report.errorCount += 1;
