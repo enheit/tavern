@@ -55,6 +55,11 @@ export function createElectronPlatform(ipc: TavernIpc): PlatformBridge {
       getScreenSources: () => ipc.capture.getScreenSources(),
       selectSource: (id) => ipc.capture.selectSource(selectSourceArgSchema.parse(id)),
       loopbackAudioSupported: () => ipc.capture.loopbackAudioSupported(),
+      loopbackSelfAudioExcluded: ipc.loopbackSelfAudioExcluded,
+      screenAccessStatus: () => ipc.capture.screenAccessStatus(),
+      openScreenRecordingSettings: () => {
+        void ipc.capture.openScreenRecordingSettings();
+      },
     },
     notifications: {
       show: (n) => {

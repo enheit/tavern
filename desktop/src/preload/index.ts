@@ -2,7 +2,9 @@ import { contextBridge, ipcRenderer } from "electron";
 import { z } from "zod";
 import {
   ScreenSourceSchema,
+  loopbackAudioDevice,
   platformSchema,
+  screenAccessStatusSchema,
   setTokenArgSchema,
   updateInfoSchema,
 } from "@tavern/shared";
@@ -19,6 +21,12 @@ const api: TavernIpc = {
   // §10: the e2e harness launches with TAVERN_E2E=1; the renderer reads this static flag (via the
   // platform bridge) to install the test hooks. Sandboxed preloads still expose process.env.
   isE2E: process.env.TAVERN_E2E === "1",
+  // Static per-boot fact (no invoke channel): whether the loopback device the main-process
+  // display-media handler will pick excludes Tavern's own audio (Windows 20348+ process loopback).
+  // getSystemVersion is Electron-only — optional-chained so plain-Node unit tests can import this.
+  loopbackSelfAudioExcluded:
+    loopbackAudioDevice(process.platform, process.getSystemVersion?.() ?? "") ===
+    "loopbackWithoutChrome",
   secrets: {
     async getToken() {
       const value: unknown = await ipcRenderer.invoke("secrets:getToken");
@@ -39,6 +47,13 @@ const api: TavernIpc = {
     async loopbackAudioSupported() {
       const value: unknown = await ipcRenderer.invoke("capture:loopbackAudioSupported");
       return booleanSchema.parse(value);
+    },
+    async screenAccessStatus() {
+      const value: unknown = await ipcRenderer.invoke("capture:screenAccessStatus");
+      return screenAccessStatusSchema.parse(value);
+    },
+    async openScreenRecordingSettings() {
+      await ipcRenderer.invoke("capture:openScreenRecordingSettings");
     },
   },
   notifications: {

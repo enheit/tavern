@@ -5,6 +5,7 @@ import { errorMessage } from "@/lib/errorMessage";
 import { connectRoom } from "@/lib/wsClient";
 import { captureScreen } from "@/media/capture";
 import { m } from "@/paraglide/messages.js";
+import { platform } from "@/platform/types";
 import { getVoiceController } from "@/features/voice/voiceController";
 import { useMediaStore } from "@/stores/media";
 import type { ShareSelection } from "./types";
@@ -41,9 +42,12 @@ export interface ScreenShareDeps {
 
 const CAVEAT_FLAG = "tavern.selfAudioCaveatShown.v1";
 
-// FR-28 pinned limitation: loopback captures ALL system audio (Tavern voices/soundboard leak into
-// the stream). Shown once, the first time a share starts with audio, gated by a localStorage flag.
+// FR-28 limitation: loopback captures ALL system audio (Tavern voices/soundboard leak into the
+// stream). Shown once, the first time a share starts with audio, gated by a localStorage flag.
+// Moot where capture excludes Tavern's own audio ("loopbackWithoutChrome": Windows 20348+ and
+// macOS) — there the toast would be a lie, so it is skipped entirely.
 export function showSelfAudioCaveatOnce(): void {
+  if (platform.capture.loopbackSelfAudioExcluded) return;
   const store = typeof localStorage === "undefined" ? null : localStorage;
   if (store?.getItem(CAVEAT_FLAG) === "1") return;
   toast(m.streams_self_audio_caveat());

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { BasePresetId, PresetId, ScreenSource } from "@tavern/shared";
+import type { BasePresetId, PresetId, ScreenAccessStatus, ScreenSource } from "@tavern/shared";
 import { BASE_PRESET_IDS, DEFAULT_SCREEN_PRESET, PRESET_IDS } from "@tavern/shared";
 import { Button } from "@/components/ui/button";
 import {
@@ -63,12 +63,20 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
   const [preset, setPreset] = useState<PresetId>(DEFAULT_SCREEN_PRESET);
   const [loopbackSupported, setLoopbackSupported] = useState(false);
   const [withAudio, setWithAudio] = useState(false);
+  // Defaults to "granted" so the permission hint never flashes while the real status loads.
+  const [accessStatus, setAccessStatus] = useState<ScreenAccessStatus>("granted");
 
   useEffect(() => {
     if (!open || !isDesktop) return;
     let cancelled = false;
+    // On macOS the getSources call below is also what registers Tavern in the Screen Recording
+    // privacy list (and triggers the one-time system prompt on 15+) — keep it before the status
+    // read so a fresh install lands in System Settings with the row already present.
     void platform.capture.getScreenSources().then((list) => {
       if (!cancelled) setSources(list);
+    });
+    void platform.capture.screenAccessStatus().then((status) => {
+      if (!cancelled) setAccessStatus(status);
     });
     void platform.capture.loopbackAudioSupported().then((ok) => {
       if (!cancelled) setLoopbackSupported(ok);
@@ -100,7 +108,26 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
           {!isDesktop && <DialogDescription>{m.streams_share_web_hint()}</DialogDescription>}
         </DialogHeader>
         <div className="flex flex-col gap-4">
-          {isDesktop && (
+          {isDesktop &&
+            accessStatus !== "granted" && (
+              // macOS denies the whole source list without the Screen Recording permission — the
+              // tabs would both be empty grids, so route to System Settings instead.
+              <div
+                data-testid="share-permission-hint"
+                className="flex flex-col gap-3 rounded-lg border border-border bg-muted/50 p-4"
+              >
+                <p className="text-sm text-muted-foreground">{m.streams_share_permission_hint()}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  data-testid="share-open-settings"
+                  onClick={() => platform.capture.openScreenRecordingSettings()}
+                >
+                  {m.streams_share_open_settings()}
+                </Button>
+              </div>
+            )}
+          {isDesktop && accessStatus === "granted" && (
             <Tabs defaultValue="screens">
               <TabsList>
                 <TabsTrigger value="screens" data-testid="share-tab-screens">

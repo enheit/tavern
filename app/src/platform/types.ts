@@ -1,4 +1,4 @@
-import type { ScreenSource } from "@tavern/shared";
+import type { ScreenAccessStatus, ScreenSource } from "@tavern/shared";
 import { createElectronPlatform, desktopIpc } from "./electron";
 import { createWebPlatform } from "./web";
 
@@ -17,6 +17,15 @@ export interface PlatformBridge {
     getScreenSources(): Promise<ScreenSource[]>;
     selectSource(id: string | null): Promise<void>;
     loopbackAudioSupported(): Promise<boolean>;
+    // True when loopback capture excludes Tavern's own audio ("loopbackWithoutChrome": Windows
+    // 20348+ process loopback, macOS tap/SCK exclusion) — the FR-28 self-audio caveat toast is
+    // skipped. Static per boot.
+    loopbackSelfAudioExcluded: boolean;
+    // macOS TCC Screen Recording state — anything but "granted" means the screen list is empty by
+    // OS policy, and the picker shows the grant-permission hint. Always "granted" on win32/linux/web.
+    screenAccessStatus(): Promise<ScreenAccessStatus>;
+    // Deep-links System Settings → Privacy & Security → Screen Recording on macOS; no-op elsewhere.
+    openScreenRecordingSettings(): void;
   };
   notifications: {
     show(n: { title: string; body: string; tag: string }): Promise<void>;

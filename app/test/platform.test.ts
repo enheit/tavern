@@ -14,9 +14,12 @@ describe("platform/web", () => {
     expect(p.kind).toBe("web");
     expect(await p.capture.getScreenSources()).toEqual([]);
     expect(await p.capture.loopbackAudioSupported()).toBe(false);
+    expect(p.capture.loopbackSelfAudioExcluded).toBe(false);
+    expect(await p.capture.screenAccessStatus()).toBe("granted");
     expect(await p.secrets.getToken()).toBeNull();
     await p.secrets.setToken("ignored"); // no throw
     await p.capture.selectSource(null); // no throw
+    p.capture.openScreenRecordingSettings(); // no throw
 
     const offUpdate = p.updates.onUpdateReady(() => undefined);
     expect(typeof offUpdate).toBe("function");
@@ -62,6 +65,8 @@ function makeIpc(): TavernIpc {
   return {
     platform: "darwin",
     isE2E: false,
+    // true to prove the bridge passes the value through rather than defaulting it.
+    loopbackSelfAudioExcluded: true,
     secrets: {
       getToken: vi.fn(async () => "tok"),
       setToken: vi.fn(async () => undefined),
@@ -70,6 +75,8 @@ function makeIpc(): TavernIpc {
       getScreenSources: vi.fn(async () => []),
       selectSource: vi.fn(async () => undefined),
       loopbackAudioSupported: vi.fn(async () => true),
+      screenAccessStatus: vi.fn(async () => "denied" as const),
+      openScreenRecordingSettings: vi.fn(async () => undefined),
     },
     notifications: {
       show: vi.fn(async () => undefined),
@@ -91,11 +98,15 @@ describe("platform/electron", () => {
     const ipc = makeIpc();
     const p = createElectronPlatform(ipc);
     expect(p.kind).toBe("desktop");
+    expect(p.capture.loopbackSelfAudioExcluded).toBe(true);
 
     await p.secrets.setToken("abc");
     expect(ipc.secrets.setToken).toHaveBeenCalledWith("abc");
     await p.capture.selectSource(null);
     expect(ipc.capture.selectSource).toHaveBeenCalledWith(null);
+    expect(await p.capture.screenAccessStatus()).toBe("denied");
+    p.capture.openScreenRecordingSettings();
+    expect(ipc.capture.openScreenRecordingSettings).toHaveBeenCalledTimes(1);
     await p.notifications.show({ title: "t", body: "b", tag: "tag" });
     expect(ipc.notifications.show).toHaveBeenCalledWith({ title: "t", body: "b", tag: "tag" });
     p.shell.setBadge(5);

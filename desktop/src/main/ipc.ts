@@ -6,7 +6,7 @@ import {
   setBadgeArgSchema,
   setTokenArgSchema,
 } from "@tavern/shared";
-import type { ScreenSource } from "@tavern/shared";
+import type { ScreenAccessStatus, ScreenSource } from "@tavern/shared";
 
 // Main-side implementations the bridge dispatches to. Kept injectable so the bridge concern
 // (origin check + zod parse + dispatch) is tested in isolation from capture/secrets/etc.
@@ -16,6 +16,8 @@ export interface IpcServices {
     getScreenSources(): Promise<ScreenSource[]>;
     selectSource(id: string | null): Promise<void>;
     loopbackAudioSupported(): boolean | Promise<boolean>;
+    screenAccessStatus(): Promise<ScreenAccessStatus>;
+    openScreenRecordingSettings(): Promise<void>;
   };
   notifications: {
     show(payload: { title: string; body: string; tag: string }): void | Promise<void>;
@@ -61,6 +63,14 @@ export function registerIpc(services: IpcServices): void {
   ipcMain.handle("capture:loopbackAudioSupported", async (event) => {
     assertTrustedSender(event);
     return services.capture.loopbackAudioSupported();
+  });
+  ipcMain.handle("capture:screenAccessStatus", async (event) => {
+    assertTrustedSender(event);
+    return services.capture.screenAccessStatus();
+  });
+  ipcMain.handle("capture:openScreenRecordingSettings", async (event) => {
+    assertTrustedSender(event);
+    return services.capture.openScreenRecordingSettings();
   });
   ipcMain.handle("notifications:show", async (event, arg: unknown) => {
     assertTrustedSender(event);

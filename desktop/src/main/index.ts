@@ -3,6 +3,8 @@ import { app } from "electron";
 import {
   getScreenSources,
   loopbackAudioSupported,
+  openScreenRecordingSettings,
+  screenAccessStatus,
   selectSource,
   setupDisplayMediaHandler,
 } from "./capture";
@@ -20,7 +22,13 @@ import { createWindow, focusMainWindow, setAppBadge } from "./window";
 function buildServices(): IpcServices {
   return {
     secrets: { getToken, setToken },
-    capture: { getScreenSources, selectSource, loopbackAudioSupported },
+    capture: {
+      getScreenSources,
+      selectSource,
+      loopbackAudioSupported,
+      screenAccessStatus,
+      openScreenRecordingSettings,
+    },
     notifications: { show: showNotification },
     updates: { restartToUpdate },
     shell: {

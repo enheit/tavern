@@ -43,6 +43,7 @@ export const state = {
   registeredSchemes: [] as unknown[],
   protocolHandlers: new Map<string, (request: Request) => Response | Promise<Response>>(),
   sources: [] as FakeSource[],
+  mediaAccessStatus: "granted" as string,
 };
 
 export function emitAppEvent(name: string, ...args: unknown[]): void {
@@ -134,6 +135,10 @@ export const desktopCapturer = {
 
 export const shell = {
   openExternal: vi.fn((_url: string) => Promise.resolve()),
+};
+
+export const systemPreferences = {
+  getMediaAccessStatus: vi.fn((_mediaType: string) => state.mediaAccessStatus),
 };
 
 export const safeStorage = {
@@ -237,5 +242,6 @@ export function resetElectronMock(): void {
   state.registeredSchemes = [];
   state.protocolHandlers.clear();
   state.sources = [];
+  state.mediaAccessStatus = "granted";
   vi.clearAllMocks();
 }

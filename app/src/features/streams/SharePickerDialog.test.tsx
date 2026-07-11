@@ -12,6 +12,8 @@ const platformMock = vi.hoisted(() => ({
     ),
     selectSource: vi.fn(async () => undefined),
     loopbackAudioSupported: vi.fn(async () => true),
+    screenAccessStatus: vi.fn(async () => "granted"),
+    openScreenRecordingSettings: vi.fn(() => undefined),
   },
 }));
 vi.mock("@/platform/types", () => ({ platform: platformMock }));
@@ -30,6 +32,7 @@ beforeEach(() => {
   platformMock.capture.getScreenSources.mockResolvedValue([]);
   platformMock.capture.selectSource.mockResolvedValue(undefined);
   platformMock.capture.loopbackAudioSupported.mockResolvedValue(true);
+  platformMock.capture.screenAccessStatus.mockResolvedValue("granted");
 });
 
 afterEach(() => {
@@ -85,5 +88,27 @@ describe("FR-28 share picker", () => {
     await screen.findByTestId("share-preset");
     expect(screen.queryByTestId("share-tab-screens")).toBeNull();
     expect(document.querySelector('[data-testid^="share-source-"]')).toBeNull();
+  });
+
+  it("desktop darwin: screen access denied replaces the tabs with the permission hint", async () => {
+    platformMock.capture.screenAccessStatus.mockResolvedValue("denied");
+    renderPicker();
+
+    await screen.findByTestId("share-permission-hint");
+    expect(screen.queryByTestId("share-tab-screens")).toBeNull();
+    expect(screen.queryByTestId("share-tab-windows")).toBeNull();
+
+    fireEvent.click(screen.getByTestId("share-open-settings"));
+    expect(platformMock.capture.openScreenRecordingSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("desktop: granted access shows the tabs and no permission hint", async () => {
+    platformMock.capture.getScreenSources.mockResolvedValue([
+      { id: "screen:0", name: "Screen 1", thumbnailDataUrl: "data:image/png;base64," },
+    ]);
+    renderPicker();
+
+    await screen.findByTestId("share-source-screen:0");
+    expect(screen.queryByTestId("share-permission-hint")).toBeNull();
   });
 });

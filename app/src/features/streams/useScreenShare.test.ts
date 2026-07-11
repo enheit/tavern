@@ -95,10 +95,10 @@ describe("FR-27 screen share publish", () => {
 
     await controller.start({ sourceId: "screen:0", preset: "720p60", withAudio: false });
 
-    // §App-D 720p60: h = 1800 kbps @ 60fps; l = 250 kbps @ 15fps scaled to ≈270 height. Both scales
+    // §App-D 720p60: h = 3000 kbps @ 60fps; l = 250 kbps @ 15fps scaled to ≈270 height. Both scales
     // derive from the acquisition height (no getSettings on this double → preset fallback 720).
     expect(port.last().transceivers[0]?.init.sendEncodings).toEqual([
-      { rid: "h", maxBitrate: 1_800_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
+      { rid: "h", maxBitrate: 3_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
       { rid: "l", maxBitrate: 250_000, maxFramerate: 15, scaleResolutionDownBy: 720 / 270 },
     ]);
     expect(useMediaStore.getState().sharing).toBe(true);
@@ -263,7 +263,7 @@ describe("FR-27 on-the-fly preset switch", () => {
     await controller.start({ sourceId: "screen:0", preset: "1080p30", withAudio: false });
 
     expect(port.last().transceivers[0]?.init.sendEncodings).toEqual([
-      { rid: "h", maxBitrate: 2_000_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
+      { rid: "h", maxBitrate: 3_500_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
       { rid: "l", maxBitrate: 250_000, maxFramerate: 15, scaleResolutionDownBy: 720 / 270 },
     ]);
 

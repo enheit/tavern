@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { loopbackAudioDevice } from "@tavern/shared";
 import type { TavernIpc } from "@tavern/shared";
 import { bridgeInstalled } from "../src/preload/index";
 import {
@@ -24,7 +25,16 @@ describe("IPC preload bridge (window.tavern)", () => {
     expect(bridgeInstalled).toBe(true);
     expect(api).toBeDefined();
     expect(Object.keys(api).toSorted()).toEqual(
-      ["capture", "isE2E", "notifications", "platform", "secrets", "shell", "updates"].toSorted(),
+      [
+        "capture",
+        "isE2E",
+        "loopbackSelfAudioExcluded",
+        "notifications",
+        "platform",
+        "secrets",
+        "shell",
+        "updates",
+      ].toSorted(),
     );
     expect("ipcRenderer" in api).toBe(false);
     expect("on" in api).toBe(false);
@@ -33,6 +43,15 @@ describe("IPC preload bridge (window.tavern)", () => {
 
   it("reports a valid platform parsed from process.platform", () => {
     expect(["win32", "darwin", "linux"]).toContain(api.platform);
+  });
+
+  it("loopbackSelfAudioExcluded mirrors loopbackAudioDevice for this host", () => {
+    // Plain Node has no process.getSystemVersion → the preload's optional chain yields "", the
+    // same input the expectation uses, so this is deterministic per host OS (true on darwin,
+    // false on win32/linux unit-test hosts).
+    expect(api.loopbackSelfAudioExcluded).toBe(
+      loopbackAudioDevice(process.platform, "") === "loopbackWithoutChrome",
+    );
   });
 
   it("secrets.getToken invokes the channel and parses string|null", async () => {
@@ -67,6 +86,20 @@ describe("IPC preload bridge (window.tavern)", () => {
 
     state.invokeResults.set("capture:loopbackAudioSupported", true);
     expect(await api.capture.loopbackAudioSupported()).toBe(true);
+  });
+
+  it("capture.screenAccessStatus parses the status enum, rejecting junk", async () => {
+    state.invokeResults.set("capture:screenAccessStatus", "denied");
+    expect(await api.capture.screenAccessStatus()).toBe("denied");
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("capture:screenAccessStatus");
+
+    state.invokeResults.set("capture:screenAccessStatus", "nope");
+    await expect(api.capture.screenAccessStatus()).rejects.toThrow();
+  });
+
+  it("capture.openScreenRecordingSettings invokes its channel", async () => {
+    await api.capture.openScreenRecordingSettings();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("capture:openScreenRecordingSettings");
   });
 
   it("notifications.show forwards the payload", async () => {

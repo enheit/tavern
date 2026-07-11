@@ -37,6 +37,14 @@ export function createWebPlatform(): PlatformBridge {
         // native picker — no source to arm.
       },
       loopbackAudioSupported: async () => false,
+      // Browser capture (tab/system audio via the native picker) always includes the app's own
+      // output — the caveat stands on the web.
+      loopbackSelfAudioExcluded: false,
+      // The browser's native picker owns its own permission UX — nothing to gate here.
+      screenAccessStatus: async () => "granted",
+      openScreenRecordingSettings: () => {
+        // no OS settings pane reachable from the web.
+      },
     },
     notifications: {
       show: async (n) => {

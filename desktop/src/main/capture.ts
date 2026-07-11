@@ -1,26 +1,41 @@
-import { desktopCapturer, session } from "electron";
+import os from "node:os";
+import { desktopCapturer, session, shell, systemPreferences } from "electron";
 import type { DesktopCapturerSource, Session } from "electron";
-import { ScreenSourceSchema } from "@tavern/shared";
-import type { ScreenSource } from "@tavern/shared";
+import { ScreenSourceSchema, loopbackAudioDevice, screenAccessStatusSchema } from "@tavern/shared";
+import type { LoopbackDevice, ScreenAccessStatus, ScreenSource } from "@tavern/shared";
 
 // The source armed by capture:selectSource; consumed once by the display-media handler, then cleared.
 let armedSourceId: string | null = null;
 
-// Loopback (system/game audio) support per OS (FR-28). Initial matrix; S8.1 owns revisions.
+// Loopback (system/game audio) support per OS (FR-28) — true when loopbackAudioDevice picks any
+// device for this OS. Initial matrix (win32/darwin yes, linux no); S8.1 owns revisions.
 export function loopbackAudioSupported(platform: NodeJS.Platform = process.platform): boolean {
-  switch (platform) {
-    case "win32":
-      return true;
-    case "darwin":
-      return true;
-    default:
-      // linux is loopback-only behind a validated PipeWire flag path (S8.1); false until then.
-      return false;
-  }
+  return loopbackAudioDevice(platform, os.release()) !== null;
 }
 
 export async function selectSource(id: string | null): Promise<void> {
   armedSourceId = id;
+}
+
+// macOS gates screen enumeration behind the TCC Screen Recording permission (ScreenCaptureKit on
+// 14.4+ returns NO screen sources without it — silently, no prompt from a bare list call). Surface
+// the status so the picker can explain instead of rendering an empty grid. win32/linux: no gate.
+export async function screenAccessStatus(
+  platform: NodeJS.Platform = process.platform,
+): Promise<ScreenAccessStatus> {
+  if (platform !== "darwin") return "granted";
+  return screenAccessStatusSchema.parse(systemPreferences.getMediaAccessStatus("screen"));
+}
+
+// Deep link to System Settings → Privacy & Security → Screen Recording (macOS only). The pane key
+// is the pre-Ventura one — Ventura+ still resolves it to the new Settings app.
+export async function openScreenRecordingSettings(
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform !== "darwin") return;
+  await shell.openExternal(
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+  );
 }
 
 export async function getScreenSources(): Promise<ScreenSource[]> {
@@ -39,7 +54,7 @@ export async function getScreenSources(): Promise<ScreenSource[]> {
   });
 }
 
-type DisplayMediaStreams = { video?: DesktopCapturerSource; audio?: "loopback" };
+type DisplayMediaStreams = { video?: DesktopCapturerSource; audio?: LoopbackDevice };
 
 // Resolves the armed desktopCapturer source with per-OS loopback audio (FR-28), then disarms.
 // Unarmed / stale request → empty streams object (denial).
@@ -58,8 +73,9 @@ export async function handleDisplayMediaRequest(
     callback({});
     return;
   }
-  if (loopbackAudioSupported()) {
-    callback({ video: source, audio: "loopback" });
+  const audio = loopbackAudioDevice(process.platform, os.release());
+  if (audio !== null) {
+    callback({ video: source, audio });
   } else {
     callback({ video: source });
   }
@@ -67,6 +83,9 @@ export async function handleDisplayMediaRequest(
 
 export function setupDisplayMediaHandler(target: Session = session.defaultSession): void {
   target.setDisplayMediaRequestHandler((_request, callback) => {
-    void handleDisplayMediaRequest(callback);
+    // Electron's d.ts narrows audio to 'loopback'|'loopbackWithMute', but the implementation
+    // forwards any string as the Chromium input-device id (electron_browser_context.cc), which is
+    // what lets "loopbackWithoutChrome" through. Widen at this one Electron boundary only.
+    void handleDisplayMediaRequest(callback as (streams: DisplayMediaStreams) => void);
   });
 }

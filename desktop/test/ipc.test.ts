@@ -27,6 +27,8 @@ function makeServices(): IpcServices {
       getScreenSources: vi.fn(() => Promise.resolve([SOURCE])),
       selectSource: vi.fn(() => Promise.resolve()),
       loopbackAudioSupported: vi.fn(() => true),
+      screenAccessStatus: vi.fn(() => Promise.resolve("denied" as const)),
+      openScreenRecordingSettings: vi.fn(() => Promise.resolve()),
     },
     notifications: { show: vi.fn() },
     updates: { restartToUpdate: vi.fn() },
@@ -49,11 +51,13 @@ describe("A10/§6.3 IPC bridge", () => {
     registerIpc(services);
   });
 
-  it("registers exactly the nine §6.3 invoke channels", () => {
+  it("registers exactly the eleven §6.3 invoke channels", () => {
     expect([...ipcMainHandlers.keys()].toSorted()).toEqual(
       [
         "capture:getScreenSources",
         "capture:loopbackAudioSupported",
+        "capture:openScreenRecordingSettings",
+        "capture:screenAccessStatus",
         "capture:selectSource",
         "notifications:show",
         "secrets:getToken",
@@ -110,6 +114,12 @@ describe("A10/§6.3 IPC bridge", () => {
 
   it("happy path — capture:loopbackAudioSupported returns a boolean", async () => {
     expect(await handler("capture:loopbackAudioSupported")(TRUSTED)).toBe(true);
+  });
+
+  it("happy path — capture:screenAccessStatus + openScreenRecordingSettings dispatch", async () => {
+    expect(await handler("capture:screenAccessStatus")(TRUSTED)).toBe("denied");
+    await handler("capture:openScreenRecordingSettings")(TRUSTED);
+    expect(services.capture.openScreenRecordingSettings).toHaveBeenCalledTimes(1);
   });
 
   it("happy path — notifications:show forwards a valid payload", async () => {
