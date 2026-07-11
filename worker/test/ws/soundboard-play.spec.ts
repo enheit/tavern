@@ -127,6 +127,14 @@ class Collector {
       interval: 25,
     });
   }
+  async waitForCount(t: ServerMessage["t"], n: number): Promise<void> {
+    await vi.waitFor(
+      () => {
+        if (this.count(t) < n) throw new Error(`awaiting ${n}× ${t}; have ${this.count(t)}`);
+      },
+      { timeout: 3000, interval: 25 },
+    );
+  }
 }
 
 async function connect(stub: RoomStub, userId: string): Promise<{ ws: WebSocket; col: Collector }> {
@@ -224,7 +232,9 @@ describe("FR-36 sound.play", () => {
       ca.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
       await ca.col.waitForType("sound.played");
       cb.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
-      await cb.col.waitForType("sound.played");
+      // A's play already broadcast "sound.played" into cb's buffer, so waitForType
+      // would resolve on the stale message before B's play lands — wait for the 2nd.
+      await cb.col.waitForCount("sound.played", 2);
 
       expect(await playCountOf(stub, sound.id)).toBe(2);
 
