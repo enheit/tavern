@@ -12,7 +12,7 @@ import {
 } from "@tavern/shared";
 import type { ErrorCode } from "@tavern/shared";
 import type { AuthVars } from "../middleware";
-import { createRealtimeClient } from "../rtc/realtime";
+import { RealtimeError, createRealtimeClient } from "../rtc/realtime";
 import type { RemoteTrackReq, TracksNewResponse } from "../rtc/realtime";
 import type { RtcAuthorizeReq, RtcKind } from "../do/roomState";
 
@@ -225,6 +225,17 @@ const rtcMember: MiddlewareHandler<{ Bindings: Env; Variables: AuthVars }> = asy
 };
 
 export const rtcRoute = new Hono<{ Bindings: Env; Variables: AuthVars }>();
+
+// An SFU call that still fails after the client's bounded transient retry (realtime.ts) surfaces
+// here. Map it to the enveloped 502 the publish path already uses — never a bare Hono 500: the app's
+// pull retries (voiceController mic pull) key off ApiError, which needs the typed envelope.
+rtcRoute.onError((err, c) => {
+  if (err instanceof RealtimeError) {
+    console.error(`SFU call failed (upstream ${err.status})`, err);
+    return c.json({ error: "bad_request" satisfies ErrorCode }, 502);
+  }
+  throw err;
+});
 
 rtcRoute.use("*", rtcRateLimit);
 

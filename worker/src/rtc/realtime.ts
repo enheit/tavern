@@ -5,10 +5,18 @@ import { createRealtimeMock } from "./realtimeMock";
 // app to the SFU — the app secret never reaches a client. Base URL + Bearer are Worker-side only.
 //
 // CONSTRAINT (pinned §7.1): `renegotiate`, `tracks/update`, `tracks/close` are **PUT**; `sessions/new`
-// and `tracks/new` are POST. There are NO retries in v1 — a non-2xx throws a typed error straight to
-// the caller. The proxy is STATELESS: SDP-op serialization per session is the client engine's job
-// (S7.2 PublishSession/PullSession promise chain), so this client holds no per-session mutex.
+// and `tracks/new` are POST. The proxy is STATELESS: SDP-op serialization per session is the client
+// engine's job (S7.2 PublishSession/PullSession promise chain), so this client holds no per-session
+// mutex.
+//
+// RETRY (amends the S7.1 "no retries in v1" pin — S12.4 nightly soak finding): the SFU API answers
+// the occasional transient 5xx under burst load (observed: 503 on tracks/new during a 10-client
+// soak's mass mic pull), which surfaced to the browser as a failed /api/rtc call. A 5xx (or a thrown
+// fetch) means the SFU did NOT serve the request, so replaying the identical request is safe; 4xx is
+// a semantic rejection and is NEVER retried. Bounded: 2 retries with short backoff, then the typed
+// RealtimeError propagates exactly as before.
 const BASE_URL = "https://rtc.live.cloudflare.com/v1";
+const RETRY_DELAYS_MS = [150, 400];
 
 export type SessionDescription = { sdp: string; type: "offer" | "answer" };
 export type LocalTrackReq = { location: "local"; mid: string; trackName: string };
@@ -97,22 +105,40 @@ class HttpRealtimeClient implements RealtimeClient {
     private readonly appSecret: string,
   ) {}
 
+  /* oxlint-disable no-await-in-loop -- the retry loop is deliberately sequential: each attempt only
+     exists because the previous one failed */
   private async request(method: "POST" | "PUT", path: string, body?: unknown): Promise<unknown> {
     // No body → no content-type and no payload: the SFU rejects `{}` on body-less endpoints
     // (sessions/new answers 400 decoding_error when any JSON body is present).
-    const res = await fetch(`${BASE_URL}/apps/${this.appId}${path}`, {
+    const init: RequestInit = {
       method,
       headers: {
         authorization: `Bearer ${this.appSecret}`,
         ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    if (!res.ok) {
-      throw new RealtimeError(res.status, `SFU ${method} ${path} → ${res.status}`);
+    };
+    for (let attempt = 0; ; attempt++) {
+      let res: Response | null = null;
+      try {
+        res = await fetch(`${BASE_URL}/apps/${this.appId}${path}`, init);
+      } catch (err) {
+        // fetch itself threw (connection reset / DNS blip) — transient by definition.
+        if (attempt >= RETRY_DELAYS_MS.length) {
+          throw new RealtimeError(0, `SFU ${method} ${path} → fetch failed: ${String(err)}`);
+        }
+      }
+      if (res?.ok) return res.json();
+      const status = res?.status ?? 0;
+      // 4xx = semantic rejection, never retried; 5xx/thrown = transient, bounded retry (header note).
+      const transient = res === null || status >= 500;
+      if (!transient || attempt >= RETRY_DELAYS_MS.length) {
+        throw new RealtimeError(status, `SFU ${method} ${path} → ${status}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
     }
-    return res.json();
   }
+  /* oxlint-enable no-await-in-loop */
 
   async newSession(): Promise<{ sessionId: string }> {
     return sessionNewSchema.parse(await this.request("POST", `/sessions/new`));

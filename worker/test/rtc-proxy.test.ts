@@ -2,7 +2,7 @@ import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RoomState } from "../src/do/roomState";
 import type { RtcRegistry } from "../src/do/roomState";
-import { createRealtimeClient } from "../src/rtc/realtime";
+import { RealtimeError, createRealtimeClient } from "../src/rtc/realtime";
 import { resetSfuMock, sfuMockCalls } from "../src/rtc/realtimeMock";
 import { fetchTurnIceServers } from "../src/routes/rtc";
 
@@ -482,6 +482,58 @@ describe("realtime SFU client (real, fetch-stubbed)", () => {
       method: "PUT",
     });
     expect(seen[5]).toMatchObject({ url: expect.stringContaining("/tracks/close"), method: "PUT" });
+  });
+
+  // The bounded transient retry (S12.4 soak finding — realtime.ts header). 5xx/thrown fetch =
+  // transient (the SFU did not serve the request) → up to 2 replays; 4xx = semantic, never replayed.
+  it("retries a transient 503 and succeeds on the replay", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls += 1;
+      if (calls === 1) return new Response("upstream sad", { status: 503 });
+      return Response.json({ sessionId: "s-1" });
+    });
+    const client = createRealtimeClient({ REALTIME_APP_ID: "a", REALTIME_APP_SECRET: "s" });
+    await expect(client.newSession()).resolves.toEqual({ sessionId: "s-1" });
+    expect(calls).toBe(2);
+  });
+
+  it("exhausts the bounded retries on persistent 5xx and throws the typed error", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls += 1;
+      return new Response("still sad", { status: 503 });
+    });
+    const client = createRealtimeClient({ REALTIME_APP_ID: "a", REALTIME_APP_SECRET: "s" });
+    const err = await client.newSession().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RealtimeError);
+    expect((err as RealtimeError).status).toBe(503);
+    expect(calls).toBe(3); // 1 attempt + 2 bounded retries
+  });
+
+  it("never retries a 4xx", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls += 1;
+      return new Response("no", { status: 400 });
+    });
+    const client = createRealtimeClient({ REALTIME_APP_ID: "a", REALTIME_APP_SECRET: "s" });
+    const err = await client.newSession().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RealtimeError);
+    expect((err as RealtimeError).status).toBe(400);
+    expect(calls).toBe(1);
+  });
+
+  it("retries a thrown fetch (network blip) and succeeds on the replay", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("connection reset");
+      return Response.json({ sessionId: "s-2" });
+    });
+    const client = createRealtimeClient({ REALTIME_APP_ID: "a", REALTIME_APP_SECRET: "s" });
+    await expect(client.newSession()).resolves.toEqual({ sessionId: "s-2" });
+    expect(calls).toBe(2);
   });
 
   it("fetchTurnIceServers posts ttl:3600 with the TURN Bearer and normalizes to an array", async () => {
