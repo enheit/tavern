@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { app } from "electron";
 import {
   getScreenSources,
@@ -43,6 +44,11 @@ if (!acquireSingleInstanceLock()) {
   registerAppScheme();
 
   void app.whenReady().then(() => {
+    // Dev runs the stock Electron binary whose bundle supplies the Dock icon; build/icon.png is
+    // only applied by electron-builder at package time, so in dev set the Dock icon at runtime.
+    if (!app.isPackaged && process.platform === "darwin") {
+      app.dock?.setIcon(join(app.getAppPath(), "build", "icon.png"));
+    }
     registerGpuCrashGuard();
     registerPermissions();
     registerAppProtocolHandler();
