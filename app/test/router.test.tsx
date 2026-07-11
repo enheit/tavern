@@ -35,16 +35,21 @@ describe("§7.6 routes", () => {
   const LAZY_TIMEOUT = { timeout: 10000 } as const;
 
   it("renders the login page at /login", async () => {
+    // /login sits under GuestOnlyLayout; an `unauthed` account sees the form and GuestOnlyGate does
+    // NOT restart the boot machine (it only starts from `loading`), so the render stays deterministic.
+    useBootStore.setState({ phase: "unauthed" });
     renderAt("/login");
     expect(await screen.findByTestId("page-login", {}, LAZY_TIMEOUT)).toBeDefined();
   }, 15000);
 
   it("redirects an unknown path to /login", async () => {
+    useBootStore.setState({ phase: "unauthed" });
     renderAt("/definitely-not-a-route");
     expect(await screen.findByTestId("page-login", {}, LAZY_TIMEOUT)).toBeDefined();
   }, 15000);
 
   it("renders the register, join and server routes", async () => {
+    useBootStore.setState({ phase: "unauthed" });
     renderAt("/register");
     expect(await screen.findByTestId("page-register", {}, LAZY_TIMEOUT)).toBeDefined();
     cleanup();
@@ -87,6 +92,39 @@ describe("§7.6 routes", () => {
     useBootStore.setState({ phase: "loadingMe" });
     renderAt("/s/some-server");
     expect(await screen.findByTestId("boot-loader", {}, LAZY_TIMEOUT)).toBeDefined();
+    expect(screen.queryByTestId("page-join")).toBeNull();
+  }, 15000);
+
+  it("bounces an authed account off /login to /join when it has no server", async () => {
+    // GuestOnlyLayout guard: a `ready` (authed) account must not linger on the auth pages. With zero
+    // joined servers it lands on /join (mirroring ActiveServerRedirect), never the login form.
+    useBootStore.setState({ phase: "ready" });
+    useServersStore.setState({ servers: [], activeServerId: null, connState: {} });
+    renderAt("/login");
+    expect(await screen.findByTestId("page-join", {}, LAZY_TIMEOUT)).toBeDefined();
+    expect(screen.queryByTestId("page-login")).toBeNull();
+  }, 15000);
+
+  it("bounces an authed account off /join to its server once it has one", async () => {
+    // RequireNoServerLayout guard (one-server-per-user): /join is first-run only, so an account that
+    // already has a server is redirected to /s/:id.
+    useBootStore.setState({ phase: "ready" });
+    useServersStore.setState({
+      servers: [
+        {
+          id: "demo",
+          nickname: "demo",
+          adminUserId: "admin",
+          hasPassword: false,
+          createdAt: 1,
+          joinedAt: 1,
+        },
+      ],
+      activeServerId: "demo",
+      connState: {},
+    });
+    renderAt("/join");
+    expect(await screen.findByTestId("app-shell", {}, { timeout: 10000 })).toBeDefined();
     expect(screen.queryByTestId("page-join")).toBeNull();
   }, 15000);
 

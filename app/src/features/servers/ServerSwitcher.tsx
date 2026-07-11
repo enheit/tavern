@@ -5,16 +5,15 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { useServersStore } from "@/stores/servers";
 
-// FR-41 server switcher in the header: the trigger shows the active server nickname (or a placeholder),
-// items are the joined servers (active one check-marked) navigating /s/:id, and a trailing item opens
-// /join.
+// FR-41 server switcher in the header: the trigger shows the active server nickname (or a placeholder)
+// and items are the joined servers (active one check-marked) navigating /s/:id. One-server-per-user
+// means there is no "join or create" entry here — /join is reachable only by an account with no server.
 export function ServerSwitcher() {
   const navigate = useNavigate();
   const servers = useServersStore((s) => s.servers);
@@ -45,10 +44,6 @@ export function ServerSwitcher() {
             )}
           </DropdownMenuItem>
         ))}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem data-testid="server-switcher-add" onClick={() => navigate("/join")}>
-          {m.servers_switcher_join_or_create()}
-        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

@@ -50,7 +50,21 @@ export function useAuth(): UseAuth {
 
   const loginCore = useCallback(
     async (input: LoginForm): Promise<void> => {
-      await apiClient.post(SIGN_IN, passthrough, input);
+      try {
+        await apiClient.post(SIGN_IN, passthrough, input);
+      } catch (err) {
+        // sign-in hits better-auth's endpoint directly (kept out of the /api/auth-wrap layer so its
+        // D1-backed brute-force rate limit still applies), so a failure carries better-auth's own
+        // { code, message } body — not our { error: ErrorCode } shape — and apiClient falls back to
+        // the generic `bad_message` ("That message couldn't be sent"). Re-map by status so the form
+        // shows a real reason: 429 → rate_limited; 401 → invalid_credentials (the server returns an
+        // identical body for wrong-password vs unknown-username, so this stays enumeration-safe).
+        if (err instanceof ApiError && err.status === 429) throw new ApiError("rate_limited", 429);
+        if (err instanceof ApiError && err.status === 401) {
+          throw new ApiError("invalid_credentials", 401);
+        }
+        throw err;
+      }
       bootStore.restart();
       navigate("/");
     },

@@ -50,7 +50,7 @@ test.describe("FR-01 FR-02 auth", () => {
     await expect(page.getByTestId("page-login")).toBeVisible();
   });
 
-  test("wrong password shows generic error and stays on /login", async ({ page, api }) => {
+  test("wrong password shows a readable error and stays on /login", async ({ page, api }) => {
     const user = await api.createUser("wrongpw"); // exists in D1; browser page stays unauthed
 
     await page.goto("/login");
@@ -59,7 +59,16 @@ test.describe("FR-01 FR-02 auth", () => {
     await page.getByTestId("submit").click();
 
     // A single form-level error (generic — no field is singled out as wrong), and no navigation away.
-    await expect(page.getByTestId("form-error")).toBeVisible();
+    // The message must be a READABLE remapped error, never the old generic `bad_message` fallback
+    // ("That message couldn't be sent" / "Не вдалося надіслати повідомлення") that leaked when the
+    // better-auth error body couldn't be mapped. A fresh worker (CI) returns 401 → wrong-credentials;
+    // on localhost every sign-in shares one rate-limit bucket, so a hot bucket returns 429 →
+    // rate-limited. Both are the readable messages we want — assert one of them, and never the fallback.
+    const formError = page.getByTestId("form-error");
+    await expect(formError).toBeVisible();
+    await expect(formError).toHaveText(
+      /wrong username or password|Неправильний нікнейм або пароль|too many attempts|Забагато спроб/i,
+    );
     expect(await page.getByTestId("error-username").count()).toBe(0);
     expect(await page.getByTestId("error-password").count()).toBe(0);
     await expect(page).toHaveURL(/\/login$/);

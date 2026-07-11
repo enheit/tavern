@@ -128,6 +128,33 @@ describe("FR-02 session flow", () => {
     expect(navigateSpy).not.toHaveBeenCalled();
   });
 
+  it("remaps a 401 sign-in failure to invalid_credentials (better-auth's body → bad_message otherwise)", async () => {
+    // better-auth's /sign-in/username is called directly, so a wrong-credentials 401 arrives as the
+    // apiClient's generic `bad_message` fallback; loginCore must turn it into the readable code.
+    vi.mocked(apiClient.post).mockRejectedValue(new ApiError("bad_message", 401));
+    const { result } = renderHook(() => useAuth());
+
+    await act(async () => {
+      await result.current.login({ username: "chris", password: "wrong" });
+    });
+
+    expect(result.current.error).toBe("invalid_credentials");
+    expect(bootStore.restart).not.toHaveBeenCalled();
+    expect(navigateSpy).not.toHaveBeenCalled();
+  });
+
+  it("remaps a 429 sign-in failure to rate_limited", async () => {
+    vi.mocked(apiClient.post).mockRejectedValue(new ApiError("bad_message", 429));
+    const { result } = renderHook(() => useAuth());
+
+    await act(async () => {
+      await result.current.login({ username: "chris", password: "wrong" });
+    });
+
+    expect(result.current.error).toBe("rate_limited");
+    expect(navigateSpy).not.toHaveBeenCalled();
+  });
+
   it("re-throws a transport failure (no ErrorCode) so the page can show error_network", async () => {
     vi.mocked(apiClient.post).mockRejectedValue(new Error("network down"));
     const { result } = renderHook(() => useAuth());

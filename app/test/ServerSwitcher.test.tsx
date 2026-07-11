@@ -56,12 +56,19 @@ describe("FR-41 server switcher", () => {
     expect(screen.queryByTestId("server-check-s-b")).toBeNull();
   });
 
-  it("join-or-create item navigates /join", async () => {
+  it("navigates to a joined server when its item is clicked", async () => {
     render(<ServerSwitcher />);
     fireEvent.click(screen.getByTestId("server-switcher"));
 
-    const add = await screen.findByTestId("server-switcher-add");
-    fireEvent.click(add);
-    expect(navigateSpy).toHaveBeenCalledWith("/join");
+    fireEvent.click(await screen.findByTestId("server-item-s-b"));
+    expect(navigateSpy).toHaveBeenCalledWith("/s/s-b");
+  });
+
+  it("has no join-or-create entry (one-server-per-user: /join is reachable only with no server)", async () => {
+    render(<ServerSwitcher />);
+    fireEvent.click(screen.getByTestId("server-switcher"));
+
+    await waitFor(() => expect(screen.getByTestId("server-item-s-a")).toBeDefined());
+    expect(screen.queryByTestId("server-switcher-add")).toBeNull();
   });
 });
