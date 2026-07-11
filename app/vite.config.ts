@@ -2,9 +2,27 @@ import path from "node:path";
 import { paraglideVitePlugin } from "@inlang/paraglide-js";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { createLogger, defineConfig } from "vite";
+
+// A closing page (every e2e teardown) kills its room WebSocket mid-write; the /api ws proxy
+// surfaces that as EPIPE/ECONNRESET and vite prints a full stack — twice — per socket, drowning
+// the test output. Only that exact expected socket-lifecycle noise is dropped; every other proxy
+// error (unknown codes, http proxy errors) still logs.
+const logger = createLogger();
+const originalError = logger.error.bind(logger);
+logger.error = (msg, options) => {
+  if (
+    typeof msg === "string" &&
+    msg.includes("ws proxy") &&
+    (msg.includes("EPIPE") || msg.includes("ECONNRESET"))
+  ) {
+    return;
+  }
+  originalError(msg, options);
+};
 
 export default defineConfig({
+  customLogger: logger,
   plugins: [
     react(),
     tailwindcss(),
