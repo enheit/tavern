@@ -1,3 +1,4 @@
+import { randomUserColor } from "@tavern/shared";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer, username } from "better-auth/plugins";
@@ -31,7 +32,9 @@ export function createAuth(env: Env) {
     user: {
       additionalFields: {
         displayName: { type: "string", required: true, input: true },
-        color: { type: "string", input: false, defaultValue: "#e0e0e0" },
+        // Random non-gray palette color per new user (better-auth calls this fn at insert time).
+        // Gray was the old placeholder default; every account now starts with a distinct name color.
+        color: { type: "string", input: false, defaultValue: () => randomUserColor() },
         avatarKey: { type: "string", required: false, input: false },
       },
     },

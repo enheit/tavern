@@ -1,6 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { LIMITS, MeResponse } from "@tavern/shared";
+import { LIMITS, MeResponse, USER_COLORS } from "@tavern/shared";
 import { notifyJoinedServers } from "../src/lib/fanout";
 
 const BASE = "https://tavern.test";
@@ -100,12 +100,14 @@ describe("FR-43 boot call /api/me", () => {
     const token = await session("boota");
     const res = await authed(token, "/api/me");
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body = MeResponse.parse(await res.json());
     expect(body).toMatchObject({
-      user: { username: "boota", displayName: "boota", color: "#e0e0e0" },
+      user: { username: "boota", displayName: "boota" },
       settings: { notifyAll: true, notifyMentions: true, locale: "en", theme: "system" },
       servers: [],
     });
+    // A fresh account gets a random NON-gray palette color (no fixed gray default anymore).
+    expect(USER_COLORS).toContain(body.user.color);
   });
 
   it("response parses with shared MeResponse schema (shape lock)", async () => {
@@ -247,11 +249,20 @@ describe("FR-05 avatar", () => {
 
     const res = await authed(token, `/api/media/avatars/${userId}.webp`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("etag")).toBeTruthy();
-    expect(res.headers.get("cache-control")).toBe("private, max-age=86400");
+    const etag = res.headers.get("etag");
+    expect(etag).toBeTruthy();
+    // Avatars use a stable per-user URL overwritten on re-upload, so they revalidate (no-cache)
+    // rather than pin a long max-age — otherwise a fresh upload would keep serving the old image.
+    expect(res.headers.get("cache-control")).toBe("private, no-cache");
     const body = new Uint8Array(await res.arrayBuffer());
     expect(body.byteLength).toBe(16);
     expect(Array.from(body.slice(0, 4))).toEqual([0x52, 0x49, 0x46, 0x46]);
+
+    // A matching If-None-Match short-circuits to 304 (cheap revalidation for the stable URL).
+    const notModified = await authed(token, `/api/media/avatars/${userId}.webp`, {
+      headers: { "if-none-match": must(etag, "etag present") },
+    });
+    expect(notModified.status).toBe(304);
   });
 
   it("missing avatar key → 404 not_found", async () => {

@@ -178,7 +178,14 @@ const cases: ReducerCase[] = [
   },
   {
     name: "sound.played",
-    frame: { t: "sound.played", soundId: "s1", byUserId: "u1", at: 1 },
+    frame: {
+      t: "sound.played",
+      soundId: "s1",
+      byUserId: "u1",
+      at: 1,
+      trimStartMs: 0,
+      trimEndMs: 500,
+    },
     check: (s) => expect(s.members).toHaveLength(1),
   },
   {

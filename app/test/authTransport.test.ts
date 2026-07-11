@@ -16,6 +16,9 @@ function makeBridge(
       getScreenSources: async () => [],
       selectSource: async () => undefined,
       loopbackAudioSupported: async () => false,
+      loopbackSelfAudioExcluded: false,
+      screenAccessStatus: async () => "granted" as const,
+      openScreenRecordingSettings: () => undefined,
     },
     notifications: {
       show: async () => undefined,

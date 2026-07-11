@@ -160,7 +160,12 @@ function UserMenu() {
   const { logout } = useAuth();
   const profile = useSessionStore((s) => s.profile);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Optimistically render the uploaded avatar (same pattern as the member chips); fall back to the
+  // colored initial when there's no avatar yet or the image 404s. Keyed to avatarKey so a fresh
+  // upload re-attempts the load instead of staying stuck on a previous failure.
+  const [avatarFailed, setAvatarFailed] = useState(false);
   const initial = profile !== null ? profile.displayName.charAt(0) : "";
+  const showAvatar = profile !== null && profile.avatarKey !== undefined && !avatarFailed;
   return (
     <>
       <DropdownMenu>
@@ -169,12 +174,24 @@ function UserMenu() {
           aria-label={m.settings_title()}
           className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "rounded-full")}
         >
-          <span
-            className="flex size-6 items-center justify-center rounded-full text-xs font-medium text-white"
-            style={{ backgroundColor: profile?.color ?? "#71717a" }}
-          >
-            {initial}
-          </span>
+          {showAvatar ? (
+            <img
+              key={profile.avatarKey}
+              src={`/api/media/avatars/${profile.userId}.webp`}
+              alt={profile.displayName}
+              data-testid="user-menu-avatar"
+              onError={() => setAvatarFailed(true)}
+              className="size-6 rounded-full bg-muted object-cover"
+            />
+          ) : (
+            <span
+              data-testid="user-menu-initial"
+              className="flex size-6 items-center justify-center rounded-full text-xs font-medium text-white"
+              style={{ backgroundColor: profile?.color ?? "#71717a" }}
+            >
+              {initial}
+            </span>
+          )}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
           <DropdownMenuItem data-testid="user-menu-settings" onClick={() => setSettingsOpen(true)}>

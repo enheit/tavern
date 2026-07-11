@@ -1,5 +1,5 @@
 import type { ErrorCode, PatchProfileRequest } from "@tavern/shared";
-import { ApiErrorBody, LIMITS, UserProfile } from "@tavern/shared";
+import { ApiErrorBody, LIMITS, USER_COLORS, UserProfile } from "@tavern/shared";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -19,28 +19,16 @@ interface ProfileForm {
   color: string;
 }
 
-// Pinned 12-swatch palette; a free hex input covers everything else (validated `/^#[0-9a-f]{6}$/`).
-const COLOR_SWATCHES = [
-  "#e0e0e0",
-  "#f87171",
-  "#fb923c",
-  "#facc15",
-  "#4ade80",
-  "#34d399",
-  "#22d3ee",
-  "#60a5fa",
-  "#818cf8",
-  "#c084fc",
-  "#f472b6",
-  "#a8a29e",
-];
+// Swatch palette = the shared non-gray USER_COLORS (gray is intentionally not selectable); a free hex
+// input covers everything else (validated `/^#[0-9a-f]{6}$/`).
+const COLOR_SWATCHES = USER_COLORS;
 
 const API_BASE: string = import.meta.env.VITE_API_URL ?? "";
 
 // Avatar bytes are posted raw (Content-Type image/webp) — not JSON, not multipart — so this uses a
 // thin authed fetch mirroring apiClient's transport (auth headers + set-auth-token capture + typed
 // ErrorCode on failure) rather than apiClient's JSON body path.
-async function postAvatar(blob: Blob): Promise<void> {
+async function postAvatar(blob: Blob): Promise<string> {
   const headers = { ...(await authTransport.getAuthHeaders()), "Content-Type": "image/webp" };
   const res = await fetch(`${API_BASE}/api/me/avatar`, {
     method: "POST",
@@ -59,6 +47,8 @@ async function postAvatar(blob: Blob): Promise<void> {
     }
     throw new ApiError(code, res.status);
   }
+  const body = (await res.json()) as { avatarKey?: string };
+  return body.avatarKey ?? "";
 }
 
 // FR-03/FR-04/FR-05 profile editor: displayName, username (lowercased), name color (swatches + hex),
@@ -70,7 +60,7 @@ export function AccountSection() {
     defaultValues: {
       displayName: profile?.displayName ?? "",
       username: profile?.username ?? "",
-      color: profile?.color ?? "#e0e0e0",
+      color: profile?.color ?? USER_COLORS[0],
     },
   });
   const color = watch("color");
@@ -98,7 +88,10 @@ export function AccountSection() {
     event.target.value = "";
     if (file === undefined) return;
     try {
-      await postAvatar(await resizeToWebp(file));
+      const avatarKey = await postAvatar(await resizeToWebp(file));
+      // Reflect the new avatar immediately (header reads profile.avatarKey to decide whether to render
+      // the image). The media URL is stable per-user; the served etag changes so the fresh bytes load.
+      useSessionStore.getState().patchProfile({ avatarKey });
       toast(m.common_saved());
     } catch (err) {
       if (err instanceof AvatarTooLargeError) toast(m.errors_avatar_too_large());
