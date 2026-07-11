@@ -243,3 +243,11 @@
 body {
   position: relative;
 }
+
+/* Full-height chain so route pages using `h-full` (login, register, join, boot loader) actually
+   fill the viewport instead of collapsing to content height. */
+html,
+body,
+#root {
+  height: 100%;
+}
