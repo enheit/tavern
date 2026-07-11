@@ -1,3 +1,4 @@
+/* oxlint-disable no-underscore-dangle -- reads the pinned §10 e2e hook global window.__tavernTestRtc */
 import { randomBytes } from "node:crypto";
 import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { expect, test } from "../harness/fixtures";
@@ -35,6 +36,23 @@ async function pageFor(
 async function bootOnto(opened: Opened, serverId: string): Promise<void> {
   await expect(opened.page).toHaveURL(new RegExp(`/s/${serverId}$`));
   await expect(opened.page.getByTestId("controls-bar")).toBeVisible();
+}
+
+// Joins voice and waits until FULLY wired (publish + voice pull connected) — a premature
+// share/watch races its own grant/pull on slow runners and reverts (nightly CI finding).
+async function joinWired(opened: Opened, userId: string): Promise<void> {
+  await opened.page.getByTestId("controls-join").click();
+  await expect(opened.page.getByTestId(`voice-chip-${userId}`)).toBeVisible({ timeout: 20_000 });
+  await expect
+    .poll(
+      () =>
+        opened.page.evaluate(() => {
+          const rtc = window.__tavernTestRtc;
+          return rtc ? { publish: rtc.publishState, pull: rtc.pullStates.voice ?? "none" } : null;
+        }),
+      { timeout: 20_000 },
+    )
+    .toEqual({ publish: "connected", pull: "connected" });
 }
 
 async function sendPaced(page: Page, text: string): Promise<void> {
@@ -109,15 +127,11 @@ test.describe("FR-40 stats e2e", () => {
       await bootOnto(openedB, server.id);
       await expect(openedB.page.getByTestId(`member-${a.userId}`)).toBeVisible();
 
-      // Both join voice (a stream pull requires an active voice membership — G1).
-      await openedA.page.getByTestId("controls-join").click();
-      await expect(openedA.page.getByTestId(`voice-chip-${a.userId}`)).toBeVisible({
-        timeout: 20_000,
-      });
-      await openedB.page.getByTestId("controls-join").click();
-      await expect(openedB.page.getByTestId(`voice-chip-${b.userId}`)).toBeVisible({
-        timeout: 20_000,
-      });
+      // Both join voice (a stream pull requires an active voice membership — G1) and are FULLY
+      // wired (publish + voice pull connected) before any share/watch — a premature watch races
+      // its own grant/pull on slow runners and reverts, accruing nothing (nightly CI finding).
+      await joinWired(openedA, a.userId);
+      await joinWired(openedB, b.userId);
 
       // A screen-shares (web picker variant: preset + audio hint, then Start).
       await openedA.page.getByTestId("controls-screen").click();
@@ -127,6 +141,22 @@ test.describe("FR-40 stats e2e", () => {
       const watchButton = openedB.page.locator('[data-testid^="stream-watch-"]').first();
       await expect(watchButton).toBeVisible({ timeout: 20_000 });
       await watchButton.click();
+      // The watch pull must actually be LIVE before the accrual clock matters — a reverted watch
+      // (error frame / rejected REST pull) would silently accrue nothing on a slow runner.
+      await expect
+        .poll(
+          () =>
+            openedB.page.evaluate(() => {
+              const rtc = window.__tavernTestRtc;
+              if (!rtc) return "none";
+              const entry = Object.entries(rtc.pullStates).find(([key]) =>
+                key.startsWith("screen:"),
+              );
+              return entry ? entry[1] : "none";
+            }),
+          { timeout: 20_000 },
+        )
+        .toBe("connected");
 
       // Accrue ~10s of watch time (the DO's server-authoritative watch-seconds heartbeat, S8.4).
       await openedB.page.waitForTimeout(11_000);

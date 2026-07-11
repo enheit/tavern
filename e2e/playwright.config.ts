@@ -28,6 +28,11 @@ const fakeMediaArgs = [
   "--use-fake-ui-for-media-stream",
   "--use-fake-device-for-media-stream",
   `--use-file-for-fake-audio-capture=${TONE_WAV}`,
+  // Chromium 150 runs the audio service out-of-process, and the fake-capture file switch never
+  // reaches it — the fake mic emits SILENCE (first seen on the desktop harness, S7.4; resurfaced
+  // as audioLevel=0 in the nightly @realtime voice suite on ubuntu runners while bytesReceived
+  // kept climbing). Forcing in-process audio makes the tone actually play.
+  "--disable-features=AudioServiceOutOfProcess",
 ];
 
 // webServer entries. The app dev server + the e2e worker (mock SFU, --env e2e picks .dev.vars.e2e)
