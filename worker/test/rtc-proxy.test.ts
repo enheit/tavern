@@ -433,12 +433,20 @@ describe("realtime SFU client (real, fetch-stubbed)", () => {
   });
 
   it("hits the pinned URLs + verbs with the app-secret Bearer", async () => {
-    const seen: Array<{ url: string; method: string; auth: string | null }> = [];
+    const seen: Array<{
+      url: string;
+      method: string;
+      auth: string | null;
+      body: BodyInit | null | undefined;
+      contentType: string | null;
+    }> = [];
     vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
       seen.push({
         url: String(input),
         method: init?.method ?? "GET",
         auth: new Headers(init?.headers).get("authorization"),
+        body: init?.body,
+        contentType: new Headers(init?.headers).get("content-type"),
       });
       return Response.json({ sessionId: "s-1", requiresImmediateRenegotiation: false, tracks: [] });
     });
@@ -461,6 +469,10 @@ describe("realtime SFU client (real, fetch-stubbed)", () => {
       method: "POST",
       auth: "Bearer secret7",
     });
+    // sessions/new must carry NO body — the real SFU answers 400 decoding_error to `{}`.
+    expect(seen[0]?.body).toBeUndefined();
+    expect(seen[0]?.contentType).toBeNull();
+    expect(seen[1]?.body).toBeDefined();
     expect(seen[1]?.url).toContain("/sessions/s-1/tracks/new");
     expect(seen[1]?.method).toBe("POST");
     expect(seen[2]).toMatchObject({ url: expect.stringContaining("/tracks/new"), method: "POST" });

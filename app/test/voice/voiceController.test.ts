@@ -354,6 +354,31 @@ describe("FR-18 join/leave", () => {
     expect(useMediaStore.getState().inVoiceServerId).toBeNull();
   });
 
+  it("failed join (rtc step throws after the ack) sends voice.leave — no ghost roster member", async () => {
+    const h = makeHarness();
+    const deps: VoiceDeps = {
+      ...h.deps,
+      createPublish: (_serverId, userId) => {
+        const p = new FakePublish(h.log, userId);
+        p.connect = async () => {
+          throw new Error("sfu 500");
+        };
+        return p;
+      },
+    };
+    const controller = new VoiceController(deps);
+    seedVoice("A", []);
+
+    await expect(controller.join("A")).rejects.toThrow("sfu 500");
+
+    // voice.join reached the server (roster registered us) — the failed join must undo it.
+    expect(h.ws.sent.some((m) => m.t === "voice.join")).toBe(true);
+    expect(h.ws.sent.some((m) => m.t === "voice.leave")).toBe(true);
+    expect(useMediaStore.getState().voiceStatus).toBe("error");
+    expect(useMediaStore.getState().inVoiceServerId).toBeNull();
+    expect(h.graph.closed).toBe(true);
+  });
+
   it("ws reconnect while joined → teardown + rejoin", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);

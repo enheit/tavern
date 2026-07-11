@@ -97,14 +97,16 @@ class HttpRealtimeClient implements RealtimeClient {
     private readonly appSecret: string,
   ) {}
 
-  private async request(method: "POST" | "PUT", path: string, body: unknown): Promise<unknown> {
+  private async request(method: "POST" | "PUT", path: string, body?: unknown): Promise<unknown> {
+    // No body → no content-type and no payload: the SFU rejects `{}` on body-less endpoints
+    // (sessions/new answers 400 decoding_error when any JSON body is present).
     const res = await fetch(`${BASE_URL}/apps/${this.appId}${path}`, {
       method,
       headers: {
         authorization: `Bearer ${this.appSecret}`,
-        "content-type": "application/json",
+        ...(body === undefined ? {} : { "content-type": "application/json" }),
       },
-      body: JSON.stringify(body),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     if (!res.ok) {
       throw new RealtimeError(res.status, `SFU ${method} ${path} → ${res.status}`);
@@ -113,7 +115,7 @@ class HttpRealtimeClient implements RealtimeClient {
   }
 
   async newSession(): Promise<{ sessionId: string }> {
-    return sessionNewSchema.parse(await this.request("POST", `/sessions/new`, {}));
+    return sessionNewSchema.parse(await this.request("POST", `/sessions/new`));
   }
 
   async newLocalTracks(

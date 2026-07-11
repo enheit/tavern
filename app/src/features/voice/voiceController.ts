@@ -229,6 +229,13 @@ export class VoiceController {
       useMediaStore.getState().setVoiceStatus("joined");
     } catch (err) {
       await this.teardown();
+      // voice.join may already have registered us in the roster (any later step can be the failure),
+      // so a failed join must not leave a ghost member — best-effort server-side leave.
+      try {
+        ws.send({ t: "voice.leave" });
+      } catch {
+        // Socket not open — the join frame never reached the server, nothing to undo.
+      }
       this.resetState();
       const m = useMediaStore.getState();
       m.setVoiceStatus("error");
