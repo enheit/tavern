@@ -133,7 +133,7 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
       await b.page.getByTestId(`stream-tile-${track}`).getByTestId(`stream-watch-${track}`).click();
       // Focus so B pulls the HIGH layer (the preset the publisher drives, FR-27/33); a grid tile stays
       // on the pinned low layer and would not observe the h-preset change. 40s: the SFU only forwards
-      // h once the viewer's bandwidth estimate clears the h bitrate (1200 kbps here), and that ramp
+      // h once the viewer's bandwidth estimate clears the h bitrate (1800 kbps here), and that ramp
       // regularly needs >20s on constrained CI runners (S12.4 docker probe) — the upswitch itself is
       // SFU/BWE-governed, not product logic.
       await b.page.getByTestId(`stream-tile-${track}`).click();

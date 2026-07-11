@@ -25,14 +25,14 @@ const MINUTE = 60_000;
 const TRACK = "screen:pub:1";
 
 describe("FR-27 preset repricing", () => {
-  it("720p30 watcher on h meters 9,000,000 bytes per 60s tick (1200 kbps)", async () => {
+  it("720p30 watcher on h meters 13,500,000 bytes per 60s tick (1800 kbps)", async () => {
     const viewer = crypto.randomUUID();
     await runInDurableObject(freshRoom(), async (_i, state) => {
       const meter = new CostMeter(state, {});
       await meter.openWatch(viewer, TRACK, "720p30", "h", T0);
       await meter.closeWatch(viewer, TRACK, T0 + MINUTE);
-      // 1200 * 1000 / 8 * 60 = 9,000,000
-      expect(sumEgress(state)).toBe(9_000_000);
+      // 1800 * 1000 / 8 * 60 = 13,500,000
+      expect(sumEgress(state)).toBe(13_500_000);
     });
   });
 
@@ -55,8 +55,8 @@ describe("FR-27 preset repricing", () => {
       // Publisher switches 720p30 → 1080p30 at +30s; the open watch is repriced at that instant.
       await meter.repriceStream(TRACK, "1080p30", T0 + 30_000);
       await meter.closeWatch(viewer, TRACK, T0 + MINUTE);
-      // 30s @ 720p30 h (1200 kbps) = 4,500,000 ; 30s @ 1080p30 h (2000 kbps) = 7,500,000
-      expect(sumEgress(state)).toBe(12_000_000);
+      // 30s @ 720p30 h (1800 kbps) = 6,750,000 ; 30s @ 1080p30 h (3500 kbps) = 13,125,000
+      expect(sumEgress(state)).toBe(19_875_000);
     });
   });
 
@@ -73,10 +73,10 @@ describe("FR-27 preset repricing", () => {
       await meter.closeWatch(viewerH, TRACK, T0 + MINUTE);
       await meter.closeWatch(viewerL, TRACK, T0 + MINUTE);
       await meter.closeWatch(other, "screen:pub:2", T0 + MINUTE);
-      // viewerH: 30s@1200 + 30s@2000 = 12,000,000 ; viewerL: 60s@250 = 1,875,000 (rid preserved, l-rate
-      // is preset-independent so the reprice is a no-op on its bytes) ; other (different stream): 60s@1200
-      // = 9,000,000 (untouched by the reprice).
-      expect(sumEgress(state)).toBe(12_000_000 + 1_875_000 + 9_000_000);
+      // viewerH: 30s@1800 + 30s@3500 = 19,875,000 ; viewerL: 60s@250 = 1,875,000 (rid preserved, l-rate
+      // is preset-independent so the reprice is a no-op on its bytes) ; other (different stream): 60s@1800
+      // = 13,500,000 (untouched by the reprice).
+      expect(sumEgress(state)).toBe(19_875_000 + 1_875_000 + 13_500_000);
     });
   });
 });

@@ -85,7 +85,7 @@ describe("FR-27 simulcast encodings", () => {
   const cases: { preset: PresetId; h: RTCRtpEncodingParameters; scale: number }[] = [
     {
       preset: "1080p30",
-      h: { rid: "h", maxBitrate: 2_000_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
+      h: { rid: "h", maxBitrate: 3_500_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
       scale: 1080 / 270,
     },
     {
@@ -95,7 +95,7 @@ describe("FR-27 simulcast encodings", () => {
     },
     {
       preset: "1440p60",
-      h: { rid: "h", maxBitrate: 4_500_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
+      h: { rid: "h", maxBitrate: 9_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
       scale: 1440 / 270,
     },
   ];

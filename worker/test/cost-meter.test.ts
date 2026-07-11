@@ -28,13 +28,13 @@ const GB = 1_000_000_000;
 const T0 = 1_700_000_000_000; // fixed epoch-ms so month bucketing is deterministic
 
 describe("§8 G5 cost meter", () => {
-  it("h-layer 1080p30 watched 600s = 150,000,000 bytes (2000 kbps × 1000/8 × 600)", async () => {
+  it("h-layer 1080p30 watched 600s = 262,500,000 bytes (3500 kbps × 1000/8 × 600)", async () => {
     const viewer = crypto.randomUUID();
     await runInDurableObject(freshRoom(), async (_i, state) => {
       const meter = new CostMeter(state, {});
       await meter.openWatch(viewer, "screen:pub:1", "1080p30", "h", T0);
       await meter.closeWatch(viewer, "screen:pub:1", T0 + 600_000);
-      expect(sumEgress(state)).toBe(150_000_000);
+      expect(sumEgress(state)).toBe(262_500_000);
     });
   });
 
@@ -55,8 +55,8 @@ describe("§8 G5 cost meter", () => {
       await meter.openWatch(viewer, "screen:pub:1", "1080p30", "h", T0);
       await meter.setWatcherLayer(viewer, "screen:pub:1", "l", T0 + 300_000); // 300s at h
       await meter.closeWatch(viewer, "screen:pub:1", T0 + 600_000); // 300s at l
-      // h: 2000*1000/8*300 = 75,000,000 ; l: 250*1000/8*300 = 9,375,000
-      expect(sumEgress(state)).toBe(84_375_000);
+      // h: 3500*1000/8*300 = 131,250,000 ; l: 250*1000/8*300 = 9,375,000
+      expect(sumEgress(state)).toBe(140_625_000);
     });
   });
 
@@ -162,8 +162,8 @@ describe("§8 G5 cost meter", () => {
       await meter.openWatch(viewer, "screen:pub:1", "1080p30", "h", T0);
       const warned = await meter.tick(T0 + 60_000);
       expect(warned).toBe(false);
-      // 2000 kbps × 1000/8 × 60 = 15,000,000
-      expect(sumEgress(state)).toBe(15_000_000);
+      // 3500 kbps × 1000/8 × 60 = 26,250,000
+      expect(sumEgress(state)).toBe(26_250_000);
     });
   });
 
