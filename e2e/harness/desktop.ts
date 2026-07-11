@@ -63,7 +63,11 @@ export async function launchDesktop(opts: {
   // On Linux CI the unprivileged-userns sandbox is restricted (§11) — pass --no-sandbox to the
   // test electron. It is a standard chromium argv switch (reliable via args, unlike the fake-media
   // flags of #16621, which is why those still go through the main process). Kept off macOS/Windows.
-  const sandboxArgs = process.platform === "linux" ? ["--no-sandbox"] : [];
+  // --password-store=basic: the headless Linux runner has no keyring (gnome-keyring/kwallet), so
+  // safeStorage.encryptString throws "Encryption is not available." and every secrets:setToken IPC
+  // (the desktop bearer login seam) dies — the basic store keeps safeStorage functional without one.
+  const sandboxArgs =
+    process.platform === "linux" ? ["--no-sandbox", "--password-store=basic"] : [];
   // Electron 43 (Chromium 150) runs the audio service out-of-process, so the main-process
   // `use-file-for-fake-audio-capture` switch (S4.1/§10) never reaches it and the fake mic emits
   // silence — the tone WAV can't drive the speaking analyser (S7.4). Forcing in-process audio fixes
