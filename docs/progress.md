@@ -873,3 +873,64 @@
 
   PASS (soak-report.json committed). Note: a first 10-client run FAILED with 19 disconnects — all nineteen in two simultaneous all-client bursts stamped to the exact seconds two package.json edits landed in the repo: `wrangler dev` hot-restarts on file changes. The run was invalidated as self-inflicted harness interference (documented so nobody "fixes" a phantom load bug); the clean re-run above is the evidence.
 - Free-plan math (§8 advisory, for Roman): incoming WS messages count RAW (pre-20:1) against the 100k/day free DO request cap. Dominant steady-state ingress is the 30s protocol ping = 2/min/client. 8h gaming day, 10 users: 10 × 120/h × 8h = 9,600 pings + ~1,000 chat sends + ~500 voice/stream/watch ops + ~480 alarm ticks + ~1,000 Worker→DO internal fetches (authorize/history/stats) ≈ **12,600 DO requests/day ≈ 13% of the free cap → fits comfortably**. A heavy always-on weekend (24h, web+desktop both connected) scales to ~58k (≈58%) — still inside, but one growth step (more members / second active server) crosses it: **recommend Workers Paid ($5/mo) before real usage**, exactly as PLAN §8 anticipated.
+## S12.4 — Full regression matrix + close-out — 2026-07-11 (code-complete; two user-gated gates below)
+- Agent: claude-fable-5 (same session)
+- Preconditions: every step S0.1–S12.3 has a `## S<id>` entry (scripted grep loop → none missing). `grep -c 'STATUS: OPEN' docs/blockers.md` → **1** (the S12.2 mac-signing blocker this session filed; per PLAN §1052 it requires a human decision — accept unsigned mac v1 or provision Apple certs — so it is surfaced to Roman rather than self-resolved).
+- Task 1 coverage audit: shared ≥90 ✓ / worker ≥80 ✓ / app ≥70 + `**/src/media/**` ≥85 ✓ / desktop ≥70 ✓ (all vitest configs already enforce PLAN §10; none lowered). FIXED: `worker` and `desktop` lacked a `test:coverage` script, so root `pnpm test:coverage` (`-r --if-present`) was silently skipping BOTH — worker unit tests were not even running in CI's coverage gate. Added the scripts; also wired the serial DO WebSocket suite into CI (`pnpm -F @tavern/worker run test:ws` step in ci.yml) — it belongs to no package coverage run.
+- Task 2: root `verify:all` added verbatim. Task 6: README.md rewritten per the pinned outline (what/prereqs/secrets table/run/test/release/deep links).
+- DoD `pnpm verify:all` → **exit 0**: lint clean (oxlint --deny-warnings), format:check "All matched files use the correct format" (300 files), typecheck 0 errors ×5 packages, test:coverage green with thresholds (shared 16, worker 141, app 320, desktop 78 tests), build exit 0, `pnpm e2e` → **56 passed (3.1m)** (web + desktop projects, incl. the new killswitch spec), `STRICT=1 pnpm check:fr` → **covered 45/45**.
+- DoD non-goal greps (§1.9): all three (`editMessage|deleteMessage|messageReaction`, `typingIndicator|isTyping`, `/api/dm|directMessage` over app/src worker/src shared/src) → empty output ✓.
+- FR evidence matrix (traceability, one primary describe per FR — extracted from the actual test sources):
+
+| FR | test file | describe |
+|---|---|---|
+| FR-01 | worker/test/auth.test.ts | 'FR-01 register' |
+| FR-02 | worker/test/auth.test.ts | 'FR-02 login' |
+| FR-03 | worker/test/me.test.ts | 'FR-03 display name & username' |
+| FR-04 | worker/test/me.test.ts | 'FR-04 color' |
+| FR-05 | worker/test/me.test.ts | 'FR-05 avatar' |
+| FR-06 | worker/test/me.test.ts | 'FR-06/FR-07 settings' |
+| FR-07 | worker/test/me.test.ts | 'FR-06/FR-07 settings' |
+| FR-08 | worker/test/servers.test.ts | 'FR-08 create server' |
+| FR-09 | worker/test/servers.test.ts | 'FR-09 join server' |
+| FR-10 | worker/test/admin.test.ts | 'FR-10 password change' |
+| FR-11 | worker/test/admin.test.ts | 'FR-11 kick — catalog side' |
+| FR-12 | worker/test/admin.test.ts | 'FR-12 rename' |
+| FR-13 | worker/test/servers.test.ts | 'FR-13 channels schema' |
+| FR-14 | worker/test/ws/chat.spec.ts | 'FR-14 chat send/receive' |
+| FR-15 | worker/test/ws/chat.spec.ts | 'FR-15 mentions' |
+| FR-16 | app/test/notifications.test.ts | 'FR-16 shouldNotify' |
+| FR-17 | worker/test/ws/chat.spec.ts | 'FR-17 history' |
+| FR-18 | worker/test/ws/voice.spec.ts | 'FR-18 voice join/leave' |
+| FR-19 | worker/test/rtc-proxy.test.ts | 'FR-19 rtc proxy auth' |
+| FR-20 | app/test/media/audioGraph.test.ts | 'FR-20 gain routing' |
+| FR-21 | app/test/media/audioGraph.test.ts | 'FR-21 sink' |
+| FR-22 | app/test/media/capture.test.ts | 'FR-22 noise toggle' |
+| FR-23 | app/test/media/audioGraph.test.ts | 'FR-23 local analyser' |
+| FR-24 | worker/test/ws/voice.spec.ts | 'FR-24 session timer & auto-close' |
+| FR-25 | worker/test/recording-upload.test.ts | 'FR-25 multipart upload' |
+| FR-26 | worker/test/ws/voice.spec.ts | 'FR-26 flags relay' |
+| FR-27 | worker/test/do/preset-meter.test.ts | 'FR-27 preset repricing' |
+| FR-28 | app/src/features/streams/SharePickerDialog.test.tsx | 'FR-28 share picker' |
+| FR-29 | app/src/features/streams/StreamTile.test.tsx | 'FR-29 self preview' |
+| FR-30 | worker/test/rtc-proxy.test.ts | 'FR-30 pull grants' |
+| FR-31 | app/src/features/streams/StreamTile.test.tsx | 'FR-31 per-stream volume' |
+| FR-32 | shared/test/layout.test.ts | 'FR-32 canvas auto-layout' |
+| FR-33 | app/src/features/streams/Canvas.test.tsx | 'FR-33 focus mode layout' |
+| FR-34 | worker/test/sounds.test.ts | 'FR-34 soundboard upload' |
+| FR-35 | worker/test/sounds.test.ts | 'FR-35 trim rules' |
+| FR-36 | worker/test/ws/soundboard-play.spec.ts | 'FR-36 sound.play' |
+| FR-37 | worker/test/sounds.test.ts | 'FR-37 list ordering' |
+| FR-38 | app/test/soundboard/SoundboardPanel.test.tsx | 'FR-37/FR-38 panel' |
+| FR-39 | worker/test/activity-http.test.ts | 'FR-39 activity read' |
+| FR-40 | worker/test/do/watch-stats.test.ts | 'FR-40 watch/stream seconds' |
+| FR-41 | worker/test/servers.test.ts | 'FR-41 persistence' |
+| FR-42 | app/src/platform/web.test.tsx | 'FR-42 web platform bridge' |
+| FR-43 | worker/test/me.test.ts | 'FR-43 boot call /api/me' |
+| FR-44 | app/src/features/shell/UpdatePill.test.tsx | 'FR-44 update pill' |
+| FR-45 | worker/test/ws/room.spec.ts | 'FR-45 presence & room lifecycle' |
+
+- CI follow-up fixed in this step: e2e-desktop had stayed red on ubuntu after 79d9246 — the `--password-store=basic` Playwright launch arg never reached Chromium (playwright#16621 class, same as the fake-media flags). Root fix: `appendSwitch("password-store","basic")` in `applyFlags()` (TAVERN_E2E + linux only) + 2 flags tests (desktop 78 passed).
+- HONEST STATUS — the two remaining DoD gates are gated on decisions/actions only Roman can take:
+  1. **Nightly proof** (`gh workflow run nightly.yml … --exit-status`): dispatchable only once nightly.yml exists on the DEFAULT branch — i.e. after feat/electron merges to main (main still holds the abandoned Tauri tree). Also requires the four REALTIME/TURN repo secrets (classifier-blocked here).
+  2. **Blockers ledger = 0 OPEN**: the S12.2 mac-signing blocker needs Roman's accept-or-provision decision.
