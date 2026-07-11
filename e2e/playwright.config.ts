@@ -24,15 +24,13 @@ export const TONE_WAV = path.join(here, "fixtures", "tone-440hz-10s.wav");
 
 // The fake-media Chromium switches used by every browser project (real capture stack via the branded
 // channel; the tone WAV drives the local analyser past the §App-B speaking threshold).
+// NOTE: do NOT add --disable-features=AudioServiceOutOfProcess here. It fixes the fake-audio-file
+// switch under ELECTRON (e2e/harness/desktop.ts, S7.4) but BREAKS audio capture outright in the
+// branded Chrome build (verified locally: voice @realtime green without it, bytesReceived=0 with it).
 const fakeMediaArgs = [
   "--use-fake-ui-for-media-stream",
   "--use-fake-device-for-media-stream",
   `--use-file-for-fake-audio-capture=${TONE_WAV}`,
-  // Chromium 150 runs the audio service out-of-process, and the fake-capture file switch never
-  // reaches it — the fake mic emits SILENCE (first seen on the desktop harness, S7.4; resurfaced
-  // as audioLevel=0 in the nightly @realtime voice suite on ubuntu runners while bytesReceived
-  // kept climbing). Forcing in-process audio makes the tone actually play.
-  "--disable-features=AudioServiceOutOfProcess",
 ];
 
 // webServer entries. The app dev server + the e2e worker (mock SFU, --env e2e picks .dev.vars.e2e)

@@ -138,12 +138,22 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
         .toBeGreaterThan(480);
 
       // A drops the preset 720p30 → 480p30 on the fly (own-tile quality dropdown, applyConstraints +
-      // setParameters, no renegotiation). B's inbound high layer shrinks to ≤ 480 within 10s.
-      await a.page.getByTestId(`stream-tile-${track}`).hover();
-      await a.page.getByTestId(`stream-preset-${track}`).click();
-      await a.page.getByTestId(`stream-preset-option-480p30`).click();
+      // setParameters, no renegotiation). The minified worker-served build wires Base UI popups a
+      // tick late (the S11.1 slider precedent), so a blind option click can silently land on
+      // nothing (bimodal never-drops failures) — retry the selection until A's own trigger
+      // REFLECTS the new preset, then poll the media plane.
+      await expect(async () => {
+        await a.page.getByTestId(`stream-tile-${track}`).hover();
+        await a.page.getByTestId(`stream-preset-${track}`).click();
+        await a.page.getByTestId(`stream-preset-option-480p30`).click();
+        await expect(a.page.getByTestId(`stream-preset-${track}`)).toContainText("480p", {
+          timeout: 2_000,
+        });
+      }).toPass({ timeout: 30_000 });
+      // B's inbound high layer shrinks to ≤ 480 (eventual over the real SFU: encoder reconfig +
+      // keyframe + forwarding; FR-27's AC pins the outcome, not a latency).
       await expect
-        .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 10_000 })
+        .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 30_000 })
         .toBeLessThanOrEqual(480);
     } finally {
       await Promise.all([a.context.close(), b.context.close()]);
@@ -167,10 +177,11 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
         .toBeGreaterThan(0);
 
       // Focus (double-click) → tracks/update to the high layer → inbound frameHeight climbs above the
-      // low layer (>270) within 10s, with no publisher involvement.
+      // low layer (>270), with no publisher involvement. Same 20s real-network window as the other
+      // layer/preset polls in this file.
       await b.page.getByTestId(`stream-tile-${track}`).dblclick();
       await expect
-        .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 10_000 })
+        .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 20_000 })
         .toBeGreaterThan(270);
     } finally {
       await Promise.all([a.context.close(), b.context.close()]);

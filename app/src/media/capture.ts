@@ -28,7 +28,19 @@ function firstVideoTrack(stream: MediaStream): MediaStreamTrack {
 
 // echoCancellation is ALWAYS on (off + speakers = feedback); the single FR-22 toggle drives
 // noiseSuppression + autoGainControl together.
+// §10 e2e seam: the harness's fake mic is a STEADY 440 Hz sine (tone WAV), and Chromium's audio
+// processing treats a stationary tone as noise — NS/AEC adapt it to near-silence within seconds
+// (measured: RMS 0.36 raw → 0.04 at 3 s and falling), which zeroes the remote audioLevel the
+// @realtime suite asserts. Under the harness all processing is off; real users are unaffected.
 function micConstraints(opts: MicOpts): MediaTrackConstraints {
+  if (platformBridge.isE2E) {
+    return {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      ...(opts.deviceId ? { deviceId: { exact: opts.deviceId } } : {}),
+    };
+  }
   return {
     echoCancellation: true,
     noiseSuppression: opts.noiseSuppression,

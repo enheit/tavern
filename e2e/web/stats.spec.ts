@@ -158,8 +158,11 @@ test.describe("FR-40 stats e2e", () => {
         )
         .toBe("connected");
 
-      // Accrue ~10s of watch time (the DO's server-authoritative watch-seconds heartbeat, S8.4).
+      // Accrue ~10s of watch time, then UNWATCH: the stats snapshot reads only BANKED SQLite rows
+      // (open intervals are deliberately not read — stats.ts pin), and banking happens on
+      // watch.stop or the 60s alarm flush. Stopping the watch banks the interval immediately.
       await openedB.page.waitForTimeout(11_000);
+      await openedB.page.locator('[data-testid^="stream-unwatch-"]').first().click();
 
       // B opens Stats — B's "you watch most" now lists A (viewer=B → streamer=A pair, seconds > 0,
       // so the row is rendered even though 10s displays as "0:00" in h:mm).

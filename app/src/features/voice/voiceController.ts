@@ -211,7 +211,12 @@ export class VoiceController {
       this.deps.graph.attachLocalMic(mic);
       this.startSpeaking(selfId, this.deps.graph.getLocalAnalyser());
 
-      // ⑤ pull connect + pull every existing remote mic in the room store.
+      // ⑤ pull connect + pull every existing remote mic in the room store. Each mic goes through
+      // the per-mic retry, NEVER awaited into the join: a member who joined during OUR wiring
+      // window may not have registered their mic yet (§7.1 voice.state races the REST publish) and
+      // an awaited batch turned that pull_denied into a FULL join teardown — the joiner silently
+      // dropped out of voice (found via the nightly @realtime suite; reproduced locally). Remote
+      // mics are additive to a join, not a precondition of it.
       const pull = this.deps.createPull(serverId);
       this.pull = pull;
       this.unsubTrack = pull.onTrack((tn, _t, stream) => this.onPulledTrack(tn, stream));
@@ -220,9 +225,10 @@ export class VoiceController {
         .getState()
         .voice.members.map((m) => m.userId)
         .filter((id) => id !== selfId);
-      for (const id of remoteIds) this.pulledMics.add(id);
-      if (remoteIds.length > 0)
-        await pull.addRemoteTracks(remoteIds.map((id) => ({ trackName: micTrackName(id) })));
+      for (const id of remoteIds) {
+        this.pulledMics.add(id);
+        this.pullMicWithRetry(id, 0);
+      }
 
       this.unsubVoiceState = ws.on("voice.state", (m) => this.onVoiceState(m.voice.members));
       this.unsubReconnect = ws.on("hello.ok", () => void this.onReconnect());
