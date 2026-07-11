@@ -264,14 +264,29 @@ export class PublishSession {
   // FR-27 preset-drop red into fault domains: is the local encoder producing the new height (h-layer
   // frameHeight here) or is the SFU→viewer path stale (inbound stats on the watcher)? Sender-scoped
   // getStats keeps the report to this one track. Narrowed with `in`/`typeof` (no `as`, §9.1).
-  async outboundVideoStats(
-    trackName: string,
-  ): Promise<Array<{ rid: string | null; frameHeight: number | null; framesSent: number }>> {
+  async outboundVideoStats(trackName: string): Promise<
+    Array<{
+      rid: string | null;
+      frameHeight: number | null;
+      framesSent: number;
+      bytesSent: number;
+      framesPerSecond: number | null;
+      targetBitrate: number | null;
+      qualityLimitationReason: string | null;
+    }>
+  > {
     const sender = this.senders.get(trackName);
     if (!sender) return [];
     const report = await sender.getStats();
-    const layers: Array<{ rid: string | null; frameHeight: number | null; framesSent: number }> =
-      [];
+    const layers: Array<{
+      rid: string | null;
+      frameHeight: number | null;
+      framesSent: number;
+      bytesSent: number;
+      framesPerSecond: number | null;
+      targetBitrate: number | null;
+      qualityLimitationReason: string | null;
+    }> = [];
     report.forEach((stat) => {
       if (stat.type !== "outbound-rtp") return;
       if (!("kind" in stat) || stat.kind !== "video") return;
@@ -281,6 +296,19 @@ export class PublishSession {
           "frameHeight" in stat && typeof stat.frameHeight === "number" ? stat.frameHeight : null,
         framesSent:
           "framesSent" in stat && typeof stat.framesSent === "number" ? stat.framesSent : 0,
+        bytesSent: "bytesSent" in stat && typeof stat.bytesSent === "number" ? stat.bytesSent : 0,
+        framesPerSecond:
+          "framesPerSecond" in stat && typeof stat.framesPerSecond === "number"
+            ? stat.framesPerSecond
+            : null,
+        targetBitrate:
+          "targetBitrate" in stat && typeof stat.targetBitrate === "number"
+            ? stat.targetBitrate
+            : null,
+        qualityLimitationReason:
+          "qualityLimitationReason" in stat && typeof stat.qualityLimitationReason === "string"
+            ? stat.qualityLimitationReason
+            : null,
       });
     });
     return layers;

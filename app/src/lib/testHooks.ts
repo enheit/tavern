@@ -28,6 +28,10 @@ export interface OutboundVideoLayer {
   rid: string | null;
   frameHeight: number | null;
   framesSent: number;
+  bytesSent: number;
+  framesPerSecond: number | null;
+  targetBitrate: number | null;
+  qualityLimitationReason: string | null;
 }
 
 export interface TavernTestRtc {
@@ -83,6 +87,8 @@ export function clearWatchPullState(trackName: string): void {
 export interface VideoStats {
   framesDecoded: number;
   frameHeight: number | null;
+  bytesReceived: number;
+  framesPerSecond: number | null;
 }
 
 // S8.5 @realtime: per-watch inbound-video getStats reader, keyed by video trackName. The WatchController
@@ -150,6 +156,12 @@ export function installTestHooks(sources: TestHookSources): void {
     layerCalls,
   };
   window.__tavernTestVideoStats = (trackName) =>
-    watchVideoReaders[trackName]?.() ?? Promise.resolve({ framesDecoded: 0, frameHeight: null });
+    watchVideoReaders[trackName]?.() ??
+    Promise.resolve({
+      framesDecoded: 0,
+      frameHeight: null,
+      bytesReceived: 0,
+      framesPerSecond: null,
+    });
   /* oxlint-enable no-underscore-dangle */
 }

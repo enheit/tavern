@@ -339,7 +339,12 @@ describe("FR-19 sdp ops (passthrough)", () => {
     );
     expect(call.method).toBe("PUT");
     expect(call.sessionId).toBe("sess-y");
-    expect(call.payload).toEqual({ mid: "2", simulcast: { preferredRid: "h" } });
+    // The Worker PINS the requested layer (priorityOrdering/ridNotAvailable "none") so the SFU's
+    // automatic mode can never bounce a fullscreen watcher back to the 270p l layer on a BWE dip.
+    expect(call.payload).toEqual({
+      mid: "2",
+      simulcast: { preferredRid: "h", priorityOrdering: "none", ridNotAvailable: "none" },
+    });
   });
 
   it("tracks/update with a trackName reprices the DO watch grant (FR-33 op:'layer', G5)", async () => {

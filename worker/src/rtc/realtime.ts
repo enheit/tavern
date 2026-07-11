@@ -20,11 +20,21 @@ const RETRY_DELAYS_MS = [150, 400];
 
 export type SessionDescription = { sdp: string; type: "offer" | "answer" };
 export type LocalTrackReq = { location: "local"; mid: string; trackName: string };
+// Simulcast selection passed to the SFU. priorityOrdering/ridNotAvailable "none" PIN the preferred
+// layer: without them the SFU's automatic mode ("asciibetical") keeps down-switching a watcher to
+// the 270p l layer whenever its bandwidth estimate dips below the h cap — measured flapping
+// 270↔1080 every few seconds on the 2026-07-11 quality probe, which is exactly the "fullscreen
+// looks like mush" bug. Layer choice is UI intent (grid=l, focus/fullscreen=h), never the SFU's.
+export type SimulcastPrefs = {
+  preferredRid: "h" | "l";
+  priorityOrdering?: "none" | "asciibetical";
+  ridNotAvailable?: "none" | "asciibetical";
+};
 export type RemoteTrackReq = {
   location: "remote";
   sessionId: string;
   trackName: string;
-  simulcast?: { preferredRid: "h" | "l" };
+  simulcast?: SimulcastPrefs;
 };
 export type TrackResult = {
   trackName?: string;
@@ -48,11 +58,7 @@ export interface RealtimeClient {
   ): Promise<TracksNewResponse>;
   newRemoteTracks(sessionId: string, tracks: RemoteTrackReq[]): Promise<TracksNewResponse>;
   renegotiate(sessionId: string, answer: SessionDescription): Promise<void>; // PUT
-  updateTrack(
-    sessionId: string,
-    mid: string,
-    simulcast: { preferredRid: "h" | "l" },
-  ): Promise<void>; // PUT tracks/update
+  updateTrack(sessionId: string, mid: string, simulcast: SimulcastPrefs): Promise<void>; // PUT tracks/update
   closeTracks(
     sessionId: string,
     mids: string[],
@@ -173,11 +179,7 @@ class HttpRealtimeClient implements RealtimeClient {
     });
   }
 
-  async updateTrack(
-    sessionId: string,
-    mid: string,
-    simulcast: { preferredRid: "h" | "l" },
-  ): Promise<void> {
+  async updateTrack(sessionId: string, mid: string, simulcast: SimulcastPrefs): Promise<void> {
     await this.request("PUT", `/sessions/${sessionId}/tracks/update`, {
       tracks: [{ mid, simulcast }],
     });

@@ -16,9 +16,12 @@ import { REALTIME_URL } from "../playwright.config";
 // declared here (only this spec reads it, so no merge with __tavernTestRtc).
 declare global {
   interface Window {
-    __tavernTestVideoStats?: (
-      trackName: string,
-    ) => Promise<{ framesDecoded: number; frameHeight: number | null }>;
+    __tavernTestVideoStats?: (trackName: string) => Promise<{
+      framesDecoded: number;
+      frameHeight: number | null;
+      bytesReceived: number;
+      framesPerSecond: number | null;
+    }>;
   }
 }
 

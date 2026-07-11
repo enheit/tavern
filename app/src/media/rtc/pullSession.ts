@@ -184,12 +184,20 @@ export class PullSession {
   // simulcast layer / preset). Reads existing WebRTC stats only; narrowed with `in`/`typeof` because
   // RTCStats does not declare the video members (no `as`-casts, §9.1). Not exercised under the mock
   // (no media plane) — the PR streams spec asserts signaling/state instead.
-  async inboundVideoStats(): Promise<{ framesDecoded: number; frameHeight: number | null }> {
+  async inboundVideoStats(): Promise<{
+    framesDecoded: number;
+    frameHeight: number | null;
+    bytesReceived: number;
+    framesPerSecond: number | null;
+  }> {
     const pc = this.pc;
-    if (!pc) return { framesDecoded: 0, frameHeight: null };
+    if (!pc)
+      return { framesDecoded: 0, frameHeight: null, bytesReceived: 0, framesPerSecond: null };
     const report = await pc.getStats();
     let framesDecoded = 0;
     let frameHeight: number | null = null;
+    let bytesReceived = 0;
+    let framesPerSecond: number | null = null;
     report.forEach((stat) => {
       if (stat.type !== "inbound-rtp") return;
       if (!("kind" in stat) || stat.kind !== "video") return;
@@ -199,8 +207,14 @@ export class PullSession {
       if ("frameHeight" in stat && typeof stat.frameHeight === "number") {
         frameHeight = stat.frameHeight;
       }
+      if ("bytesReceived" in stat && typeof stat.bytesReceived === "number") {
+        bytesReceived += stat.bytesReceived;
+      }
+      if ("framesPerSecond" in stat && typeof stat.framesPerSecond === "number") {
+        framesPerSecond = stat.framesPerSecond;
+      }
     });
-    return { framesDecoded, frameHeight };
+    return { framesDecoded, frameHeight, bytesReceived, framesPerSecond };
   }
 
   async close(): Promise<void> {

@@ -13,7 +13,7 @@ import {
 import type { ErrorCode } from "@tavern/shared";
 import type { AuthVars } from "../middleware";
 import { RealtimeError, createRealtimeClient } from "../rtc/realtime";
-import type { RemoteTrackReq, TracksNewResponse } from "../rtc/realtime";
+import type { RemoteTrackReq, SimulcastPrefs, TracksNewResponse } from "../rtc/realtime";
 import type { RtcAuthorizeReq, RtcKind } from "../do/roomState";
 
 // Flow (pinned §6.1 task 4):
@@ -83,6 +83,15 @@ const rtcUpdateBody = z.object({
 // The per-share counter `n` in the track-name grammar is a positive integer with no leading zero.
 function isShareCounter(v: string | undefined): boolean {
   return v !== undefined && /^[1-9][0-9]*$/.test(v);
+}
+
+// Pin the client-requested simulcast layer at the SFU. Both "none"s disable the SFU's automatic
+// asciibetical mode, which otherwise down-switches a watcher to the 250 kbps / 270p l layer every
+// time its bandwidth estimate dips below the h cap (measured 270↔1080 flapping on the quality
+// probe) — the direct cause of "fullscreen looks terrible at 1080p60". Layer choice is UI intent:
+// grid tiles ask for l, focused/fullscreen tiles ask for h (FR-33); the SFU must follow, not guess.
+function pinnedSimulcast(preferredRid: "h" | "l"): SimulcastPrefs {
+  return { preferredRid, priorityOrdering: "none", ridNotAvailable: "none" };
 }
 
 // Track-name grammar (§7.1) → kind, AND ownership check (a client may only publish tracks named for
@@ -324,7 +333,9 @@ rtcRoute.post("/:serverId/tracks", rtcMember, async (c) => {
         "an authorized pull resolves every trackName to a publisher session",
       ),
       trackName: t.trackName,
-      ...(t.simulcast === undefined ? {} : { simulcast: t.simulcast }),
+      ...(t.simulcast === undefined
+        ? {}
+        : { simulcast: pinnedSimulcast(t.simulcast.preferredRid) }),
     }));
     const sfu = await client.newRemoteTracks(sessionId, remoteReqs);
     return c.json(toClientResponse(sfu));
@@ -372,7 +383,11 @@ rtcRoute.put("/:serverId/tracks/update", rtcMember, async (c) => {
   await Promise.all(repriceOps);
   const client = createRealtimeClient(c.env);
   // Distinct mids on one session — the SFU layer switch is idempotent per mid, so no serialization.
-  await Promise.all(body.data.tracks.map((t) => client.updateTrack(sessionId, t.mid, t.simulcast)));
+  await Promise.all(
+    body.data.tracks.map((t) =>
+      client.updateTrack(sessionId, t.mid, pinnedSimulcast(t.simulcast.preferredRid)),
+    ),
+  );
   return c.json({});
 });
 
