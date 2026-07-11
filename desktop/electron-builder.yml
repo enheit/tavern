@@ -27,6 +27,10 @@ nsis:
 linux:
   target: AppImage
   category: Network
+  # electron-builder otherwise derives the executable from the package name (`@tavern/desktop` →
+  # `@taverndesktop`, rejected: '@' is unsafe in file paths — first surfaced when package-check ran
+  # on ubuntu for the first time). Also pins the S12.1 path table's `linux-unpacked/tavern`.
+  executableName: tavern
 # AppImage static-runtime toolset (no FUSE2 — required for Void/Ubuntu 24.04+, PLAN §3.2/§3.6).
 # `toolsets` is a ROOT-level key in the electron-builder 26.15.6 schema (ToolsetConfig), not a
 # `linux` child — see docs/progress.md deviation for the S12.1 placement fix.
