@@ -3,6 +3,51 @@
 All notable changes to Tavern are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semver.
 
+## [0.4.0] — 2026-07-12
+
+### Added
+
+- **Recording player**: recordings now play in a proper in-app player
+  (play/pause, seek bar, elapsed/total time) instead of a bare browser element.
+  The media route serves HTTP byte ranges + conditional GETs — recorded WebM
+  carries no duration header, so seeking (and the duration display itself)
+  needs a working range read; the desktop app fetches via an authed blob
+  because a plain `<audio src>` cannot send the Bearer token.
+- **macOS screen-recording permission hint**: when Tavern lacks the Screen
+  Recording permission (the OS silently returns an empty source list), the
+  share picker explains why and deep-links System Settings → Privacy &
+  Security → Screen Recording.
+- **Random name colors**: new accounts get a random non-gray palette color
+  instead of the shared gray placeholder; the profile editor's swatches now
+  offer exactly that shared palette (a free hex input still covers the rest).
+- **Header avatar**: the user menu shows your uploaded avatar (colored initial
+  stays as the fallback), and a fresh upload appears immediately — avatars are
+  served with etag revalidation instead of a day-long cache.
+
+### Fixed
+
+- **Streams were a blurry mess for watchers.** Two compounding causes: the
+  30/60 fps bitrate caps starved motion content (a 1080p60 share got 3000 kbps
+  ≈ 0.02 bits/pixel — re-anchored to 6000; all 30/60 rows raised), and the
+  SFU's automatic simulcast mode bounced fullscreen watchers back down to the
+  270p layer on every bandwidth-estimate dip — watcher pulls now pin their
+  chosen layer. Data tiers remain the cost knob.
+- **Your own audio no longer echoes into your stream** (Windows 11+ and
+  macOS): loopback capture now uses Chromium's process-exclusion device, so
+  Tavern's voices/soundboard are subtracted from the shared system audio.
+  Older Windows (builds below 20348) keeps full loopback and its one-time
+  caveat toast; the toast is suppressed where exclusion is active.
+- **Soundboard sounds now play for every in-voice member.** The `sound.played`
+  broadcast is self-contained (carries the trim window) and playback moved to
+  the voice controller — previously only members with the soundboard panel
+  open actually heard anything.
+- **Streams started before you connected are now visible**: the hello snapshot
+  reads active streams from the RTC registry, so a client joining mid-share
+  sees the tile instead of an empty canvas.
+- **No more frozen "zombie" watches after a reconnect**: a room resnapshot
+  revokes pull grants server-side, so live watches now reset to the Watch
+  button instead of sitting on a dead pull with frozen video.
+
 ## [0.3.0] — 2026-07-11
 
 ### Added
