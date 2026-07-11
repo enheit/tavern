@@ -15,8 +15,10 @@
     "format:check": "oxfmt --check",
     "check:fr": "node scripts/check-fr-traceability.mjs",
     "check:i18n": "node scripts/check-i18n-literals.mjs",
+    "build:web": "pnpm -F @tavern/app build && pnpm -F @tavern/worker run deploy:dry",
     "e2e": "pnpm -F @tavern/e2e exec playwright test --project=web --project=desktop",
-    "e2e:realtime": "pnpm -F @tavern/e2e exec playwright test --project=web-realtime"
+    "e2e:realtime": "pnpm -F @tavern/e2e exec playwright test --project=web-realtime",
+    "e2e:worker-target": "pnpm build:web && pnpm -F @tavern/e2e exec playwright test --config playwright.worker.config.ts --grep-invert @realtime"
   },
   "devDependencies": {
     "oxc-parser": "0.139.0",

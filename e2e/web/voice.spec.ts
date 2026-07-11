@@ -253,18 +253,26 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
     if (!a || !b) throw new Error("expected two clients");
     try {
       // Right-click B's People row → the per-user volume menu; drive the slider to 150% by keyboard
-      // (Home → 0, then 30 × +5% steps) for a deterministic value.
+      // (Home → 0, then 30 × +5% steps) for a deterministic value. Base UI's thumb moves focus to
+      // its hidden range input a tick after pointerdown — under the minified worker-served build
+      // that tick lands late enough for a blind Home press to miss the input entirely (S11.1 found
+      // this: the gain ended at the 200% clamp). So assert focus before pressing, and assert the
+      // input value after every stage instead of pressing keys blind.
       await a.page.getByTestId(`member-${b.user.userId}`).click({ button: "right" });
       await expect(a.page.getByTestId(`volume-menu-${b.user.userId}`)).toBeVisible();
       const thumb = a.page
         .getByTestId(`volume-slider-${b.user.userId}`)
         .locator('[data-slot="slider-thumb"]');
+      const sliderInput = thumb.locator("input");
       await thumb.click();
-      await a.page.keyboard.press("Home");
+      await expect(sliderInput).toBeFocused();
+      await sliderInput.press("Home");
+      await expect(sliderInput).toHaveJSProperty("valueAsNumber", 0);
       await Array.from({ length: 30 }).reduce<Promise<void>>(
-        (p) => p.then(() => a.page.keyboard.press("ArrowRight")),
+        (p) => p.then(() => sliderInput.press("ArrowRight")),
         Promise.resolve(),
       );
+      await expect(sliderInput).toHaveJSProperty("valueAsNumber", 150);
 
       await expect
         .poll(() => a.page.evaluate((id) => window.__tavernTestAudio?.userGains[id], b.user.userId))
