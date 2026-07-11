@@ -20,7 +20,8 @@ jobs:
       - name: Write worker/.dev.vars (real SFU creds)
         run: |
           {
-            echo "BETTER_AUTH_SECRET=nightly-ci-throwaway-secret"
+            echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
+            echo "BETTER_AUTH_URL=http://localhost:8788"
             echo "REALTIME_APP_ID=${{ secrets.REALTIME_APP_ID }}"
             echo "REALTIME_APP_SECRET=${{ secrets.REALTIME_APP_SECRET }}"
             echo "TURN_KEY_ID=${{ secrets.TURN_KEY_ID }}"
@@ -101,7 +102,8 @@ jobs:
       - name: Write worker/.dev.vars (real SFU creds)
         run: |
           {
-            echo "BETTER_AUTH_SECRET=nightly-ci-throwaway-secret"
+            echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)"
+            echo "BETTER_AUTH_URL=http://localhost:8788"
             echo "REALTIME_APP_ID=${{ secrets.REALTIME_APP_ID }}"
             echo "REALTIME_APP_SECRET=${{ secrets.REALTIME_APP_SECRET }}"
             echo "TURN_KEY_ID=${{ secrets.TURN_KEY_ID }}"

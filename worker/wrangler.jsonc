@@ -24,6 +24,9 @@
     "run_worker_first": ["/api/*"]
   },
   "observability": { "enabled": true },
+  // Static better-auth base URL (see worker/src/auth.ts) — per environment; local dev overrides
+  // via .dev.vars (8787), the nightly realtime worker via its generated .dev.vars (8788).
+  "vars": { "BETTER_AUTH_URL": "https://tavern.roman-mahotskyi.workers.dev" },
   // NEVER DEPLOY these env vars (dev/test flags only — .dev.vars / .dev.vars.e2e / CI step env):
   //   TAVERN_SFU_MOCK        — swaps the Realtime client for the fixture mock (§10 hermeticity)
   //   TAVERN_TEST            — unlocks the /api/__test/set-egress seeding route (S12.3, §8 e2e)
@@ -43,6 +46,7 @@
   // r2_buckets, durable_objects, and assets entries are re-declared here verbatim from the top level.
   "env": {
     "e2e": {
+      "vars": { "BETTER_AUTH_URL": "http://localhost:8787" },
       "d1_databases": [
         {
           "binding": "DB",

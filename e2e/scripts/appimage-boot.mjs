@@ -24,6 +24,11 @@ console.log(`appimage-boot: launching ${appImage}`);
 const app = await _electron.launch({
   executablePath: appImage,
   args: ["--no-sandbox", "--password-store=basic"],
+  // Docker containers expose no /dev/fuse, so the runtime cannot MOUNT the image ("No suitable
+  // fusermount binary found … Cannot mount AppImage", reproduced in ubuntu:24.04 locally) —
+  // extract-and-run is the runtime's documented FUSE-less path and exactly what a keyring-less
+  // container user would do. FUSE-mounted boots are covered implicitly on real desktops.
+  env: { ...process.env, APPIMAGE_EXTRACT_AND_RUN: "1" },
 });
 const page = await app.firstWindow();
 await page.waitForLoadState("domcontentloaded");

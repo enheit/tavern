@@ -1,7 +1,9 @@
-BETTER_AUTH_SECRET=dev-secret-change-me
+BETTER_AUTH_SECRET=6b1d0f7f4e9a4c33a1e2b58c07d94f6a8e02c3d51b47a9e6f30c8b12d5a47e90
 REALTIME_APP_ID=
 REALTIME_APP_SECRET=
 TURN_KEY_ID=
 TURN_KEY_API_TOKEN=
 # Test/dev only: '1' shortens the empty-voice alarm to 5s. NEVER set in production config.
 TAVERN_TEST_FAST_ALARM=
+# Static better-auth base URL for the local dev worker (see worker/src/auth.ts).
+BETTER_AUTH_URL=http://localhost:8787
