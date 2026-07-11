@@ -35,12 +35,26 @@ test.describe("FR-42 deployed smoke", () => {
       await page.getByTestId("create-submit").click();
       await expect(page).toHaveURL(/\/s\/[0-9a-zA-Z-]+$/, { timeout: 15_000 });
 
-      // Send: the message round-trips through the deployed ServerRoom DO and renders.
+      // A chat.send fired while the room WS is still connecting is dropped by design (the optimistic
+      // row stays until the reconnect resnapshot clears it) — so wait for the live connection before
+      // sending. Real edge latency makes this race reliably lose without the gate.
+      await expect(page.getByTestId("connection-dot")).toHaveAttribute("data-status", "open", {
+        timeout: 15_000,
+      });
+
+      // Send: the message must RECONCILE (optimistic rows render instantly with a negative id —
+      // message--N — and only flip to the server id once chat.new comes back over the WS; closing
+      // the context on the optimistic copy would lose the send if the socket is still connecting,
+      // which real edge latency made happen on the first run of this spec).
       const text = `deployed-${hex(4)}`;
       const input = page.getByTestId("composer-input");
       await input.fill(text);
       await input.press("Enter");
-      await expect(page.getByText(text, { exact: true })).toBeVisible({ timeout: 10_000 });
+      await expect(
+        page
+          .locator('li[data-testid^="message-"]:not([data-testid^="message--"])')
+          .filter({ hasText: text }),
+      ).toBeVisible({ timeout: 15_000 });
     } finally {
       await context.close();
     }
