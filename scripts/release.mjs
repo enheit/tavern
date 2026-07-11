@@ -18,7 +18,9 @@ const gitOut = (...args) => execFileSync("git", args).toString().trim();
 // already cut — v0.1.0 exists from the pre-rewrite Tauri build, for example. Pick the next number.
 git("fetch", "--tags", "--quiet", "origin");
 if (gitOut("tag", "-l", `v${version}`) !== "") {
-  console.error(`release: tag v${version} already exists (locally or on origin) — pick a new version`);
+  console.error(
+    `release: tag v${version} already exists (locally or on origin) — pick a new version`,
+  );
   process.exit(1);
 }
 
