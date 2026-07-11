@@ -228,5 +228,17 @@
   "common_confirm": "Підтвердити",
   "shell_update_pill_label": "Перезапустити для оновлення ({version})",
   "cost_warning_banner": "Стрімінг використав {usedGB} ГБ із {capGB} ГБ місячного бюджету — нові перегляди зупиняться на ліміті.",
-  "cost_cap_toast": "Місячний бюджет стрімінгу вичерпано — перегляд призупинено до наступного місяця."
+  "cost_cap_toast": "Місячний бюджет стрімінгу вичерпано — перегляд призупинено до наступного місяця.",
+  "product_title": "Tavern",
+  "product_tagline": "Голос, відео та демонстрація екрана для твоєї компанії.",
+  "product_logo_alt": "Іконка застосунку Tavern",
+  "product_download_mac": "Завантажити для macOS",
+  "product_download_windows": "Завантажити для Windows",
+  "product_download_linux": "Завантажити для Linux",
+  "product_open_browser": "Відкрити Tavern у браузері",
+  "product_also_available": "Також доступно для",
+  "product_platform_mac": "macOS",
+  "product_platform_windows": "Windows",
+  "product_platform_linux": "Linux",
+  "product_all_releases": "Усі релізи"
 }

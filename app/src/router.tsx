@@ -61,6 +61,14 @@ export const routes: RouteObject[] = [
     HydrateFallback: BootLoader,
     children: [
       {
+        // Public download landing page — no auth, no boot gate: a logged-out visitor grabbing an
+        // installer must never hit the boot loader or a login bounce.
+        path: "product",
+        lazy: async () => ({
+          Component: (await import("@/features/product/ProductPage")).ProductPage,
+        }),
+      },
+      {
         Component: GuestOnlyLayout,
         children: [
           {

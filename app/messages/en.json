@@ -228,5 +228,17 @@
   "common_confirm": "Confirm",
   "shell_update_pill_label": "Restart to update ({version})",
   "cost_warning_banner": "Streaming has used {usedGB} GB of the {capGB} GB monthly budget — new watches stop at the cap.",
-  "cost_cap_toast": "Monthly streaming budget reached — watching is paused until next month."
+  "cost_cap_toast": "Monthly streaming budget reached — watching is paused until next month.",
+  "product_title": "Tavern",
+  "product_tagline": "Voice, video, and screen sharing for your crew.",
+  "product_logo_alt": "Tavern app icon",
+  "product_download_mac": "Download for macOS",
+  "product_download_windows": "Download for Windows",
+  "product_download_linux": "Download for Linux",
+  "product_open_browser": "Open Tavern in your browser",
+  "product_also_available": "Also available for",
+  "product_platform_mac": "macOS",
+  "product_platform_windows": "Windows",
+  "product_platform_linux": "Linux",
+  "product_all_releases": "All releases"
 }
