@@ -184,5 +184,7 @@
   "admin_kicked": "{name} was kicked",
   "common_cancel": "Cancel",
   "common_confirm": "Confirm",
-  "shell_update_pill_label": "Restart to update ({version})"
+  "shell_update_pill_label": "Restart to update ({version})",
+  "cost_warning_banner": "Streaming has used {usedGB} GB of the {capGB} GB monthly budget — new watches stop at the cap.",
+  "cost_cap_toast": "Monthly streaming budget reached — watching is paused until next month."
 }

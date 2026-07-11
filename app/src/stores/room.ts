@@ -40,6 +40,12 @@ export interface RoomState {
   serverMeta: ServerMeta | null;
   kicked: boolean;
   lastProtocolError: string | null;
+  // §8 G5 warn threshold: set by the `cost.warning` broadcast; the banner (S12.3 CostBanner) shows
+  // while set and not dismissed. Dismissal is per-session (store flag, no persistence) and survives
+  // resnapshots — hello.ok deliberately does not touch either field.
+  costWarning: { usedGB: number; capGB: number } | null;
+  costWarningDismissed: boolean;
+  dismissCostWarning: () => void;
   apply: (msg: ServerMessage) => void;
   // FR-39 live activity: append an `activity.new` entry, deduped by id (an entry can arrive both via
   // the live tail and via an Activity-tab query refetch), capping the tail at ACTIVITY_TAIL_MAX.
@@ -125,8 +131,12 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
     case "kicked":
       // The only `kicked` signal (consumed by S5.2's ServerPage); close follows on the wire.
       return { kicked: true };
+    case "cost.warning":
+      // §8 G5: latch the warn payload for the CostBanner (S12.3). Dismissed state is untouched —
+      // the broadcast fires once per month-bucket, so a re-latch after dismissal is a new month.
+      return { costWarning: { usedGB: msg.usedGB, capGB: msg.capGB } };
     default:
-      // error / pong / sound.played / sound.updated / cost.warning carry no room-state delta.
+      // error / pong / sound.played / sound.updated carry no room-state delta.
       return {};
   }
 }
@@ -152,6 +162,9 @@ export function createRoomStore(serverId: string) {
     serverMeta: null,
     kicked: false,
     lastProtocolError: null,
+    costWarning: null,
+    costWarningDismissed: false,
+    dismissCostWarning: () => set({ costWarningDismissed: true }),
     apply: (msg) => {
       if (msg.t === "hello.ok") {
         nonceToId.clear();

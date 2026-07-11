@@ -415,7 +415,7 @@ export class VoiceController {
     for (const id of ids) {
       if (id === selfId || this.pulledMics.has(id)) continue;
       this.pulledMics.add(id);
-      void this.pull?.addRemoteTracks([{ trackName: micTrackName(id) }]);
+      this.pullMicWithRetry(id, 0);
     }
     for (const id of Array.from(this.pulledMics)) {
       if (ids.has(id)) continue;
@@ -425,6 +425,25 @@ export class VoiceController {
       this.stopSpeaking(id);
       useMediaStore.getState().setSpeaking(id, false);
     }
+  }
+
+  // voice.state announcing a joiner races that joiner's REST publish (§7.1): the mic track may not
+  // be registered yet, so the first pull can 403 (pull_denied). Retry briefly (10 × 500 ms covers
+  // any realistic publish handshake); on final failure unmark the id so a later voice.state
+  // retriggers the pull instead of leaving the member permanently silent (S12.3 soak finding).
+  private pullMicWithRetry(id: string, attempt: number): void {
+    const pull = this.pull;
+    if (pull === null) return;
+    pull.addRemoteTracks([{ trackName: micTrackName(id) }]).catch(() => {
+      if (!this.pulledMics.has(id)) return; // member already left — the pull is moot
+      if (attempt >= 9) {
+        this.pulledMics.delete(id);
+        return;
+      }
+      setTimeout(() => {
+        if (this.pulledMics.has(id)) this.pullMicWithRetry(id, attempt + 1);
+      }, 500);
+    });
   }
 
   private startSpeaking(userId: string, analyser: AnalyserNode | null): void {

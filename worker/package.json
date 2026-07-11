@@ -11,6 +11,7 @@
     "deploy": "wrangler deploy",
     "deploy:dry": "wrangler deploy --dry-run",
     "test": "vitest run --coverage",
+    "test:coverage": "vitest run --coverage",
     "test:ws": "vitest run --config vitest.config.ws.ts --max-workers=1 --no-isolate",
     "types": "wrangler types",
     "migrate:local": "wrangler d1 migrations apply tavern-db --local",

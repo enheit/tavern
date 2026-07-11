@@ -14,6 +14,7 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "check:fr": "node scripts/check-fr-traceability.mjs",
+    "verify:all": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test:coverage && pnpm build && pnpm e2e && STRICT=1 pnpm check:fr",
     "check:i18n": "node scripts/check-i18n-literals.mjs",
     "build:web": "pnpm -F @tavern/app build && pnpm -F @tavern/worker run deploy:dry",
     "e2e": "pnpm -F @tavern/e2e exec playwright test --project=web --project=desktop",

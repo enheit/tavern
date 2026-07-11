@@ -184,5 +184,7 @@
   "admin_kicked": "{name} виключено",
   "common_cancel": "Скасувати",
   "common_confirm": "Підтвердити",
-  "shell_update_pill_label": "Перезапустити для оновлення ({version})"
+  "shell_update_pill_label": "Перезапустити для оновлення ({version})",
+  "cost_warning_banner": "Стрімінг використав {usedGB} ГБ із {capGB} ГБ місячного бюджету — нові перегляди зупиняться на ліміті.",
+  "cost_cap_toast": "Місячний бюджет стрімінгу вичерпано — перегляд призупинено до наступного місяця."
 }

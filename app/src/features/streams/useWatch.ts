@@ -13,6 +13,7 @@ import {
 } from "@/lib/testHooks";
 import { connectRoom } from "@/lib/wsClient";
 import { browserRtcPort } from "@/media/ports";
+import { m } from "@/paraglide/messages.js";
 import { PullSession } from "@/media/rtc/pullSession";
 import { createSfuSignal } from "@/media/sfuSignal";
 import { useServersStore } from "@/stores/servers";
@@ -130,12 +131,15 @@ export class WatchController {
       this.finish();
       return;
     }
-    this.unsubRemoved = ws.on("stream.removed", (m) => {
-      if (m.trackName === this.stream.trackName) this.unwatch();
+    this.unsubRemoved = ws.on("stream.removed", (msg) => {
+      if (msg.trackName === this.stream.trackName) this.unwatch();
     });
-    this.unsubError = ws.on("error", (m) => {
-      if (this.stateValue === "connecting" && (m.code === "pull_denied" || m.code === "cost_cap"))
-        this.failGrant(m.code);
+    this.unsubError = ws.on("error", (msg) => {
+      if (
+        this.stateValue === "connecting" &&
+        (msg.code === "pull_denied" || msg.code === "cost_cap")
+      )
+        this.failGrant(msg.code);
     });
     void this.startPull(serverId);
   }
@@ -175,8 +179,9 @@ export class WatchController {
   }
 
   private failGrant(code: ErrorCode): void {
-    // §9.5: surface the typed code as an i18n-mapped toast, then return to idle.
-    toast.error(errorMessage(code));
+    // §9.5: surface the typed code as an i18n-mapped toast, then return to idle. cost_cap gets the
+    // S12.3-pinned kill-switch copy (§8 G5: budget reached, watching pauses until next month).
+    toast.error(code === "cost_cap" ? m.cost_cap_toast() : errorMessage(code));
     this.finish();
   }
 

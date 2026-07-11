@@ -417,6 +417,10 @@ export class ServerRoom extends DurableObject<Env> {
         const body = testSeedSharesBody.parse(await request.json());
         return Response.json({ screens: await this.room.rtcSeedShares(body.count) });
       }
+      // POST /internal/test/set-egress (S12.3, TAVERN_TEST only) → seed the egress meter so the §8
+      // kill-switch e2e can cross the warn/kill thresholds. The handler itself 404s without the flag.
+      case "/internal/test/set-egress":
+        return this.costMeter.handleSetEgress(request);
       default:
         return Response.json({ error: "not_found" satisfies ErrorCode }, { status: 404 });
     }
@@ -694,6 +698,14 @@ export class ServerRoom extends DurableObject<Env> {
   ): Promise<void> {
     if (msg.t !== "watch.start") return;
     const at = Date.now();
+    // §8 G5 kill switch (S12.3): at the cap the watch is rejected HERE — before any grant, meter
+    // watch, or SFU state exists (G1: rejection precedes SFU ops). The REST pull path's isBlocked
+    // check (roomState op:pull) stays as the belt for pulls that bypass watch.start. Voice is
+    // untouched: mic pulls carry no grant and skip the blocked check.
+    if (this.costMeter.isBlocked(at)) {
+      this.room.send(ws, { t: "error", code: "cost_cap" });
+      return;
+    }
     const info = await this.room.rtcWatchable(msg.trackName);
     if (info === null) {
       this.room.send(ws, { t: "error", code: "bad_message" });

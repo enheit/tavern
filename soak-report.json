@@ -1,0 +1,9 @@
+{
+  "clients": 10,
+  "durationMs": 601988,
+  "wsDisconnects": 0,
+  "reconnects": 0,
+  "errorCount": 0,
+  "errors": [],
+  "statsLatencyMsFinal": 94
+}

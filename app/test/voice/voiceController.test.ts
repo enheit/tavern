@@ -321,6 +321,47 @@ describe("FR-18 join/leave", () => {
     expect(h.pulls[0]?.added).toEqual([[{ trackName: `mic:${REMOTE}` }]]);
   });
 
+  it("mic pull retries until the joiner's publish registers the mic (S12.3 race)", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness();
+      const controller = new VoiceController(h.deps);
+      seedVoice("A", []);
+      await controller.join("A");
+
+      const pull = h.pulls[0];
+      if (!pull) throw new Error("expected the voice pull session");
+      // voice.state announces REMOTE before their REST publish lands — the first two pulls 403.
+      let failures = 2;
+      const original = pull.addRemoteTracks.bind(pull);
+      pull.addRemoteTracks = async (tracks) => {
+        if (failures > 0 && tracks.some((t) => t.trackName === `mic:${REMOTE}`)) {
+          failures -= 1;
+          throw new Error("pull_denied");
+        }
+        return original(tracks);
+      };
+      h.ws.emit({
+        t: "voice.state",
+        voice: {
+          members: [
+            { userId: SELF, muted: false, deafened: false },
+            { userId: REMOTE, muted: false, deafened: false },
+          ],
+          sessionStartedAt: 1000,
+        },
+        at: 3000,
+      });
+
+      // Two failed attempts (0 ms, +500 ms), the third (+1000 ms) succeeds.
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(failures).toBe(0);
+      expect(pull.added).toContainEqual([{ trackName: `mic:${REMOTE}` }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("streamAudioSink is null until joined, the graph while joined, null after leave (S8.2)", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);

@@ -5,6 +5,7 @@ import { PeoplePanel } from "@/features/servers/PeoplePanel";
 import { SoundboardPanel } from "@/features/soundboard/SoundboardPanel";
 import { Canvas } from "@/features/streams/Canvas";
 import { ControlsBar } from "./ControlsBar";
+import { CostBanner } from "./CostBanner";
 import { Header } from "./Header";
 
 // The persistent app shell laid out exactly per §7.6. Pinned CSS grid: header spans all columns; the
@@ -24,7 +25,13 @@ const GRID: CSSProperties = {
 
 export function AppShell({ serverId }: { serverId: string }) {
   return (
-    <div data-testid="app-shell" style={GRID} className="h-screen w-screen overflow-hidden">
+    <div
+      data-testid="app-shell"
+      style={GRID}
+      className="relative h-screen w-screen overflow-hidden"
+    >
+      {/* §8 G5 warn banner (S12.3) — absolute overlay across the header; grid rows stay pinned. */}
+      <CostBanner serverId={serverId} />
       <Header />
       <div style={{ gridArea: "left" }} className="flex min-h-0 flex-col border-r bg-card">
         <ChannelsPanel serverId={serverId} />

@@ -86,6 +86,37 @@ jobs:
           path: e2e/playwright-report
           retention-days: 7
 
+  soak:                          # S12.3 10-client soak — REAL SFU, 3 minutes. Never part of PR CI.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @tavern/app build
+      # --realtime spawns the DEFAULT wrangler env on 8788 (worker-served app, local D1, REAL SFU
+      # creds from .dev.vars) — the run exercises the real Cloudflare Realtime media plane without
+      # touching the production Worker or its D1.
+      - name: Write worker/.dev.vars (real SFU creds)
+        run: |
+          {
+            echo "BETTER_AUTH_SECRET=nightly-ci-throwaway-secret"
+            echo "REALTIME_APP_ID=${{ secrets.REALTIME_APP_ID }}"
+            echo "REALTIME_APP_SECRET=${{ secrets.REALTIME_APP_SECRET }}"
+            echo "TURN_KEY_ID=${{ secrets.TURN_KEY_ID }}"
+            echo "TURN_KEY_API_TOKEN=${{ secrets.TURN_KEY_API_TOKEN }}"
+          } > worker/.dev.vars
+      - run: pnpm -F @tavern/worker run migrate:local
+      - run: pnpm -F @tavern/e2e exec playwright install --with-deps chromium
+      - run: node e2e/scripts/soak.mjs --realtime --clients 10 --minutes 3
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-report
+          path: soak-report.json
+          retention-days: 14
+
   # AppImage-boot container jobs — the AppImage must launch where CI's ubuntu-latest can't prove it.
   # Both jobs boot the REAL .AppImage (static runtime, PLAN §3.2) standalone — no webServers; the
   # packaged renderer loads from the asar and the assertion is the pinned "window title = Tavern".

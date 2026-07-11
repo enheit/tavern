@@ -1,5 +1,6 @@
 import { CostStatus, LIMITS, kbpsFor } from "@tavern/shared";
 import type { CostStatus as CostStatusType, PresetId } from "@tavern/shared";
+import { z } from "zod";
 
 // §8 G5 egress meter + kill switch (day-one requirement, not polish). The DO accumulates ESTIMATED
 // egress = Σ active pulls × §App-D bitrate × dt, banked on watch release / rid-switch and on the S3.4
@@ -18,14 +19,22 @@ const BYTES_PER_GB = 1_000_000_000;
 type OpenWatch = { preset: PresetId; rid: "h" | "l"; since: number };
 type OpenWatches = Record<string, OpenWatch>;
 
-export type CostMeterEnv = { KILL_SWITCH_DISABLED?: string };
+export type CostMeterEnv = { KILL_SWITCH_DISABLED?: string; TAVERN_TEST?: string };
 
 // KILL_SWITCH_DISABLED is an emergency env var (not a deployed binding, so absent from generated Env).
+// TAVERN_TEST guards the S12.3 test-only egress seeding route; it lives ONLY in .dev.vars/.dev.vars.e2e.
 declare global {
   interface Env {
     KILL_SWITCH_DISABLED?: string;
+    TAVERN_TEST?: string;
   }
 }
+
+// S12.3 seeding body: absolute bytes for a month bucket (decimal GB thresholds compare in §8).
+const setEgressBody = z.object({
+  month: z.string().regex(/^\d{4}-\d{2}$/),
+  bytes: z.number().int().nonnegative(),
+});
 
 function watchKey(viewerId: string, trackName: string): string {
   return `${viewerId}|${trackName}`;
@@ -201,6 +210,22 @@ export class CostMeter {
   async tick(now: number): Promise<boolean> {
     await this.flush(now);
     return this.maybeWarn(now);
+  }
+
+  // S12.3 test-only egress seeding (§8 verification): absolute upsert of egress_log for a month so
+  // the kill-switch e2e can place the meter just past the warn/kill thresholds. Reachable only via
+  // the Worker's TAVERN_TEST-guarded /api/__test forwarder; this handler re-checks the flag and
+  // answers a bodyless 404 otherwise, so the route does not exist in any non-test configuration.
+  async handleSetEgress(request: Request): Promise<Response> {
+    if (this.env.TAVERN_TEST !== "1") return new Response(null, { status: 404 });
+    const body = setEgressBody.parse(await request.json());
+    this.sql.exec(
+      `INSERT INTO egress_log (month, bytes) VALUES (?, ?)
+       ON CONFLICT(month) DO UPDATE SET bytes = excluded.bytes`,
+      body.month,
+      body.bytes,
+    );
+    return Response.json({});
   }
 
   // Synchronous snapshot for hello.ok.costStatus (egress_log is sync SQL; no open-watch read needed).

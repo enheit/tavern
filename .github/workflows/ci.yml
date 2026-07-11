@@ -28,6 +28,9 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm test:coverage
+      # The DO WebSocket suite runs in its own serial pool-workers project (PLAN §10) — it is not
+      # part of any package's test:coverage, so gate it explicitly (S12.4 audit).
+      - run: pnpm -F @tavern/worker run test:ws
       - run: pnpm build
       - run: node scripts/check-fr-traceability.mjs
 
