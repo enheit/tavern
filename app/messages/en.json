@@ -112,6 +112,8 @@
   "settings_notifications_all": "All messages",
   "settings_notifications_mentions": "Mentions",
   "settings_notifications_denied": "Notifications are blocked by the browser",
+  "common_show_password": "Show password",
+  "common_hide_password": "Hide password",
   "common_save": "Save",
   "common_saved": "Saved",
   "errors_avatar_too_large": "Image too large (max 2 MB)",

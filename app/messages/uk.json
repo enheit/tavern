@@ -112,6 +112,8 @@
   "settings_notifications_all": "Усі повідомлення",
   "settings_notifications_mentions": "Згадки",
   "settings_notifications_denied": "Браузер заблокував сповіщення",
+  "common_show_password": "Показати пароль",
+  "common_hide_password": "Сховати пароль",
   "common_save": "Зберегти",
   "common_saved": "Збережено",
   "errors_avatar_too_large": "Зображення завелике (макс. 2 МБ)",

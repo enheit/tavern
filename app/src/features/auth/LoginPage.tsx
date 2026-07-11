@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link } from "react-router";
 import { LoginForm } from "@tavern/shared";
+import { PasswordInput } from "@/components/password-input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -59,11 +60,10 @@ export function LoginPage() {
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="login-password">{m.auth_login_password()}</Label>
-              <Input
+              <PasswordInput
                 {...form.register("password")}
                 id="login-password"
                 data-testid="input-password"
-                type="password"
                 autoComplete="current-password"
               />
             </div>

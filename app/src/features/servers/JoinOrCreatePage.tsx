@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { useNavigate } from "react-router";
 import { CreateServerRequest, JoinServerRequest } from "@tavern/shared";
+import { PasswordInput } from "@/components/password-input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -71,11 +72,10 @@ function JoinCard() {
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="join-password">{m.servers_join_password()}</Label>
-            <Input
+            <PasswordInput
               {...form.register("password", { setValueAs: emptyToUndefined })}
               id="join-password"
               data-testid="join-password"
-              type="password"
               autoComplete="off"
             />
           </div>
@@ -131,11 +131,10 @@ function CreateCard() {
           </div>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="create-password">{m.servers_create_password()}</Label>
-            <Input
+            <PasswordInput
               {...form.register("password", { setValueAs: emptyToUndefined })}
               id="create-password"
               data-testid="create-password"
-              type="password"
               autoComplete="off"
             />
           </div>

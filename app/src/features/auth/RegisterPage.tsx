@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { Link } from "react-router";
 import { RegisterForm } from "@tavern/shared";
+import { PasswordInput } from "@/components/password-input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -65,11 +66,10 @@ export function RegisterPage() {
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="register-password">{m.auth_login_password()}</Label>
-              <Input
+              <PasswordInput
                 {...form.register("password")}
                 id="register-password"
                 data-testid="input-password"
-                type="password"
                 autoComplete="new-password"
               />
               {errors.password !== undefined && (
@@ -80,11 +80,10 @@ export function RegisterPage() {
             </div>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="register-repeat-password">{m.auth_register_repeat_password()}</Label>
-              <Input
+              <PasswordInput
                 {...form.register("repeatPassword")}
                 id="register-repeat-password"
                 data-testid="input-repeat-password"
-                type="password"
                 autoComplete="new-password"
               />
               {errors.repeatPassword !== undefined && (

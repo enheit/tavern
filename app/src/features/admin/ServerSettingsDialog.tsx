@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { PasswordInput } from "@/components/password-input";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
@@ -136,10 +137,9 @@ function PasswordSection({ serverId }: { serverId: string }) {
     <section data-testid="admin-password" className="flex flex-col gap-2">
       <Label htmlFor="admin-password-input">{m.admin_password_label()}</Label>
       <div className="flex items-center gap-2">
-        <Input
+        <PasswordInput
           id="admin-password-input"
           data-testid="admin-password-input"
-          type="password"
           autoComplete="new-password"
           value={password}
           onChange={(event) => setPassword(event.target.value)}
