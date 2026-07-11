@@ -183,5 +183,6 @@
   "admin_kick_confirm": "Виключити {name} із сервера?",
   "admin_kicked": "{name} виключено",
   "common_cancel": "Скасувати",
-  "common_confirm": "Підтвердити"
+  "common_confirm": "Підтвердити",
+  "shell_update_pill_label": "Перезапустити для оновлення ({version})"
 }

@@ -1,0 +1,38 @@
+name: release
+on: { push: { tags: ['v*'] } }
+permissions: { contents: write }
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix: { os: [macos-latest, windows-latest, ubuntu-latest] }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build && pnpm -F @tavern/desktop build
+        env:
+          # §3.7 mac-signing FALLBACK (active — no Apple certs yet, see docs/blockers.md): compile
+          # macOS auto-update OFF (Squirrel.Mac refuses unsigned updates). Remove this env, the
+          # CSC_IDENTITY_AUTO_DISCOVERY line and --config.mac.notarize=false once CSC_LINK /
+          # CSC_KEY_PASSWORD / APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER repo secrets exist,
+          # then scope those secrets to the mac runner ONLY (CSC_LINK/CSC_KEY_PASSWORD double as
+          # electron-builder's *Windows* signing vars — exposing the Apple .p12 on windows-latest
+          # would try to sign the NSIS build with it; Windows is unsigned in v1, PLAN §11).
+          TAVERN_MAC_UPDATES_DISABLED: ${{ matrix.os == 'macos-latest' && '1' || '' }}
+      - run: cd desktop && npx electron-builder --publish always --config.mac.notarize=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # electron-builder uploads all artifacts + latest*.yml to a DRAFT release; updaters cannot see
+      # drafts, so this flip is load-bearing (PLAN §11).
+      - run: gh release edit "$GITHUB_REF_NAME" --draft=false
+        env: { GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }   # quoted — bare ${{ }} is invalid YAML inside a flow mapping

@@ -10,6 +10,7 @@ import {
 import { ServerSettingsDialog } from "@/features/admin/ServerSettingsDialog";
 import { useAuth } from "@/features/auth/useAuth";
 import { ServerSwitcher } from "@/features/servers/ServerSwitcher";
+import { UpdatePill } from "@/features/shell/UpdatePill";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { cn } from "@/lib/utils";
 import type { WsStatus } from "@/lib/wsClient";
@@ -27,6 +28,7 @@ export function Header() {
     >
       <ServerSwitcher />
       <div className="flex-1" />
+      <UpdatePill />
       <AdminSettings />
       <ConnectionDot />
       <UserMenu />

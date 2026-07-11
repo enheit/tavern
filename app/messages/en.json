@@ -183,5 +183,6 @@
   "admin_kick_confirm": "Kick {name} from the server?",
   "admin_kicked": "{name} was kicked",
   "common_cancel": "Cancel",
-  "common_confirm": "Confirm"
+  "common_confirm": "Confirm",
+  "shell_update_pill_label": "Restart to update ({version})"
 }

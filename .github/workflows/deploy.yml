@@ -1,0 +1,28 @@
+name: deploy
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+permissions: { contents: read }
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # the worker serves ../app/dist as static assets — deploying without a fresh build
+      # fails (missing assets dir) or ships a stale web client
+      - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build
+      - name: Account guard (NEVER Icelook — PLAN §11)
+        run: cd worker && npx wrangler whoami | grep -q fd8a5f7a38f28a2cd11e79e85985c7d4
+        env: { CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}" }   # quoted — see release.yml note
+      - name: D1 migrations (remote — schema lands before code that expects it)
+        run: cd worker && npx wrangler d1 migrations apply tavern-db --remote
+        env: { CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}" }
+      - run: cd worker && npx wrangler deploy
+        env: { CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}" }

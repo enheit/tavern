@@ -1,0 +1,140 @@
+name: nightly
+on:
+  schedule: [{ cron: '0 3 * * *' }]
+  workflow_dispatch: {}          # required so `gh workflow run nightly.yml` (S12.4) works
+permissions: { contents: read }
+jobs:
+  realtime-e2e:                  # @realtime media suites against the REAL Cloudflare Realtime SFU
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      # The 8788 real-SFU worker serves the BUILT app via the assets binding (S7.4) — build it first.
+      - run: pnpm -F @tavern/app build
+      # The 8788 worker runs the default wrangler env, which reads worker/.dev.vars — write the real
+      # Realtime/TURN creds into it from the repo secrets (the 8787 e2e worker keeps the committed
+      # mock .dev.vars.e2e). BETTER_AUTH_SECRET is a throwaway: local D1, no real accounts.
+      - name: Write worker/.dev.vars (real SFU creds)
+        run: |
+          {
+            echo "BETTER_AUTH_SECRET=nightly-ci-throwaway-secret"
+            echo "REALTIME_APP_ID=${{ secrets.REALTIME_APP_ID }}"
+            echo "REALTIME_APP_SECRET=${{ secrets.REALTIME_APP_SECRET }}"
+            echo "TURN_KEY_ID=${{ secrets.TURN_KEY_ID }}"
+            echo "TURN_KEY_API_TOKEN=${{ secrets.TURN_KEY_API_TOKEN }}"
+          } > worker/.dev.vars
+      - run: pnpm -F @tavern/worker run migrate:local
+      - run: pnpm -F @tavern/e2e exec playwright install --with-deps chromium
+      # REALTIME_APP_ID in the step env makes playwright.config.ts append the 8788 realtime webServer.
+      - run: pnpm e2e:realtime    # web-realtime project (S7.4), real SFU, against wrangler dev
+        env:
+          REALTIME_APP_ID: ${{ secrets.REALTIME_APP_ID }}
+          REALTIME_APP_SECRET: ${{ secrets.REALTIME_APP_SECRET }}
+          TURN_KEY_ID: ${{ secrets.TURN_KEY_ID }}
+          TURN_KEY_API_TOKEN: ${{ secrets.TURN_KEY_API_TOKEN }}
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-realtime
+          path: e2e/playwright-report
+          retention-days: 7
+
+  boot-smoke:                    # packaged-app launch on all 3 OSes
+    strategy:
+      fail-fast: false
+      matrix: { os: [macos-latest, windows-latest, ubuntu-latest] }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build && pnpm -F @tavern/desktop build
+      # Unsigned unpacked build (release.yml owns signing; auto-discovery off so the mac runner
+      # can't grab a random keychain cert — ci.yml package-check precedent).
+      - run: cd desktop && pnpm exec electron-builder --dir --config.mac.notarize=false
+        env: { CSC_IDENTITY_AUTO_DISCOVERY: 'false' }
+      # The desktop smoke suite drives the packaged binary against the local dev webServers
+      # (S12.1 GATE-5 pattern): worker needs .dev.vars + a migrated local D1 + app/dist (built above).
+      - run: cp worker/.dev.vars.example worker/.dev.vars
+        shell: bash
+      - run: pnpm -F @tavern/worker run migrate:local
+      - run: pnpm -F @tavern/e2e exec playwright install --with-deps chromium
+      - name: Packaged smoke (per-OS unpacked binary — S12.1 path table)
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            macos-latest)   BIN="desktop/dist-electron/mac-arm64/Tavern.app/Contents/MacOS/Tavern" ;;
+            windows-latest) BIN="desktop/dist-electron/win-unpacked/Tavern.exe" ;;
+            ubuntu-latest)  BIN="desktop/dist-electron/linux-unpacked/tavern" ;;
+          esac
+          export TAVERN_DESKTOP_BINARY="$GITHUB_WORKSPACE/$BIN"
+          test -x "$TAVERN_DESKTOP_BINARY" || { echo "missing packaged binary at $TAVERN_DESKTOP_BINARY"; exit 1; }
+          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+            xvfb-run --auto-servernum -- pnpm -F @tavern/e2e test --project=desktop --grep smoke
+          else
+            pnpm -F @tavern/e2e test --project=desktop --grep smoke
+          fi
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-boot-${{ matrix.os }}
+          path: e2e/playwright-report
+          retention-days: 7
+
+  # AppImage-boot container jobs — the AppImage must launch where CI's ubuntu-latest can't prove it.
+  # Both jobs boot the REAL .AppImage (static runtime, PLAN §3.2) standalone — no webServers; the
+  # packaged renderer loads from the asar and the assertion is the pinned "window title = Tavern".
+  # --no-sandbox is passed inside appimage-boot.mjs: docker's default seccomp blocks the userns the
+  # Chromium sandbox needs, so the sandbox itself cannot be exercised under a container — what these
+  # jobs prove is the FUSE-less static-runtime boot (Void has no FUSE2 at all; Ubuntu 24.04 ships
+  # apparmor_restrict_unprivileged_userns=1 — PLAN §11).
+  appimage-void:                 # Void Linux (static AppImage runtime, no FUSE2 — PLAN §3.2)
+    runs-on: ubuntu-latest
+    container: ghcr.io/void-linux/void-glibc-full:latest
+    steps:
+      - name: System deps (git for checkout; xvfb + Electron's GUI libs)
+        run: |
+          xbps-install -Syu -y xbps
+          xbps-install -Sy -y git bash curl xz tar gzip xorg-server-xvfb \
+            nss gtk+3 alsa-lib at-spi2-core libgbm libxkbcommon libdrm dbus \
+            libXcomposite libXdamage libXrandr libXtst libXScrnSaver cups mesa-dri
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build && pnpm -F @tavern/desktop build
+      - run: cd desktop && pnpm exec electron-builder --linux AppImage --publish never
+      - name: Boot the AppImage under Xvfb
+        run: |
+          Xvfb :99 -screen 0 1280x800x24 &
+          sleep 2
+          DISPLAY=:99 node e2e/scripts/appimage-boot.mjs
+
+  appimage-ubuntu2404:           # Ubuntu 24.04 (apparmor_restrict_unprivileged_userns=1 breaks
+    runs-on: ubuntu-latest       # Chromium's sandbox for AppImages — PLAN §11; boot smoke catches it)
+    container: ubuntu:24.04
+    steps:
+      - name: System deps (git for checkout; xvfb + Electron's GUI libs)
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git bash curl ca-certificates xz-utils xvfb \
+            libnss3 libgtk-3-0t64 libasound2t64 libgbm1 libxkbcommon0 libdrm2 dbus \
+            libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxss1
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build && pnpm -F @tavern/desktop build
+      - run: cd desktop && pnpm exec electron-builder --linux AppImage --publish never
+      - name: Boot the AppImage under Xvfb
+        run: |
+          Xvfb :99 -screen 0 1280x800x24 &
+          sleep 2
+          DISPLAY=:99 node e2e/scripts/appimage-boot.mjs

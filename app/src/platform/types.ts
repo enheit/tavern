@@ -27,7 +27,12 @@ export interface PlatformBridge {
     // only route (A1/A10).
     requestPermission(): Promise<boolean>;
   };
-  updates: { onUpdateReady(cb: () => void): () => void; restartToUpdate(): void };
+  // onUpdateReady forwards the downloaded version (S12.2: the pill label interpolates it) — the
+  // payload shape matches the canonical shared/src/ipc.ts updateInfoSchema.
+  updates: {
+    onUpdateReady(cb: (info: { version: string }) => void): () => void;
+    restartToUpdate(): void;
+  };
   shell: { setBadge(count: number | null): void; focusWindow(): void };
 }
 

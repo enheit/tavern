@@ -33,13 +33,13 @@ export function createElectronPlatform(ipc: TavernIpc): PlatformBridge {
     });
   };
 
-  const updateCallbacks = new Set<() => void>();
+  const updateCallbacks = new Set<(info: { version: string }) => void>();
   let updateWired = false;
   const wireUpdate = (): void => {
     if (updateWired) return;
     updateWired = true;
-    ipc.updates.onUpdateReady(() => {
-      for (const cb of updateCallbacks) cb();
+    ipc.updates.onUpdateReady((info) => {
+      for (const cb of updateCallbacks) cb(info);
     });
   };
 

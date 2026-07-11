@@ -7,6 +7,11 @@ import { defineConfig } from "electron-vite";
 // at runtime, and a sandbox:true preload cannot require third-party npm modules at all.
 export default defineConfig({
   main: {
+    // §3.7 mac-signing fallback: release.yml exports TAVERN_MAC_UPDATES_DISABLED=1 while no Apple
+    // certs exist, compiling mac auto-update OFF (updates.ts init guard).
+    define: {
+      __MAC_UPDATES_DISABLED__: JSON.stringify(process.env.TAVERN_MAC_UPDATES_DISABLED === "1"),
+    },
     build: {
       outDir: "out/main",
       target: "node24",

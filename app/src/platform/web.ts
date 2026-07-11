@@ -14,7 +14,7 @@ declare global {
 // no auto-update, secrets live in same-origin cookies (so the token store is a no-op here).
 export function createWebPlatform(): PlatformBridge {
   const clickCallbacks = new Set<(tag: string) => void>();
-  const updateCallbacks = new Set<() => void>();
+  const updateCallbacks = new Set<(info: { version: string }) => void>();
 
   return {
     kind: "web",
