@@ -279,6 +279,42 @@ describe("FR-25 multipart upload", () => {
     expect(await res.json()).toEqual({ error: "forbidden" });
   });
 
+  it("served recording is typed audio/webm and honors Range with 206 (so the element can seek)", async () => {
+    const token = await register("rec_up_ct");
+    const uid = await meUserId(token);
+    const serverId = await createServer(token, "rec-up-ct");
+    await seedVoice(serverId, [uid]);
+    await seedActiveRecording(serverId, uid);
+    const recordingId = await completeRecording(token, serverId); // uploads one 200-byte part
+
+    const full = await authed(token, `/api/media/recordings/${serverId}/${recordingId}.webm`);
+    expect(full.status).toBe(200);
+    expect(full.headers.get("content-type")).toBe("audio/webm");
+    expect(full.headers.get("accept-ranges")).toBe("bytes");
+    expect(full.headers.get("content-length")).toBe("200");
+
+    const ranged = await authed(token, `/api/media/recordings/${serverId}/${recordingId}.webm`, {
+      headers: { range: "bytes=0-99" },
+    });
+    expect(ranged.status).toBe(206);
+    expect(ranged.headers.get("content-range")).toBe("bytes 0-99/200");
+    expect(ranged.headers.get("content-length")).toBe("100");
+    expect((await ranged.arrayBuffer()).byteLength).toBe(100);
+  });
+
+  it("legacy object stored without a content-type is served audio/webm via extension fallback", async () => {
+    // Recordings finalized before we stamped httpMetadata.contentType have no stored type; the serve
+    // route must still type them from the .webm suffix so an existing clip becomes playable.
+    const token = await register("rec_up_legacy");
+    const serverId = await createServer(token, "rec-up-legacy");
+    const key = `recordings/${serverId}/legacy-clip.webm`;
+    await env.MEDIA.put(key, new Uint8Array(64).fill(3)); // no httpMetadata → no stored contentType
+
+    const res = await authed(token, `/api/media/${key}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/webm");
+  });
+
   it("part upload by a non-starter member → 403", async () => {
     const owner = await register("rec_up_owner");
     const ownerId = await meUserId(owner);

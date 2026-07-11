@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef } from "react";
-import { PlayIcon, Trash2Icon } from "lucide-react";
+import { useCallback, useEffect } from "react";
+import { Trash2Icon } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import type { ErrorCode, Member, Recording } from "@tavern/shared";
@@ -16,6 +16,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { RecordingPlayer } from "@/features/recordings/RecordingPlayer";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { authTransport } from "@/lib/authTransport";
 import { connectRoom } from "@/lib/wsClient";
@@ -26,8 +27,8 @@ import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
 
 // FR-25 Recordings tab (§7.6 right-column). Lists finalized recordings newest first (who/when/duration)
-// with in-app playback and starter/admin delete. Recorded WebM has no cues (§7.4), so mm:ss comes from
-// the stored duration metadata, not the audio element; seeking is best-effort with no UI note.
+// with in-app playback (RecordingPlayer — custom controls over an authed blob fetch) and starter/admin
+// delete. The mm:ss badge comes from the stored duration metadata (recorded WebM has no cues, §7.4).
 const API_BASE: string = import.meta.env.VITE_API_URL ?? "";
 
 function recordingsKey(serverId: string): readonly [string, string] {
@@ -141,7 +142,6 @@ function RecordingRow({
   canManage: boolean;
   onDelete: () => void;
 }) {
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const starter = members.find((mem) => mem.userId === rec.startedBy);
   const url = `${API_BASE}/api/media/recordings/${serverId}/${rec.id}.webm`;
 
@@ -151,15 +151,6 @@ function RecordingRow({
       className="flex flex-col gap-1 border-b px-3 py-2 text-sm"
     >
       <div className="flex items-center gap-2">
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          data-testid={`recording-play-${rec.id}`}
-          aria-label={m.recordings_play()}
-          onClick={() => void audioRef.current?.play()}
-        >
-          <PlayIcon />
-        </Button>
         <span className="min-w-0 flex-1 truncate font-medium">
           {starter?.displayName ?? m.activity_former_member()}
         </span>
@@ -199,15 +190,8 @@ function RecordingRow({
           </AlertDialog>
         )}
       </div>
-      <div className="pl-9 text-xs text-muted-foreground">{formatDate(rec.startedAt, locale)}</div>
-      <audio
-        ref={audioRef}
-        data-testid={`recording-audio-${rec.id}`}
-        src={url}
-        preload="metadata"
-        controls
-        className="w-full"
-      />
+      <div className="text-xs text-muted-foreground">{formatDate(rec.startedAt, locale)}</div>
+      <RecordingPlayer recordingId={rec.id} url={url} durationMs={rec.durationMs} />
     </li>
   );
 }

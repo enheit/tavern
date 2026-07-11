@@ -162,7 +162,11 @@ export class RecordingsModule {
     if (row === null) return { ok: false, error: "forbidden" };
     if (!(await this.isInVoice(userId))) return { ok: false, error: "not_in_voice" };
     if (row.uploadId !== null) return { ok: true, recordingId: row.id, uploadId: row.uploadId };
-    const upload = await this.media.createMultipartUpload(this.r2Key(row.id));
+    // Stamp the WebM content-type on the object so `GET /api/media/*` serves it typed (browsers refuse
+    // to decode audio served without a media type). The recorder's MIME is audio/webm;codecs=opus.
+    const upload = await this.media.createMultipartUpload(this.r2Key(row.id), {
+      httpMetadata: { contentType: "audio/webm" },
+    });
     this.sql.exec(`UPDATE recordings SET upload_id = ? WHERE id = ?`, upload.uploadId, row.id);
     return { ok: true, recordingId: row.id, uploadId: upload.uploadId };
   }
