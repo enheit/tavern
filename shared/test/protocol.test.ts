@@ -64,7 +64,7 @@ const serverFixtures = [
   { t: "stream.added", stream: streamInfo, at: 1 },
   { t: "stream.updated", trackName: track, preset: "720p30", at: 1 },
   { t: "stream.removed", trackName: track, at: 1 },
-  { t: "sound.played", soundId: UUID, byUserId: UUID, at: 1 },
+  { t: "sound.played", soundId: UUID, byUserId: UUID, at: 1, trimStartMs: 0, trimEndMs: 1500 },
   { t: "sound.updated", at: 1 },
   { t: "rec.state", recording, at: 1 },
   { t: "server.updated", nickname: "tavern", at: 1 },
