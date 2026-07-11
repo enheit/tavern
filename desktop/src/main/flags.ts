@@ -26,6 +26,13 @@ export function applyFlags(): void {
     if (fakeAudio !== undefined && fakeAudio.length > 0) {
       app.commandLine.appendSwitch("use-file-for-fake-audio-capture", fakeAudio);
     }
+    if (process.platform === "linux") {
+      // Headless Linux CI has no keyring (gnome-keyring/kwallet), so safeStorage.encryptString
+      // throws "Encryption is not available." and every secrets:setToken IPC dies. The switch is
+      // ignored when passed as a Playwright launch arg (same #16621 class as the fake-media flags —
+      // proven by the still-red e2e-desktop after 79d9246), so it must be appended here, pre-ready.
+      app.commandLine.appendSwitch("password-store", "basic");
+    }
   }
 
   if (process.platform === "linux") {

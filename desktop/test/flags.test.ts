@@ -47,6 +47,25 @@ describe("flags & GPU crash guard", () => {
     expect(hasSwitch("use-fake-device-for-media-stream")).toBe(false);
   });
 
+  it("forces the basic password store on linux in E2E mode (keyring-less CI safeStorage)", () => {
+    vi.stubEnv("TAVERN_E2E", "1");
+    setPlatform("linux");
+    applyFlags();
+    expect(hasSwitch("password-store", "basic")).toBe(true);
+  });
+
+  it("leaves the password store alone outside E2E and off linux", () => {
+    vi.stubEnv("TAVERN_E2E", "1");
+    setPlatform("darwin");
+    applyFlags();
+    expect(hasSwitch("password-store")).toBe(false);
+    resetElectronMock();
+    vi.unstubAllEnvs();
+    setPlatform("linux");
+    applyFlags();
+    expect(hasSwitch("password-store")).toBe(false);
+  });
+
   it("redirects userData when TAVERN_USER_DATA is set", () => {
     vi.stubEnv("TAVERN_USER_DATA", "/tmp/tavern-custom");
     applyFlags();
