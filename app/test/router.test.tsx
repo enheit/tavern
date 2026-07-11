@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it } from "vitest";
 import { BootLoader } from "@/features/boot/BootLoader";
+import { useBootStore } from "@/features/boot/bootStore";
 import { createAppRouter, routes } from "@/router";
 import { useServersStore } from "@/stores/servers";
 
@@ -10,6 +11,8 @@ afterEach(() => {
   cleanup();
   Reflect.deleteProperty(window, "tavern");
   useServersStore.setState({ servers: [], activeServerId: null, connState: {} });
+  // FR-43: /join and /s/:serverId are behind the boot gate; reset the machine between tests.
+  useBootStore.setState({ phase: "loading" });
 });
 
 // The /join page (JoinOrCreatePage) drives TanStack Query mutations, so the tree needs a QueryClient —
@@ -46,6 +49,10 @@ describe("§7.6 routes", () => {
     expect(await screen.findByTestId("page-register", {}, LAZY_TIMEOUT)).toBeDefined();
     cleanup();
 
+    // /join and /s/:serverId now sit behind the FR-43 boot gate; seed the machine to `ready` so the
+    // gate renders its child (the machine's own network path is exercised in bootStore.test).
+    useBootStore.setState({ phase: "ready" });
+
     renderAt("/join");
     expect(await screen.findByTestId("page-join", {}, LAZY_TIMEOUT)).toBeDefined();
     cleanup();
@@ -70,6 +77,17 @@ describe("§7.6 routes", () => {
     // load its dynamic-import chain can resolve past testing-library's default 1000ms findBy window,
     // so give the async boundary explicit headroom. findBy polls, so a fast success is unaffected.
     expect(await screen.findByTestId("app-shell", {}, { timeout: 10000 })).toBeDefined();
+  }, 15000);
+
+  it("FR-43: a cold load of /s/:serverId shows the boot loader, never /join", async () => {
+    // The regression: with an empty (non-persisted) servers store, /s/:id used to render ServerPage
+    // directly and bounce to /join. Now it is behind the boot gate. Seed a mid-boot phase (machine
+    // already started, not yet ready) so the gate renders the loader deterministically — and assert
+    // it is NOT the join page.
+    useBootStore.setState({ phase: "loadingMe" });
+    renderAt("/s/some-server");
+    expect(await screen.findByTestId("boot-loader", {}, LAZY_TIMEOUT)).toBeDefined();
+    expect(screen.queryByTestId("page-join")).toBeNull();
   }, 15000);
 
   it("renders the boot loader fallback", () => {

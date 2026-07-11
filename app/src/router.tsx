@@ -2,6 +2,7 @@ import {
   createBrowserRouter,
   createHashRouter,
   Navigate,
+  Outlet,
   redirect,
   type RouteObject,
 } from "react-router";
@@ -9,20 +10,21 @@ import { BootGate } from "@/features/boot/BootGate";
 import { BootLoader } from "@/features/boot/BootLoader";
 import { useServersStore } from "@/stores/servers";
 
-// The index route is the only gated entry point: the S4.3 BootGate runs the boot machine and sends
-// an unauthed visitor to /login, a member with zero servers to /join, and otherwise renders its child
-// which forwards to the active server. /login and /register stay PUBLIC (outside the gate); a fresh
-// login navigates back to "/" so the gate re-routes from there.
-function HomeRoute() {
+// FR-43 no-flash boot: every gated route — the index, /join, and /s/:serverId — runs through the
+// S4.3 BootGate so a cold load / refresh / deep-link resolves session + server list + the active
+// snapshot BEFORE any feature component decides where to route. Without this, a refresh on
+// /s/:serverId hit ServerPage against the empty (non-persisted) servers store and bounced to /join.
+// /login and /register stay PUBLIC (outside the gate); a fresh login navigates back to "/".
+function GatedLayout() {
   return (
     <BootGate>
-      <ActiveServerRedirect />
+      <Outlet />
     </BootGate>
   );
 }
 
-// Rendered only once the gate is `ready` with ≥1 joined server (0 servers → the gate itself routes to
-// /join). Forwards to the active server picked by the boot machine.
+// Index route: once the gate is `ready`, forward to the active server the boot machine picked, or to
+// /join when the account has zero joined servers (activeServerId stays null).
 function ActiveServerRedirect() {
   const activeServerId = useServersStore((state) => state.activeServerId);
   return <Navigate to={activeServerId !== null ? `/s/${activeServerId}` : "/join"} replace />;
@@ -35,7 +37,6 @@ export const routes: RouteObject[] = [
     path: "/",
     HydrateFallback: BootLoader,
     children: [
-      { index: true, Component: HomeRoute },
       {
         path: "login",
         lazy: async () => ({ Component: (await import("@/features/auth/LoginPage")).LoginPage }),
@@ -47,16 +48,22 @@ export const routes: RouteObject[] = [
         }),
       },
       {
-        path: "join",
-        lazy: async () => ({
-          Component: (await import("@/features/servers/JoinOrCreatePage")).JoinOrCreatePage,
-        }),
-      },
-      {
-        path: "s/:serverId",
-        lazy: async () => ({
-          Component: (await import("@/features/servers/ServerPage")).ServerPage,
-        }),
+        Component: GatedLayout,
+        children: [
+          { index: true, Component: ActiveServerRedirect },
+          {
+            path: "join",
+            lazy: async () => ({
+              Component: (await import("@/features/servers/JoinOrCreatePage")).JoinOrCreatePage,
+            }),
+          },
+          {
+            path: "s/:serverId",
+            lazy: async () => ({
+              Component: (await import("@/features/servers/ServerPage")).ServerPage,
+            }),
+          },
+        ],
       },
       { path: "*", loader: () => redirect("/login") },
     ],

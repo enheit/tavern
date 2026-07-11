@@ -142,10 +142,15 @@ describe("FR-43 boot gate", () => {
     await screen.findByTestId("page-server");
   });
 
-  it("zero joined servers → ready routes to /join", async () => {
+  it("zero joined servers → ready, no active server, no room connections", async () => {
+    // The machine reaches `ready` for a zero-server account, picks no active server, and connects
+    // nothing; the gate then renders its child. Routing an empty account to /join is the index
+    // route's job now (ActiveServerRedirect) — covered in router.test.
     vi.mocked(apiClient.get).mockResolvedValue(meResponse([]));
     renderGate();
-    await screen.findByTestId("page-join");
+    await screen.findByTestId("page-server");
+    expect(useBootStore.getState().phase).toBe("ready");
+    expect(useServersStore.getState().activeServerId).toBeNull();
     expect(connectRoom).not.toHaveBeenCalled();
   });
 
