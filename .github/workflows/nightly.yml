@@ -7,9 +7,9 @@ jobs:
   realtime-e2e:                  # @realtime media suites against the REAL Cloudflare Realtime SFU
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       # The 8788 real-SFU worker serves the BUILT app via the assets binding (S7.4) — build it first.
@@ -40,7 +40,7 @@ jobs:
           TURN_KEY_ID: ${{ secrets.TURN_KEY_ID }}
           TURN_KEY_API_TOKEN: ${{ secrets.TURN_KEY_API_TOKEN }}
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report-realtime
           path: e2e/playwright-report
@@ -52,9 +52,9 @@ jobs:
       matrix: { os: [macos-latest, windows-latest, ubuntu-latest] }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build && pnpm -F @tavern/desktop build
@@ -84,7 +84,7 @@ jobs:
             pnpm -F @tavern/e2e test --project=desktop --grep smoke
           fi
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-report-boot-${{ matrix.os }}
           path: e2e/playwright-report
@@ -93,9 +93,9 @@ jobs:
   soak:                          # S12.3 10-client soak — REAL SFU, 3 minutes. Never part of PR CI.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -F @tavern/app build
@@ -116,7 +116,7 @@ jobs:
       - run: pnpm -F @tavern/e2e exec playwright install --with-deps chromium
       - run: node e2e/scripts/soak.mjs --realtime --clients 10 --minutes 3
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: soak-report
           path: soak-report.json
@@ -139,9 +139,9 @@ jobs:
           xbps-install -Sy -y git bash curl xz tar gzip xorg-server-xvfb \
             nss gtk+3 alsa-lib at-spi2-core libgbm libxkbcommon libdrm dbus \
             libXcomposite libXdamage libXrandr libXtst libXScrnSaver cups mesa-dri
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22 }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build && pnpm -F @tavern/desktop build
@@ -162,9 +162,9 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y git bash curl ca-certificates xz-utils xvfb \
             libnss3 libgtk-3-0t64 libasound2t64 libgbm1 libxkbcommon0 libdrm2 dbus \
             libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxss1
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22 }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build && pnpm -F @tavern/desktop build

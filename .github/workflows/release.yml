@@ -8,9 +8,9 @@ jobs:
       matrix: { os: [macos-latest, windows-latest, ubuntu-latest] }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
       - run: pnpm -F @tavern/shared build && pnpm -F @tavern/app build && pnpm -F @tavern/desktop build
@@ -31,7 +31,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # electron-builder uploads all artifacts + latest*.yml to a DRAFT release; updaters cannot see
       # drafts, so this flip is load-bearing (PLAN §11).
       - run: gh release edit "$GITHUB_REF_NAME" --draft=false
