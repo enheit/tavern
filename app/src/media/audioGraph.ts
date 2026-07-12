@@ -87,6 +87,9 @@ export class AudioGraph {
   }
 
   attachRemoteMic(userId: string, stream: MediaStream): void {
+    // Re-attach (mic re-pull after a publisher rejoin, or a raced duplicate pull) replaces the
+    // previous node chain — without this the old element/source leaked live until context close.
+    this.detachRemoteMic(userId);
     const ctx = this.requireCtx();
     const source = ctx.createMediaStreamSource(stream);
     const gain = ctx.createGain();
@@ -241,6 +244,12 @@ export class AudioGraph {
   // layer then falls back to raw capture.
   micProcessingContext(): AudioContext | null {
     return this.ctx;
+  }
+
+  // The userIds with a live remote-mic node — read-only, feeds the §10 e2e pairwise wiring hook
+  // (voiceController.remoteMicUserIdsForTest). Attach/detach already own the map lifecycle.
+  remoteMicUserIds(): string[] {
+    return [...this.remotes.keys()];
   }
 
   getUserAnalyser(userId: string): AnalyserNode | null {

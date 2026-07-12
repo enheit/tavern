@@ -24,18 +24,26 @@ interface Client {
   page: Page;
 }
 
-async function seedPair(
+async function seedMany(
   browser: Browser,
   baseURL: string | undefined,
   api: Api,
-): Promise<{ clients: [Client, Client] }> {
+  prefixes: string[],
+): Promise<Client[]> {
   const target = baseURL ?? REALTIME_URL;
-  const admin = await api.createUser("a");
+  const [adminPrefix, ...restPrefixes] = prefixes;
+  if (adminPrefix === undefined) throw new Error("seedMany needs at least one member");
+  const admin = await api.createUser(adminPrefix);
   const server = await api.createServer(admin);
-  const b = await api.createUser("b");
-  await api.join(b, server.nickname);
-  const built = await Promise.all(
-    [admin, b].map(async (user): Promise<Client> => {
+  const rest = await Promise.all(
+    restPrefixes.map(async (prefix) => {
+      const user = await api.createUser(prefix);
+      await api.join(user, server.nickname);
+      return user;
+    }),
+  );
+  return Promise.all(
+    [admin, ...rest].map(async (user): Promise<Client> => {
       const context = await browser.newContext({
         baseURL: target,
         storageState: await user.request.storageState(),
@@ -48,6 +56,14 @@ async function seedPair(
       return { user, context, page };
     }),
   );
+}
+
+async function seedPair(
+  browser: Browser,
+  baseURL: string | undefined,
+  api: Api,
+): Promise<{ clients: [Client, Client] }> {
+  const built = await seedMany(browser, baseURL, api, ["a", "b"]);
   const [first, second] = built;
   if (!first || !second) throw new Error("expected two clients");
   return { clients: [first, second] };
@@ -77,6 +93,13 @@ async function readStats(
 ): Promise<{ bytesReceived: number; audioLevel: number | null }> {
   const stats = await page.evaluate(() => window.__tavernTestRtc?.stats("voice"));
   if (stats === undefined) throw new Error("__tavernTestRtc.stats unavailable");
+  return stats;
+}
+
+// Per-trackName inbound audio bytes of `viewer`'s voice pull (TASK-1 pairwise probe).
+async function byTrack(viewer: Client): Promise<Record<string, number>> {
+  const stats = await viewer.page.evaluate(() => window.__tavernTestRtc?.statsByTrack("voice"));
+  if (stats === undefined) throw new Error("__tavernTestRtc.statsByTrack unavailable");
   return stats;
 }
 
@@ -117,6 +140,55 @@ test.describe("FR-19 voice @realtime", () => {
       });
     } finally {
       await Promise.all([a.context.close(), b.context.close()]);
+    }
+  });
+
+  // TASK-1 regression: the audibility bug was PAIRWISE-asymmetric (A hears B, C doesn't), which the
+  // aggregate bytesReceived can't see — one loud pair hides a deaf one. Four clients join
+  // CONCURRENTLY (the §7.1 registration race at its worst), then EVERY ordered pair's per-mic
+  // inbound bytes must flow and strictly grow.
+  test("four concurrent joiners: every ordered pair's per-mic bytesReceived flows and grows", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    test.skip(!process.env.REALTIME_APP_ID, "realtime secrets absent");
+    test.setTimeout(300_000);
+    const clients = await seedMany(browser, baseURL, api, ["a", "b", "c", "d"]);
+    try {
+      await Promise.all(clients.map((client) => joinVoice(client)));
+
+      // Every viewer first RECEIVES every other mic (bytes > 0 per mic:{uid} — presence, not just
+      // an aggregate), then a 5s-apart resample proves each of the 12 ordered pairs keeps flowing.
+      await Promise.all(
+        clients.map(async (viewer) => {
+          const others = clients.filter((other) => other !== viewer);
+          await expect
+            .poll(
+              async () => {
+                const stats = await byTrack(viewer);
+                return others.every((o) => (stats[`mic:${o.user.userId}`] ?? 0) > 0);
+              },
+              { timeout: 60_000 },
+            )
+            .toBe(true);
+        }),
+      );
+
+      const t0 = await Promise.all(clients.map((viewer) => byTrack(viewer)));
+      await clients[0]?.page.waitForTimeout(5_000);
+      const t1 = await Promise.all(clients.map((viewer) => byTrack(viewer)));
+      for (const [i, viewer] of clients.entries()) {
+        for (const other of clients.filter((o) => o !== viewer)) {
+          const key = `mic:${other.user.userId}`;
+          expect(
+            t1[i]?.[key] ?? 0,
+            `${viewer.user.username} ← ${other.user.username}`,
+          ).toBeGreaterThan(t0[i]?.[key] ?? 0);
+        }
+      }
+    } finally {
+      await Promise.all(clients.map((client) => client.context.close()));
     }
   });
 

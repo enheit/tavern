@@ -21,11 +21,16 @@ declare global {
       userGains: Record<string, number>;
       speakingUserIds: string[];
       soundboardPlays: Array<{ soundId: string; at: number }>;
+      // userIds whose remote mic is attached to the live audio graph — the mock suite's pairwise
+      // "can hear" truth (§ Task-1 regression: every member wired to every other member).
+      remoteMicUserIds: string[];
     };
     __tavernTestRtc?: {
       publishState: string;
       pullStates: Record<string, string>;
       stats(session: "voice"): Promise<{ bytesReceived: number; audioLevel: number | null }>;
+      // Per-trackName inbound audio bytes (mic:{uid} → bytesReceived) — @realtime pairwise probe.
+      statsByTrack(session: "voice"): Promise<Record<string, number>>;
       // Publisher-side per-rid outbound video summary (FR-27 fault-domain split — streams-realtime
       // asserts the h layer re-encodes a dropped preset before polling the viewer; quality-probe
       // reads the bitrate/limitation fields).
@@ -43,6 +48,7 @@ declare global {
       // Extends the S7.4 hook (S8.4 populates it; S8.5's streams specs assert it). Declared here so the
       // ambient window type stays a single source for every spec — voice.spec does not read it.
       layerCalls: Array<{ trackName: string; rid: "h" | "l" }>;
+      pullCalls: Array<{ trackName: string; rid: "h" | "l" | null }>;
     };
   }
 }
@@ -51,6 +57,31 @@ interface Client {
   user: SeededUser;
   context: BrowserContext;
   page: Page;
+  // Rolling tail of the page's console (warn/error only) — dumped by the TASK-1 diagnostics when a
+  // pairwise wiring assertion fails, so a red run says WHY (pull errors, retry exhaustion) instead
+  // of just which mic was missing.
+  consoleTail: string[];
+}
+
+// On a pairwise-wiring failure, dump each client's live rtc hook state + console tail — the
+// difference between "one mic missing" and an actionable repro.
+async function dumpVoiceDiagnostics(clients: Client[]): Promise<void> {
+  for (const client of clients) {
+    // oxlint-disable-next-line no-await-in-loop -- sequential diagnostic dump, failure path only
+    const diag = await client.page
+      .evaluate(() => ({
+        pullStates: window.__tavernTestRtc?.pullStates ?? {},
+        publishState: window.__tavernTestRtc?.publishState ?? "none",
+        pullCalls: window.__tavernTestRtc?.pullCalls ?? [],
+        remoteMicUserIds: window.__tavernTestAudio?.remoteMicUserIds ?? [],
+      }))
+      .catch(() => null);
+    console.log(
+      `[voice-diag] ${client.user.username} (${client.user.userId})`,
+      JSON.stringify(diag),
+      `console: ${JSON.stringify(client.consoleTail.slice(-12))}`,
+    );
+  }
 }
 
 // Seeds a fresh server with `count` members (the first is the admin/creator) and opens one browser
@@ -82,13 +113,19 @@ async function seedRoom(
         storageState: await user.request.storageState(),
       });
       const page = await context.newPage();
+      const consoleTail: string[] = [];
+      page.on("console", (msg) => {
+        if (msg.type() !== "warning" && msg.type() !== "error") return;
+        consoleTail.push(`${msg.type()}: ${msg.text()}`.slice(0, 300));
+        if (consoleTail.length > 50) consoleTail.shift();
+      });
       // Boot via "/" (the boot gate lands a single-server member on /s/:id — a direct /s/:id deep-link
       // gate is S11.1). `?e2e=1` on the initial URL sets platform.isE2E at module load (frozen; the
       // client-side redirect preserves it), so the test hooks install.
       await page.goto(`/?e2e=1`);
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
       await expect(page.getByTestId("controls-bar")).toBeVisible();
-      return { user, context, page };
+      return { user, context, page, consoleTail };
     }),
   );
   // Every socket is live once each client sees the others in People (so voice.state broadcasts land).
@@ -132,6 +169,18 @@ async function joinVoice(client: Client): Promise<void> {
 
 async function closeClients(clients: Client[]): Promise<void> {
   await Promise.all(clients.map((client) => client.context.close()));
+}
+
+// TASK-1 pairwise truth: `viewer`'s live audio graph holds EXACTLY the given subjects' remote mics
+// (exact equality also catches stale nodes lingering after a leave).
+async function wiredTo(viewer: Client, subjects: Client[]): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        viewer.page.evaluate(() => (window.__tavernTestAudio?.remoteMicUserIds ?? []).toSorted()),
+      { timeout: 45_000 },
+    )
+    .toEqual(subjects.map((s) => s.user.userId).toSorted());
 }
 
 test.describe("FR-18 FR-19 voice (mock SFU)", () => {
@@ -303,6 +352,64 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
       await expect
         .poll(() => a.page.evaluate((id) => window.__tavernTestAudio?.userGains[id], b.user.userId))
         .toBe(1.5);
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
+  // TASK-1 audibility regression: with 3+ members the old engine left asymmetric deaf pairs — a
+  // pull racing the joiner's REST publish either 403'd past the flat retry budget or came back 200
+  // with a swallowed per-track SFU error (no retry, silent forever). Four clients join
+  // CONCURRENTLY (maximum registration racing), then every pair must be wired both ways: the
+  // remote mic attached to the live audio graph is the mock-suite truth (no media plane). The
+  // leave/rejoin churn then exercises grant cleanup + the micSeq re-pull of the fresh session.
+  test("four concurrent joiners all hear each other pairwise; leave/rejoin re-wires (TASK-1)", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    test.setTimeout(240_000);
+    const { clients } = await seedRoom(browser, baseURL, api, ["a", "b", "c", "d"]);
+    const [a, b, c, d] = clients;
+    if (!a || !b || !c || !d) throw new Error("expected four clients");
+    try {
+      // All four join at once — no serialization: this is exactly the §7.1 registration race.
+      await Promise.all(clients.map((client) => joinVoice(client)));
+      await Promise.all(
+        clients.map((viewer) =>
+          wiredTo(
+            viewer,
+            clients.filter((other) => other !== viewer),
+          ),
+        ),
+      ).catch(async (err: unknown) => {
+        await dumpVoiceDiagnostics(clients);
+        throw err;
+      });
+
+      // D leaves mid-call: the survivors drop exactly D (stale mic nodes must not linger).
+      await d.page.getByTestId("controls-leave").click();
+      await Promise.all([wiredTo(a, [b, c]), wiredTo(b, [a, c]), wiredTo(c, [a, b])]).catch(
+        async (err: unknown) => {
+          await dumpVoiceDiagnostics(clients);
+          throw err;
+        },
+      );
+
+      // D rejoins mid-call: everyone re-wires — the survivors pull D's NEW mic session (micSeq
+      // bump path) and D pulls all three existing mics.
+      await joinVoice(d);
+      await Promise.all(
+        clients.map((viewer) =>
+          wiredTo(
+            viewer,
+            clients.filter((other) => other !== viewer),
+          ),
+        ),
+      ).catch(async (err: unknown) => {
+        await dumpVoiceDiagnostics(clients);
+        throw err;
+      });
     } finally {
       await closeClients(clients);
     }

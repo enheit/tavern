@@ -131,12 +131,11 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
       await joinVoice(b);
       const track = await startScreenShare(a, "720p30");
       await b.page.getByTestId(`stream-tile-${track}`).getByTestId(`stream-watch-${track}`).click();
-      // Focus so B pulls the HIGH layer (the preset the publisher drives, FR-27/33); a grid tile stays
-      // on the pinned low layer and would not observe the h-preset change. 40s: the SFU only forwards
-      // h once the viewer's bandwidth estimate clears the h bitrate (1800 kbps here), and that ramp
-      // regularly needs >20s on constrained CI runners (S12.4 docker probe) — the upswitch itself is
-      // SFU/BWE-governed, not product logic.
-      await b.page.getByTestId(`stream-tile-${track}`).click();
+      // A grid tile pulls the HIGH layer from the start (always-h policy) — the h-preset change is
+      // observable without focusing. 40s: the SFU only forwards h once the viewer's bandwidth
+      // estimate clears the h bitrate (1800 kbps here), and that ramp regularly needs >20s on
+      // constrained CI runners (S12.4 docker probe) — the upswitch itself is SFU/BWE-governed, not
+      // product logic.
       await expect
         .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 40_000 })
         .toBeGreaterThan(480);
@@ -182,7 +181,11 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
     }
   });
 
-  test("FR-33 focus raises resolution", async ({ browser, baseURL, api }) => {
+  test("FR-33 grid tile receives the high layer without focus", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
     test.skip(!process.env.REALTIME_APP_ID, "realtime secrets absent");
     test.setTimeout(120_000);
     const {
@@ -193,16 +196,14 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
       await joinVoice(b);
       const track = await startScreenShare(a, "1080p30");
       await b.page.getByTestId(`stream-tile-${track}`).getByTestId(`stream-watch-${track}`).click();
-      // Grid tile → low layer (height ≈ 270). Wait until it is actually decoding the low layer.
       await expect
         .poll(async () => (await videoStats(b.page, track)).framesDecoded, { timeout: 20_000 })
         .toBeGreaterThan(0);
 
-      // Focus (single click) → tracks/update to the high layer → inbound frameHeight climbs above the
-      // low layer (>270), with no publisher involvement. 40s: the SFU forwards h only after the
-      // viewer's bandwidth estimate clears the h bitrate — the same BWE ramp window as FR-27's
-      // precondition poll (S12.4).
-      await b.page.getByTestId(`stream-tile-${track}`).click();
+      // Always-h policy: an UNFOCUSED grid tile's inbound frameHeight climbs above the low layer
+      // (>270 for a 1080p source) with no click and no publisher involvement. 40s: the SFU forwards
+      // h only after the viewer's bandwidth estimate clears the h bitrate — the same BWE ramp window
+      // as FR-27's precondition poll (S12.4).
       await expect
         .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 40_000 })
         .toBeGreaterThan(270);

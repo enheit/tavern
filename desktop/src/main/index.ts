@@ -4,6 +4,8 @@ import {
   getScreenSources,
   loopbackAudioSupported,
   openScreenRecordingSettings,
+  prepareStreamAudio,
+  releaseStreamAudio,
   screenAccessStatus,
   selectSource,
   setupDisplayMediaHandler,
@@ -28,6 +30,8 @@ function buildServices(): IpcServices {
       loopbackAudioSupported,
       screenAccessStatus,
       openScreenRecordingSettings,
+      prepareStreamAudio: () => prepareStreamAudio(),
+      releaseStreamAudio: () => releaseStreamAudio(),
     },
     notifications: { show: showNotification },
     updates: { restartToUpdate },
@@ -50,6 +54,11 @@ if (!acquireSingleInstanceLock()) {
   app.quit();
 } else {
   registerAppScheme();
+
+  // FR-28: never leave the share's pulse remap-source behind on quit (idempotent off-linux no-op).
+  app.on("will-quit", () => {
+    void releaseStreamAudio();
+  });
 
   void app.whenReady().then(() => {
     // Dev runs the stock Electron binary whose bundle supplies the Dock icon; build/icon.png is

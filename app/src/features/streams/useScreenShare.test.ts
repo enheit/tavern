@@ -3,6 +3,7 @@ import type { ClientMessage } from "@tavern/shared";
 import { ScreenShareController } from "@/features/streams/useScreenShare";
 import type { ScreenShareDeps } from "@/features/streams/useScreenShare";
 import type { ShareSelection } from "@/features/streams/types";
+import type { ScreenCapture } from "@/media/capture";
 import { PublishSession } from "@/media/rtc/publishSession";
 import { useMediaStore } from "@/stores/media";
 import { EventLog } from "../../../test/fakes/log";
@@ -62,21 +63,31 @@ async function flush(): Promise<void> {
   );
 }
 
+// Wraps tracks in the ScreenCapture shape captureScreen returns; audioSource defaults to
+// "display" when audio is present (the pre-fallback path these publish tests exercise).
+function screenCapture(
+  video: MediaStreamTrack,
+  audio: MediaStreamTrack | null,
+  audioSource: ScreenCapture["audioSource"] = audio === null ? null : "display",
+): ScreenCapture {
+  return { video, audio, audioSource, tabAudio: false };
+}
+
 function makeDeps(
   session: PublishSession,
   over: Partial<ScreenShareDeps> = {},
-): { deps: ScreenShareDeps; sent: ClientMessage[]; caveat: ReturnType<typeof vi.fn> } {
+): { deps: ScreenShareDeps; sent: ClientMessage[]; notice: ReturnType<typeof vi.fn> } {
   const sent: ClientMessage[] = [];
-  const caveat = vi.fn();
+  const notice = vi.fn();
   const deps: ScreenShareDeps = {
-    capture: vi.fn(async () => ({ video: captureTrack("video").track, audio: null })),
+    capture: vi.fn(async () => screenCapture(captureTrack("video").track, null)),
     publisher: () => session,
     wsFor: () => ({ send: (msg) => sent.push(msg) }),
     activeServerId: () => "srv",
-    caveat,
+    notice,
     ...over,
   };
-  return { deps, sent, caveat };
+  return { deps, sent, notice };
 }
 
 const SEL: ShareSelection = { sourceId: "screen:0", preset: "1080p30", withAudio: false };
@@ -89,7 +100,7 @@ describe("FR-27 screen share publish", () => {
   it("start publishes h+l encodings from the preset table", async () => {
     const { session, port } = await makePublisher();
     const { deps } = makeDeps(session, {
-      capture: async () => ({ video: captureTrack("video").track, audio: null }),
+      capture: async () => screenCapture(captureTrack("video").track, null),
     });
     const controller = new ScreenShareController(deps);
 
@@ -109,7 +120,7 @@ describe("FR-27 screen share publish", () => {
   it("start sends stream.start with audioTrackName only when audio granted", async () => {
     const noAudio = await makePublisher();
     const a = makeDeps(noAudio.session, {
-      capture: async () => ({ video: captureTrack("video").track, audio: null }),
+      capture: async () => screenCapture(captureTrack("video").track, null),
     });
     await new ScreenShareController(a.deps).start(SEL);
     const startA = a.sent.find((m) => m.t === "stream.start");
@@ -119,14 +130,12 @@ describe("FR-27 screen share publish", () => {
       trackName: `screen:${USER}:1`,
       preset: "1080p30",
     });
-    expect(a.caveat).not.toHaveBeenCalled();
+    // notice fires on every start — with a null audioSource here (no audio was captured).
+    expect(a.notice).toHaveBeenCalledWith(expect.objectContaining({ audioSource: null }), false);
 
     const withAudio = await makePublisher();
     const b = makeDeps(withAudio.session, {
-      capture: async () => ({
-        video: captureTrack("video").track,
-        audio: captureTrack("audio").track,
-      }),
+      capture: async () => screenCapture(captureTrack("video").track, captureTrack("audio").track),
     });
     await new ScreenShareController(b.deps).start({ ...SEL, withAudio: true });
     const startB = b.sent.find((m) => m.t === "stream.start");
@@ -137,14 +146,18 @@ describe("FR-27 screen share publish", () => {
       audioTrackName: `screenAudio:${USER}:1`,
       preset: "1080p30",
     });
-    // FR-28 self-audio caveat fires exactly on the audio share.
-    expect(b.caveat).toHaveBeenCalledTimes(1);
+    // FR-28 share-audio notice carries the capture (display origin) + the audio intent.
+    expect(b.notice).toHaveBeenCalledTimes(1);
+    expect(b.notice).toHaveBeenCalledWith(
+      expect.objectContaining({ audioSource: "display" }),
+      true,
+    );
   });
 
   it("track names increment per share (n=1 then n=2)", async () => {
     const { session } = await makePublisher();
     const { deps } = makeDeps(session, {
-      capture: async () => ({ video: captureTrack("video").track, audio: null }),
+      capture: async () => screenCapture(captureTrack("video").track, null),
     });
     const controller = new ScreenShareController(deps);
 
@@ -160,7 +173,7 @@ describe("FR-27 screen share publish", () => {
     const video = captureTrack("video");
     const audio = captureTrack("audio");
     const { deps, sent } = makeDeps(session, {
-      capture: async () => ({ video: video.track, audio: audio.track }),
+      capture: async () => screenCapture(video.track, audio.track),
     });
     await new ScreenShareController(deps).start({ ...SEL, withAudio: true });
 
@@ -183,7 +196,7 @@ describe("FR-27 screen share publish", () => {
     const video = captureTrack("video");
     const audio = captureTrack("audio");
     const { deps, sent } = makeDeps(session, {
-      capture: async () => ({ video: video.track, audio: audio.track }),
+      capture: async () => screenCapture(video.track, audio.track),
     });
     const controller = new ScreenShareController(deps);
     await controller.start({ ...SEL, withAudio: true });
@@ -204,7 +217,7 @@ describe("FR-27 screen share publish", () => {
     vi.spyOn(session, "publishStream").mockRejectedValueOnce(new Error("boom"));
     const video = captureTrack("video");
     const { deps } = makeDeps(session, {
-      capture: async () => ({ video: video.track, audio: null }),
+      capture: async () => screenCapture(video.track, null),
     });
 
     await expect(new ScreenShareController(deps).start(SEL)).rejects.toThrow("boom");
@@ -221,7 +234,7 @@ describe("FR-27 on-the-fly preset switch", () => {
     const { session, port } = await makePublisher();
     const video = captureTrack("video");
     const { deps } = makeDeps(session, {
-      capture: async () => ({ video: video.track, audio: null }),
+      capture: async () => screenCapture(video.track, null),
     });
     const controller = new ScreenShareController(deps);
     await controller.start({ sourceId: "screen:0", preset: "1080p30", withAudio: false });
@@ -257,7 +270,7 @@ describe("FR-27 on-the-fly preset switch", () => {
     const { session, port } = await makePublisher();
     const video = captureTrack("video", 720);
     const { deps } = makeDeps(session, {
-      capture: async () => ({ video: video.track, audio: null }),
+      capture: async () => screenCapture(video.track, null),
     });
     const controller = new ScreenShareController(deps);
     await controller.start({ sourceId: "screen:0", preset: "1080p30", withAudio: false });
@@ -281,7 +294,7 @@ describe("FR-27 on-the-fly preset switch", () => {
     const { session, signal } = await makePublisher();
     const video = captureTrack("video");
     const { deps } = makeDeps(session, {
-      capture: async () => ({ video: video.track, audio: null }),
+      capture: async () => screenCapture(video.track, null),
     });
     const controller = new ScreenShareController(deps);
     await controller.start(SEL);
@@ -298,7 +311,7 @@ describe("FR-27 on-the-fly preset switch", () => {
     const { session } = await makePublisher();
     const video = captureTrack("video");
     const { deps, sent } = makeDeps(session, {
-      capture: async () => ({ video: video.track, audio: null }),
+      capture: async () => screenCapture(video.track, null),
     });
     const controller = new ScreenShareController(deps);
     await controller.start(SEL);

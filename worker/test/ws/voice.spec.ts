@@ -472,3 +472,73 @@ describe("FR-40 stat accumulators", () => {
     });
   });
 });
+
+// TASK-1: a mic (re)registration must be visible to peers — the DO bumps the member's micSeq and
+// broadcasts the fresh voice.state (peers re-pull on a seq change; the first publish's broadcast is
+// the "mic is now pullable" signal that the join-time snapshot raced).
+describe("TASK-1 micSeq", () => {
+  function publishMic(stub: RoomStub, userId: string, sessionId: string): Promise<Response> {
+    return internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish",
+      userId,
+      sessionId,
+      tracks: [{ trackName: `mic:${userId}`, kind: "mic" }],
+    });
+  }
+
+  it("mic publish bumps micSeq + broadcasts; re-publish bumps again; flags preserve it", async () => {
+    const stub = freshRoom();
+    const a = memberInit();
+    const b = memberInit();
+    const meta = metaFor(a.userId);
+    await seed(stub, a, meta);
+    await seed(stub, b, meta);
+    const { ws: wsA } = await connect(stub, a.userId);
+    const { ws: wsB, col: colB } = await connect(stub, b.userId);
+    wsA.send(JSON.stringify({ t: "voice.join" }));
+    await colB.waitForVoice((v) => v.members.some((m) => m.userId === a.userId));
+
+    // First mic registration → micSeq 1 lands on the peer's socket.
+    expect((await publishMic(stub, a.userId, "sfu-a-1")).status).toBe(200);
+    const afterFirst = await colB.waitForVoice(
+      (v) => v.members.find((m) => m.userId === a.userId)?.micSeq === 1,
+    );
+    expect(afterFirst.members.find((m) => m.userId === a.userId)?.micSeq).toBe(1);
+
+    // Re-publish under a NEW SFU session (rejoin/recovery) → micSeq 2.
+    expect((await publishMic(stub, a.userId, "sfu-a-2")).status).toBe(200);
+    await colB.waitForVoice((v) => v.members.find((m) => m.userId === a.userId)?.micSeq === 2);
+
+    // A mute-flag relay must NOT reset the seq (the old flag rebuild dropped unknown fields).
+    wsA.send(JSON.stringify({ t: "voice.state", muted: true, deafened: false }));
+    const afterFlags = await colB.waitForVoice((v) => flagsOf(v, a.userId)?.muted === true);
+    expect(afterFlags.members.find((m) => m.userId === a.userId)?.micSeq).toBe(2);
+
+    wsA.close();
+    wsB.close();
+  });
+
+  it("a non-mic publish does not bump micSeq", async () => {
+    const stub = freshRoom();
+    const a = memberInit();
+    const meta = metaFor(a.userId);
+    await seed(stub, a, meta);
+    const { ws: wsA, col: colA } = await connect(stub, a.userId);
+    wsA.send(JSON.stringify({ t: "voice.join" }));
+    await colA.waitForVoice((v) => v.members.length === 1);
+
+    const res = await internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish",
+      userId: a.userId,
+      sessionId: "sfu-a-1",
+      tracks: [{ trackName: `screen:${a.userId}:1`, kind: "screen", preset: "1080p30" }],
+    });
+    expect(res.status).toBe(200);
+    // stream.added arrives; the voice snapshot (if any) must not carry a micSeq for A.
+    await colA.waitForType("stream.added");
+    const latest = colA.voiceStates().at(-1);
+    expect(latest?.voice.members.find((m) => m.userId === a.userId)?.micSeq).toBeUndefined();
+
+    wsA.close();
+  });
+});

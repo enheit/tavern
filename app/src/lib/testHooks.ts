@@ -20,6 +20,9 @@ export interface TavernTestAudio {
   userGains: Record<string, number>; // userId → effective gain 0..2 (0 when locally muted)
   speakingUserIds: string[];
   soundboardPlays: Array<{ soundId: string; at: number }>; // filled by S9.2 (FR-36 sync AC)
+  // userIds whose remote mic is attached to the live audio graph — the mock-SFU suite's pairwise
+  // "can hear" truth (a graph attach requires the pull to have negotiated + the track to arrive).
+  remoteMicUserIds: string[];
 }
 
 // Per-rid outbound-rtp video summary of ONE published track (§10 @realtime, FR-27): lets the nightly
@@ -38,8 +41,14 @@ export interface TavernTestRtc {
   publishState: PublishState;
   pullStates: Record<string, PullState>; // 'voice' + (S8) per-stream trackName keys
   stats(session: "voice"): Promise<VoiceStats>; // inbound-rtp audio summary
+  // Per-trackName inbound audio bytes of the voice pull (mic:{uid} → bytesReceived) — the 4-client
+  // @realtime pairwise regression reads this; the aggregate stats() hides a one-way-deaf pair.
+  statsByTrack(session: "voice"): Promise<Record<string, number>>;
   outboundVideoStats(trackName: string): Promise<OutboundVideoLayer[]>; // publisher-side (FR-27)
   layerCalls: Array<{ trackName: string; rid: "h" | "l" }>; // FR-33 setLayer switches (S8.4/S8.5)
+  // Initial pull requests (pullTracks) with the simulcast rid each carried (null = no rid, e.g.
+  // audio) — lets the mock-SFU streams spec assert a watch pulled the HIGH layer from the start.
+  pullCalls: Array<{ trackName: string; rid: "h" | "l" | null }>;
 }
 
 // The voice controller (the sole holder of the live publish/pull sessions) binds these thunks so the
@@ -48,6 +57,8 @@ export interface TestHookSources {
   publishState(): PublishState;
   pullStates(): Record<string, PullState>;
   voiceStats(): Promise<VoiceStats>;
+  voiceStatsByTrack(): Promise<Record<string, number>>;
+  remoteMicUserIds(): string[];
   outboundVideoStats(trackName: string): Promise<OutboundVideoLayer[]>;
 }
 
@@ -107,8 +118,12 @@ export function clearWatchVideoStats(trackName: string): void {
 }
 
 // FR-33 layer switches (S8.4 pushes, S8.5 asserts). Stable array identity across the hook's lifetime,
-// like soundboardPlays — pullSession.setLayer records {trackName, rid} on each grid↔focus switch.
+// like soundboardPlays — pullSession.setLayer records {trackName, rid} on each explicit layer switch.
 const layerCalls: Array<{ trackName: string; rid: "h" | "l" }> = [];
+
+// Initial pull requests — pullSession.addRemoteTracks records {trackName, rid} per pulled track so the
+// streams spec can assert the always-high-layer policy (rid "h" on the first pull, no downswitch).
+const pullCalls: Array<{ trackName: string; rid: "h" | "l" | null }> = [];
 
 // FR-20: the effective per-user gain the graph applies — the stored slider value, or 0 when the user
 // is in VolumesV1.mutedUsers (mute is set-membership, not a gain of 0, so the slider value survives).
@@ -142,6 +157,9 @@ export function installTestHooks(sources: TestHookSources): void {
       return [...useMediaStore.getState().speakingUserIds];
     },
     soundboardPlays,
+    get remoteMicUserIds(): string[] {
+      return sources.remoteMicUserIds();
+    },
   };
   window.__tavernTestRtc = {
     get publishState(): PublishState {
@@ -152,8 +170,10 @@ export function installTestHooks(sources: TestHookSources): void {
       return { ...watchPullStates, ...sources.pullStates() };
     },
     stats: (_session) => sources.voiceStats(),
+    statsByTrack: (_session) => sources.voiceStatsByTrack(),
     outboundVideoStats: (trackName) => sources.outboundVideoStats(trackName),
     layerCalls,
+    pullCalls,
   };
   window.__tavernTestVideoStats = (trackName) =>
     watchVideoReaders[trackName]?.() ??

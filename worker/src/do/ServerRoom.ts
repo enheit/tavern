@@ -788,10 +788,12 @@ export class ServerRoom extends DurableObject<Env> {
     });
   }
 
-  // watch.start (G1/FR-40): grant the viewer the pull (default low layer, G3), open the cost-meter
-  // watch at the stream's CURRENT registry preset (G5), and start the (viewer→streamer) watch-stat
-  // clock. No wire ack — the client's pull is authorized against the grant this seeds. An unknown /
-  // non-video track → socket-local bad_message (the client reverts to idle on the error frame).
+  // watch.start (G1/FR-40): grant the viewer the pull at the HIGH layer (G3 amended — every watcher
+  // pulls "h" from the initial pull, so the meter must price "h" from the first tick: op:'layer'
+  // repricing never fires under the always-h UI), open the cost-meter watch at the stream's CURRENT
+  // registry preset (G5), and start the (viewer→streamer) watch-stat clock. No wire ack — the
+  // client's pull is authorized against the grant this seeds. An unknown / non-video track →
+  // socket-local bad_message (the client reverts to idle on the error frame).
   private async handleWatchStart(
     ws: WebSocket,
     att: ConnAttachment,
@@ -812,8 +814,8 @@ export class ServerRoom extends DurableObject<Env> {
       this.room.send(ws, { t: "error", code: "bad_message" });
       return;
     }
-    await this.room.rtcAddGrant(att.userId, msg.trackName, "l");
-    await this.costMeter.openWatch(att.userId, msg.trackName, info.preset, "l", at);
+    await this.room.rtcAddGrant(att.userId, msg.trackName, "h");
+    await this.costMeter.openWatch(att.userId, msg.trackName, info.preset, "h", at);
     await this.stats.noteWatchStart(att.userId, info.streamerId, at);
     // § watching indicator: the grant set changed — fan the fresh watch.state snapshot to everyone.
     await this.room.broadcastWatching(at);

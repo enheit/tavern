@@ -12,6 +12,9 @@ export function setupNotifications(): void {
 }
 
 export function showNotification(payload: { title: string; body: string; tag: string }): void {
+  // Linux without a notification daemon (and any other host lacking OS support) reports false here;
+  // constructing/showing would throw or silently drop, so bail cleanly instead.
+  if (!Notification.isSupported()) return;
   const notification = new Notification({ title: payload.title, body: payload.body });
   notification.on("click", () => {
     focusMainWindow();

@@ -89,7 +89,8 @@ function isShareCounter(v: string | undefined): boolean {
 // asciibetical mode, which otherwise down-switches a watcher to the 250 kbps / 270p l layer every
 // time its bandwidth estimate dips below the h cap (measured 270↔1080 flapping on the quality
 // probe) — the direct cause of "fullscreen looks terrible at 1080p60". Layer choice is UI intent:
-// grid tiles ask for l, focused/fullscreen tiles ask for h (FR-33); the SFU must follow, not guess.
+// every watched tile asks for h from the initial pull (FR-33 amended, always-h policy); the SFU
+// must follow, not guess.
 function pinnedSimulcast(preferredRid: "h" | "l"): SimulcastPrefs {
   return { preferredRid, priorityOrdering: "none", ridNotAvailable: "none" };
 }

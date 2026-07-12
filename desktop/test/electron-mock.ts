@@ -154,6 +154,7 @@ export const safeStorage = {
 
 export class Notification {
   static instances: Notification[] = [];
+  static isSupported = vi.fn(() => true);
   readonly options: { title?: string; body?: string };
   private readonly listeners = new Map<string, () => void>();
   show = vi.fn();
@@ -229,6 +230,8 @@ export function resetElectronMock(): void {
   appEventHandlers.clear();
   appliedSwitches.length = 0;
   Notification.instances.length = 0;
+  Notification.isSupported.mockReset();
+  Notification.isSupported.mockReturnValue(true);
   BrowserWindow.instances.length = 0;
   state.userDataDir = "/tmp/tavern-mock";
   state.appPath = "/tmp/tavern-app";

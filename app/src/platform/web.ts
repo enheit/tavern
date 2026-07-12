@@ -45,6 +45,11 @@ export function createWebPlatform(): PlatformBridge {
       openScreenRecordingSettings: () => {
         // no OS settings pane reachable from the web.
       },
+      // Browsers can't create OS audio sources — the FR-28 fallback captures what already exists.
+      prepareStreamAudio: async () => false,
+      releaseStreamAudio: () => {
+        // nothing to tear down on the web.
+      },
     },
     notifications: {
       show: async (n) => {
@@ -74,6 +79,8 @@ export function createWebPlatform(): PlatformBridge {
         if (Notification.permission === "denied") return false;
         return (await Notification.requestPermission()) === "granted";
       },
+      permissionState: () =>
+        typeof Notification === "undefined" ? "unsupported" : Notification.permission,
     },
     updates: {
       // Web never auto-updates; keep the handler registered so the contract's unsubscribe is real.

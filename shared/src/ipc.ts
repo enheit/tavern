@@ -87,6 +87,12 @@ export interface TavernIpc {
     screenAccessStatus(): Promise<ScreenAccessStatus>;
     // macOS: deep-links System Settings → Privacy & Security → Screen Recording; no-op elsewhere.
     openScreenRecordingSettings(): Promise<void>;
+    // FR-28 Linux stream audio: loads a pulse `module-remap-source` clone of the default sink's
+    // monitor (descriptions carry "Monitor" so the renderer's fallback heuristic finds it) —
+    // Chromium refuses to enumerate raw monitors (audio_manager_pulse.cc), a remap IS enumerated.
+    // Resolves false off Linux / when pactl is unavailable. Release is idempotent.
+    prepareStreamAudio(): Promise<boolean>;
+    releaseStreamAudio(): Promise<void>;
   };
   notifications: {
     show(n: { title: string; body: string; tag: string }): Promise<void>;

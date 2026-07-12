@@ -29,6 +29,8 @@ function makeServices(): IpcServices {
       loopbackAudioSupported: vi.fn(() => true),
       screenAccessStatus: vi.fn(() => Promise.resolve("denied" as const)),
       openScreenRecordingSettings: vi.fn(() => Promise.resolve()),
+      prepareStreamAudio: vi.fn(() => Promise.resolve(true)),
+      releaseStreamAudio: vi.fn(() => Promise.resolve()),
     },
     notifications: { show: vi.fn() },
     updates: { restartToUpdate: vi.fn() },
@@ -51,12 +53,14 @@ describe("A10/§6.3 IPC bridge", () => {
     registerIpc(services);
   });
 
-  it("registers exactly the eleven §6.3 invoke channels", () => {
+  it("registers exactly the thirteen §6.3 invoke channels", () => {
     expect([...ipcMainHandlers.keys()].toSorted()).toEqual(
       [
         "capture:getScreenSources",
         "capture:loopbackAudioSupported",
         "capture:openScreenRecordingSettings",
+        "capture:prepareStreamAudio",
+        "capture:releaseStreamAudio",
         "capture:screenAccessStatus",
         "capture:selectSource",
         "notifications:show",

@@ -26,14 +26,12 @@ function setStreamVolume(streamKey: string, gain: number): void {
 // Every other tile is a normal opt-in remote tile (FR-30 applies to webcams exactly as to screens).
 export function StreamTile({
   stream,
-  focused,
   onToggleFocus,
   selfStream,
   fullscreen = false,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
-  focused: boolean;
   onToggleFocus: () => void;
   selfStream?: MediaStream | null;
   // Theater fullscreen: `fullscreen` marks this tile as the window-filling instance (renders its
@@ -56,7 +54,6 @@ export function StreamTile({
   return (
     <RemoteTile
       stream={stream}
-      focused={focused}
       onToggleFocus={onToggleFocus}
       fullscreen={fullscreen}
       onToggleFullscreen={onToggleFullscreen}
@@ -97,8 +94,8 @@ function FullscreenButton({
 // FR-29 self-preview: the local webcam (or any own stream) shown muted with a "You" badge. No Watch
 // button and no useWatch — the sharer sees their own tile without pulling from the SFU. On-the-fly
 // quality (FR-27) is driven from the ControlsBar res/fps groups now, not a per-tile dropdown. FR-33: a
-// single left-click toggles focus/full-size, same as a remote tile — there is no simulcast layer to
-// switch (the stream is local), it is purely a layout toggle.
+// single left-click escalates the layout (grid → main → fullscreen ↔ main; the Canvas decides), same
+// as a remote tile — there is no simulcast layer to switch (the stream is local), purely layout.
 function SelfTile({
   stream,
   selfStream,
@@ -174,29 +171,23 @@ function TileOverlay({ fullscreen, children }: { fullscreen: boolean; children: 
 // FR-30/31/33 remote canvas tile: a placeholder (Watch, FR-30) until the viewer opts in, then the live
 // video (letterboxed 16:9, muted — audio flows through the gain node) with an unwatch button and,
 // when the stream carries audio, an independent volume slider. A single left-click on a watched tile
-// toggles focus/full-size (FR-33); the overlay controls stop propagation so they never toggle.
+// escalates the layout (grid → main → fullscreen ↔ main; the Canvas decides, FR-33) — a pure layout
+// toggle: the pull is pinned to the high simulcast layer from the start, so focus/fullscreen never
+// changes quality. Overlay controls stop propagation.
 function RemoteTile({
   stream,
-  focused,
   onToggleFocus,
   fullscreen,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
-  focused: boolean;
   onToggleFocus: () => void;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
 }) {
-  const { state, mediaStream, watch, unwatch, setLayer } = useWatch(stream);
+  const { state, mediaStream, watch, unwatch } = useWatch(stream);
   const watching = state !== "idle";
   const streamKey = `${stream.userId}:${stream.kind}`;
-
-  // FR-33: a focused (clicked) OR fullscreen tile pulls the high simulcast layer; a grid tile the low
-  // one. Fullscreen fills the window, so it always wants the high layer regardless of `focused`.
-  useEffect(() => {
-    if (state === "watching") setLayer(focused || fullscreen ? "h" : "l");
-  }, [focused, fullscreen, state, setLayer]);
 
   return (
     <div

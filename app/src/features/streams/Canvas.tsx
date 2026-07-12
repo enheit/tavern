@@ -158,16 +158,20 @@ function CanvasInner({ serverId }: { serverId: string }) {
   // and no ancestor sets a containing block. The grid/focus tree unmounts, but the tile remounts here in
   // the SAME commit, so the watch pull survives the reparent via the trackName-keyed WatchController
   // registry (no re-pull) — exactly as focus mode reparents. WS + room store stay live underneath, so
-  // chat and toast notifications keep flowing. Exit via the tile's minimize button or Esc.
+  // chat and toast notifications keep flowing. Exit via the tile's minimize button, Esc, or clicking the
+  // stream itself — a click drops back to focus (main) mode, seeding focus so the main↔fullscreen click
+  // cycle also works when fullscreen was entered via `f` straight from the grid.
   if (fullscreenStream) {
     return (
       <div data-testid="canvas" data-fullscreen="true" className="fixed inset-0 z-50 bg-black">
         <StreamTile
           stream={fullscreenStream}
-          focused
           fullscreen
           selfStream={selfStreamFor(fullscreenStream.trackName)}
-          onToggleFocus={() => {}}
+          onToggleFocus={() => {
+            setFocused(fullscreenStream.trackName);
+            setFullscreen(null);
+          }}
           onToggleFullscreen={() => setFullscreen(null)}
         />
       </div>
@@ -185,13 +189,14 @@ function CanvasInner({ serverId }: { serverId: string }) {
         data-focused="true"
         className="flex h-full w-full flex-col gap-2 p-2"
       >
-        {/* Main stream fills the space above the strip. Click it again (or Esc) → back to grid. */}
+        {/* Main stream fills the space above the strip. Clicking it escalates to theater fullscreen
+            (same as `f` / the tile's maximize button); clicking the fullscreen stream drops back here —
+            click cycles main ↔ fullscreen. Esc (or a thumbnail click) is the way back to the grid. */}
         <div className="min-h-0 min-w-0 flex-1">
           <StreamTile
             stream={focusedStream}
-            focused
             selfStream={selfStreamFor(focusedStream.trackName)}
-            onToggleFocus={() => setFocused(null)}
+            onToggleFocus={() => setFullscreen(focusedStream.trackName)}
             onToggleFullscreen={() => setFullscreen(focusedStream.trackName)}
           />
         </div>
@@ -204,7 +209,6 @@ function CanvasInner({ serverId }: { serverId: string }) {
               <div key={s.trackName} className="aspect-video h-full shrink-0">
                 <StreamTile
                   stream={s}
-                  focused={false}
                   selfStream={selfStreamFor(s.trackName)}
                   onToggleFocus={() => setFocused(s.trackName)}
                   onToggleFullscreen={() => setFullscreen(s.trackName)}
@@ -238,7 +242,6 @@ function CanvasInner({ serverId }: { serverId: string }) {
             <StreamTile
               key={s.trackName}
               stream={s}
-              focused={false}
               selfStream={selfStreamFor(s.trackName)}
               onToggleFocus={() =>
                 setFocused(focusedTrackName === s.trackName ? null : s.trackName)

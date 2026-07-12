@@ -53,11 +53,13 @@ interface SharePickerDialogProps {
 }
 
 // FR-28 source/quality/audio picker. Desktop: Screens/Windows tabs of enumerated sources + preset +
-// a Share-audio switch (enabled iff the OS supports loopback; HIDDEN entirely on Linux v1, pinned).
-// Web: preset + an audio hint only — the browser's native picker chooses the source and audio.
+// a Share-audio switch — enabled where the OS loopback device exists (win/mac) AND on Linux, where
+// audio rides the pactl remap-source + AEC fallback instead (media/capture.ts) — the S8.1
+// "hidden on Linux" pin is revised by that fallback. Web: preset + an audio hint only — the
+// browser's native picker chooses the source and audio.
 export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDialogProps) {
   const isDesktop = platform.kind === "desktop";
-  const audioSwitchVisible = isDesktop && platform.os !== "linux";
+  const audioSwitchVisible = isDesktop;
   const [sources, setSources] = useState<ScreenSource[]>([]);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [preset, setPreset] = useState<PresetId>(DEFAULT_SCREEN_PRESET);
@@ -171,7 +173,7 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
               <span>{m.streams_share_audio()}</span>
               <Switch
                 checked={withAudio}
-                disabled={!loopbackSupported}
+                disabled={!loopbackSupported && platform.os !== "linux"}
                 data-testid="share-audio"
                 onCheckedChange={setWithAudio}
               />

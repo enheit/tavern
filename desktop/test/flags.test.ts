@@ -83,10 +83,10 @@ describe("flags & GPU crash guard", () => {
     expect(app.setPath).not.toHaveBeenCalled();
   });
 
-  it("adds the PulseAudio loopback feature on linux", () => {
+  it("no longer force-enables the PulseAudio loopback feature on linux (FR-28 uses the pactl remap path)", () => {
     setPlatform("linux");
     applyFlags();
-    expect(hasSwitch("enable-features", "PulseaudioLoopbackForScreenShare")).toBe(true);
+    expect(hasSwitch("enable-features", "PulseaudioLoopbackForScreenShare")).toBe(false);
   });
 
   it("disables the GPU when a prior crash flag file exists", () => {

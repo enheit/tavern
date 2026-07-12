@@ -80,6 +80,14 @@ describe("IPC preload bridge (window.tavern)", () => {
     await expect(api.capture.getScreenSources()).rejects.toThrow();
   });
 
+  it("capture.prepareStreamAudio parses a boolean; releaseStreamAudio invokes its channel", async () => {
+    state.invokeResults.set("capture:prepareStreamAudio", true);
+    expect(await api.capture.prepareStreamAudio()).toBe(true);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("capture:prepareStreamAudio");
+    await api.capture.releaseStreamAudio();
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("capture:releaseStreamAudio");
+  });
+
   it("capture.selectSource + loopbackAudioSupported round-trip", async () => {
     await api.capture.selectSource("screen:1");
     expect(ipcRenderer.invoke).toHaveBeenCalledWith("capture:selectSource", "screen:1");

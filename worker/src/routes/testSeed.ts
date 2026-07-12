@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import type { ErrorCode } from "@tavern/shared";
 import type { AuthVars } from "../middleware";
+import { sfuMockStateForTest } from "../rtc/realtimeMock";
 
 // Test-only seed route (S8.5, PLAN §10). MOUNTED by index.ts ONLY behind the mock-SFU env guard
 // (TAVERN_SFU_MOCK=1, the PR/e2e worker env): in production the flag is absent, so /api/__test/* 404s
@@ -60,6 +61,14 @@ testSeedRoute.post("/seed-code", async (c) => {
     .bind(code, Date.now())
     .run();
   return c.json({ code });
+});
+
+// Mock-SFU state readout (Task-1 diagnostics): the mock keeps its published-track registry in
+// isolate-local module state; this exposes it (plus a per-isolate id) so the multi-client voice
+// e2e can prove whether a "track_not_found" streak is registry truth or isolate/state loss.
+testSeedRoute.get("/sfu-mock-state", (c) => {
+  if (c.env.TAVERN_SFU_MOCK !== "1") return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  return c.json(sfuMockStateForTest());
 });
 
 testSeedRoute.post("/set-egress", async (c) => {

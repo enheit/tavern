@@ -8,8 +8,9 @@ import { WEB_URL } from "../playwright.config";
 // FR-30/31/32/33 + G4 streams, PR hermeticity: the Worker runs with TAVERN_SFU_MOCK=1 (fixture-backed
 // mock SFU, no media plane — PLAN §10). These specs therefore assert SIGNALING + STATE + LAYOUT + UX:
 // stream.added fan-out (placeholder tiles), watch → exactly one pull (via the __tavernTestRtc.pullStates
-// hook), the App-C canvas geometry via computed grid templates, focus → high-layer request
-// (__tavernTestRtc.layerCalls), per-stream volume persistence, stop removes the tile, the FR-39 activity
+// hook), the App-C canvas geometry via computed grid templates, always-high-layer pulls with no focus
+// downswitch (__tavernTestRtc.pullCalls/layerCalls), per-stream volume persistence, stop removes the
+// tile, the FR-39 activity
 // lifecycle, and the G4 share cap (seeded via the test-only /api/__test/seed-shares route). Remote-media
 // assertions (real frames, preset drops, resolution rises) live in streams-realtime.spec.ts (@realtime).
 // The __tavernTestRtc window type is declared (ambient) in voice.spec.ts.
@@ -188,6 +189,56 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
     }
   });
 
+  test("FR-28 explicit stream-audio source publishes a screenAudio companion the watcher pulls", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    test.setTimeout(90_000);
+    const { clients } = await seedRoom(browser, baseURL, api, ["a", "b"]);
+    const [a, b] = clients;
+    if (!a || !b) throw new Error("expected two clients");
+    try {
+      await joinVoice(a);
+      // Pick an explicit stream-audio device in Settings → Voice — the e2e opt-in for the FR-28
+      // system-audio fallback (auto-mode is skipped under the harness; media/capture.ts §10 note).
+      // The fake-device flag provides deterministic audioinputs to choose from.
+      await a.page.getByTestId("user-menu").click();
+      await a.page.getByTestId("user-menu-settings").click();
+      await expect(a.page.getByTestId("settings-dialog")).toBeVisible();
+      await a.page.getByTestId("settings-tab-voice").click();
+      await a.page.getByTestId("settings-voice-stream-audio").click();
+      await a.page
+        .locator(
+          '[data-testid^="stream-audio-"]:not([data-testid="stream-audio-auto"]):not([data-testid="stream-audio-off"])',
+        )
+        .first()
+        .click();
+      await a.page.keyboard.press("Escape");
+      await expect(a.page.getByTestId("settings-dialog")).toBeHidden();
+
+      const track = await startScreenShare(a);
+      const audioTrack = `screenAudio:${a.user.userId}:1`;
+      await joinVoice(b);
+      await expect(b.page.getByTestId(`stream-tile-${track}`)).toBeVisible({ timeout: 15_000 });
+      await b.page.getByTestId(`stream-watch-${track}`).click();
+      await expect
+        .poll(() => b.page.evaluate((tn) => window.__tavernTestRtc?.pullStates[tn], track), {
+          timeout: 20_000,
+        })
+        .toBe("connected");
+      // The watch pulled the audio companion too — the fallback-captured track traveled
+      // stream.start → DO → stream.added → pullTracks end-to-end.
+      const pulledAudio = await b.page.evaluate(
+        (tn) => (window.__tavernTestRtc?.pullCalls ?? []).some((c) => c.trackName === tn),
+        audioTrack,
+      );
+      expect(pulledAudio).toBe(true);
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
   test("FR-32 two-tile geometry at 1280×720 → stacked [1,1]", async ({ browser, baseURL, api }) => {
     test.setTimeout(90_000);
     const { clients } = await seedRoom(browser, baseURL, api, ["a", "b"]);
@@ -232,7 +283,11 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
     }
   });
 
-  test("FR-33 focus requests high layer", async ({ browser, baseURL, api }) => {
+  test("FR-33 watcher pulls the high layer from the start; focus never switches layers", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
     test.setTimeout(90_000);
     const { clients } = await seedRoom(browser, baseURL, api, ["a", "b"]);
     const [a, b] = clients;
@@ -248,13 +303,20 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
         })
         .toBe("connected");
 
-      // A single click focuses → the watcher requests the high simulcast layer (FR-33).
-      await b.page.getByTestId(`stream-tile-${track}`).click();
-      await expect.poll(() => lastLayerRid(b.page), { timeout: 10_000 }).toBe("h");
+      // The initial pull itself carries preferredRid "h" — best quality in the grid, before any
+      // focus/fullscreen interaction.
+      const pullRid = await b.page.evaluate(
+        (tn) => (window.__tavernTestRtc?.pullCalls ?? []).find((c) => c.trackName === tn)?.rid,
+        track,
+      );
+      expect(pullRid).toBe("h");
 
-      // Esc leaves focus → back to the low grid layer.
+      // Focus + unfocus are layout-only: no tracks/update layer switch is ever issued.
+      await b.page.getByTestId(`stream-tile-${track}`).click();
+      await expect(b.page.getByTestId("canvas")).toHaveAttribute("data-focused", "true");
       await b.page.keyboard.press("Escape");
-      await expect.poll(() => lastLayerRid(b.page), { timeout: 10_000 }).toBe("l");
+      await expect(b.page.getByTestId("canvas")).not.toHaveAttribute("data-focused", "true");
+      expect(await lastLayerRid(b.page)).toBeNull();
     } finally {
       await closeClients(clients);
     }

@@ -59,11 +59,22 @@ describe("FR-16 shouldNotify", () => {
     ).toBe(true);
   });
 
-  it("unfocused + mention + mentions-off + all-on → no (mention gate wins)", () => {
+  it("unfocused + mention + mentions-off + all-ON → yes (all-messages is a superset)", () => {
+    // notifyAll means "every message, mentions included"; a direct @mention must never be dropped
+    // just because the mentions-only switch is off.
     expect(
       shouldNotify(
         msg({ mentions: ["me"] }),
         ctx({ windowFocused: false, settings: { notifyAll: true, notifyMentions: false } }),
+      ),
+    ).toBe(true);
+  });
+
+  it("unfocused + plain + mentions-on + all-off → no (mentions switch doesn't cover plain)", () => {
+    expect(
+      shouldNotify(
+        msg({}),
+        ctx({ windowFocused: false, settings: { notifyAll: false, notifyMentions: true } }),
       ),
     ).toBe(false);
   });

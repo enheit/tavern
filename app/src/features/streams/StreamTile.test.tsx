@@ -1,6 +1,5 @@
 import type { StreamInfo } from "@tavern/shared";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StreamTile } from "@/features/streams/StreamTile";
 import { useSessionStore } from "@/stores/session";
@@ -83,14 +82,7 @@ describe("FR-30 opt-in placeholder", () => {
   it("idle tile shows a Watch button + kind icon and opts in on click", () => {
     watchMock.state = "idle";
     const stream = makeStream();
-    render(
-      <StreamTile
-        stream={stream}
-        focused={false}
-        onToggleFocus={vi.fn()}
-        onToggleFullscreen={vi.fn()}
-      />,
-    );
+    render(<StreamTile stream={stream} onToggleFocus={vi.fn()} onToggleFullscreen={vi.fn()} />);
 
     expect(screen.getByTestId(`stream-kind-${stream.trackName}`)).not.toBeNull();
     // No video / volume in the placeholder.
@@ -107,7 +99,6 @@ describe("FR-31 per-stream volume", () => {
     render(
       <StreamTile
         stream={makeStream({ hasAudio: true })}
-        focused={false}
         onToggleFocus={vi.fn()}
         onToggleFullscreen={vi.fn()}
       />,
@@ -125,7 +116,6 @@ describe("FR-31 per-stream volume", () => {
     render(
       <StreamTile
         stream={makeStream({ hasAudio: true })}
-        focused={false}
         onToggleFocus={vi.fn()}
         onToggleFullscreen={vi.fn()}
       />,
@@ -140,7 +130,6 @@ describe("FR-31 per-stream volume", () => {
     render(
       <StreamTile
         stream={makeStream({ hasAudio: false })}
-        focused={false}
         onToggleFocus={vi.fn()}
         onToggleFullscreen={vi.fn()}
       />,
@@ -149,18 +138,10 @@ describe("FR-31 per-stream volume", () => {
   });
 });
 
-// A stateful wrapper mirroring Canvas: clicking the tile toggles `focused`, whose change the
-// tile reacts to by switching simulcast layers (FR-33).
-function FocusHarness({ stream }: { stream: StreamInfo }) {
-  const [focused, setFocused] = useState(false);
-  return (
-    <StreamTile
-      stream={stream}
-      focused={focused}
-      onToggleFocus={() => setFocused((f) => !f)}
-      onToggleFullscreen={vi.fn()}
-    />
-  );
+// A wrapper mirroring Canvas: clicking the tile fires the focus toggle. Focus is a pure LAYOUT
+// concern now — the pull is pinned to the high simulcast layer from the start, no layer switching.
+function FocusHarness({ stream, onToggle }: { stream: StreamInfo; onToggle: () => void }) {
+  return <StreamTile stream={stream} onToggleFocus={onToggle} onToggleFullscreen={vi.fn()} />;
 }
 
 describe("FR-27 preset dropdown removed from tiles (tuning lives in the ControlsBar)", () => {
@@ -169,14 +150,7 @@ describe("FR-27 preset dropdown removed from tiles (tuning lives in the Controls
   it("dropdown is absent even on the sharer's OWN screen tile", () => {
     useSessionStore.setState({ profile: self });
     const stream = makeStream({ userId: UID, kind: "screen" });
-    render(
-      <StreamTile
-        stream={stream}
-        focused={false}
-        onToggleFocus={vi.fn()}
-        onToggleFullscreen={vi.fn()}
-      />,
-    );
+    render(<StreamTile stream={stream} onToggleFocus={vi.fn()} onToggleFullscreen={vi.fn()} />);
     expect(screen.queryByTestId(`stream-preset-${stream.trackName}`)).toBeNull();
   });
 
@@ -188,14 +162,7 @@ describe("FR-27 preset dropdown removed from tiles (tuning lives in the Controls
       trackName: `cam:${UID}`,
       preset: "720p30",
     });
-    render(
-      <StreamTile
-        stream={stream}
-        focused={false}
-        onToggleFocus={vi.fn()}
-        onToggleFullscreen={vi.fn()}
-      />,
-    );
+    render(<StreamTile stream={stream} onToggleFocus={vi.fn()} onToggleFullscreen={vi.fn()} />);
     expect(screen.queryByTestId(`stream-preset-${stream.trackName}`)).toBeNull();
   });
 
@@ -203,38 +170,23 @@ describe("FR-27 preset dropdown removed from tiles (tuning lives in the Controls
     useSessionStore.setState({ profile: self });
     const other = "33333333-3333-4333-8333-333333333333";
     const stream = makeStream({ userId: other, kind: "screen", trackName: `screen:${other}:1` });
-    render(
-      <StreamTile
-        stream={stream}
-        focused={false}
-        onToggleFocus={vi.fn()}
-        onToggleFullscreen={vi.fn()}
-      />,
-    );
+    render(<StreamTile stream={stream} onToggleFocus={vi.fn()} onToggleFullscreen={vi.fn()} />);
     expect(screen.queryByTestId(`stream-preset-${stream.trackName}`)).toBeNull();
   });
 });
 
-describe("FR-33 focus layer", () => {
-  it("click watched tile enters focus and calls setLayer h", () => {
+describe("FR-33 focus toggle", () => {
+  it("click watched tile toggles focus (layout only) — never a simulcast layer switch", () => {
     const stream = makeStream();
-    render(<FocusHarness stream={stream} />);
-
-    fireEvent.click(screen.getByTestId(`stream-tile-${stream.trackName}`));
-
-    expect(watchMock.setLayer).toHaveBeenCalledWith("h");
-  });
-
-  it("second click (or Esc) leaves focus, calls setLayer l and restores grid", () => {
-    const stream = makeStream();
-    render(<FocusHarness stream={stream} />);
+    const onToggle = vi.fn();
+    render(<FocusHarness stream={stream} onToggle={onToggle} />);
     const tile = screen.getByTestId(`stream-tile-${stream.trackName}`);
 
-    fireEvent.click(tile); // enter focus → 'h'
-    watchMock.setLayer.mockClear();
-    fireEvent.click(tile); // leave focus → 'l'
+    fireEvent.click(tile); // enter focus
+    fireEvent.click(tile); // leave focus
 
-    expect(watchMock.setLayer).toHaveBeenCalledWith("l");
+    expect(onToggle).toHaveBeenCalledTimes(2);
+    expect(watchMock.setLayer).not.toHaveBeenCalled();
     expect(tile.getAttribute("data-watching")).toBe("true");
   });
 });
@@ -257,7 +209,6 @@ describe("FR-29 self preview", () => {
       <StreamTile
         stream={stream}
         selfStream={selfStream}
-        focused={false}
         onToggleFocus={vi.fn()}
         onToggleFullscreen={vi.fn()}
       />,
@@ -279,7 +230,6 @@ describe("FR-29 self preview", () => {
       <StreamTile
         stream={stream}
         selfStream={null}
-        focused={false}
         onToggleFocus={vi.fn()}
         onToggleFullscreen={vi.fn()}
       />,
@@ -301,7 +251,6 @@ describe("FR-29 self preview", () => {
       <StreamTile
         stream={stream}
         selfStream={null}
-        focused={false}
         onToggleFocus={vi.fn()}
         onToggleFullscreen={vi.fn()}
       />,

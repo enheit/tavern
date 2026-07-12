@@ -125,25 +125,63 @@ describe("FR-22 applyNoiseWorklet (rnnoise)", () => {
   });
 });
 
+// Injects an RNNoise failure for ONE context: the wasm bytes are cached module-level after the
+// rnnoise describe above, so the only per-attempt failure point is the context's addModule.
+function breakRnnoiseOn(ctx: AudioContext): void {
+  (ctx as unknown as { audioWorklet: { addModule: () => Promise<void> } }).audioWorklet.addModule =
+    async () => {
+      throw new Error("worklet module load failed");
+    };
+}
+
 describe("FR-22 applyNoiseWorklet (deepfilter)", () => {
-  it("fails OPEN when core init fails, then recovers on the next attempt", async () => {
+  // Ordered before the recovery test: dfnCore is still uncached here, so the rejected init is the
+  // one that runs (a cached good core would bypass initialize entirely).
+  it("fails OPEN to the raw track only when BOTH models are unavailable", async () => {
+    dfn.initialize.mockRejectedValueOnce(new Error("asset fetch failed"));
+    const raw = fakeTrack("audio");
+    const { ctx } = fakeCtx();
+    breakRnnoiseOn(ctx);
+
+    await expect(applyNoiseWorklet(ctx, raw, "deepfilter")).resolves.toBe(raw);
+  });
+
+  it("falls back to RNNoise when DFN init fails (Task-2 chain), then DFN recovers next attempt", async () => {
     dfn.initialize.mockRejectedValueOnce(new Error("asset fetch failed"));
     const raw = fakeTrack("audio");
     const first = fakeCtx();
+    const rnnoiseBefore = rnnoise.instances.length;
 
-    // Failed init → raw track back (never a failed join), and the core cache must not be poisoned.
-    await expect(applyNoiseWorklet(first.ctx, raw, "deepfilter")).resolves.toBe(raw);
+    // Failed DFN init → the RNNoise pipeline takes over (processed track, not raw), and the DFN
+    // core cache must not be poisoned for later attempts.
+    const fallback = await applyNoiseWorklet(first.ctx, raw, "deepfilter");
+    expect(fallback).not.toBe(raw);
+    expect(rnnoise.instances.length).toBe(rnnoiseBefore + 1);
+    const node = rnnoise.instances.at(-1);
+    expect(first.source.connect).toHaveBeenCalledWith(node);
 
     const second = fakeCtx();
-    const node = { connect: vi.fn(), disconnect: vi.fn() };
-    dfn.createAudioWorkletNode.mockReturnValue(node);
+    const dfnNode = { connect: vi.fn(), disconnect: vi.fn() };
+    dfn.createAudioWorkletNode.mockReturnValue(dfnNode);
 
     const processed = await applyNoiseWorklet(second.ctx, fakeTrack("audio"), "deepfilter");
     expect(processed).not.toBe(raw);
     expect(dfn.createAudioWorkletNode).toHaveBeenCalledWith(second.ctx);
+    // …and no NEW RNNoise pipeline was needed once DFN loads.
+    expect(rnnoise.instances.length).toBe(rnnoiseBefore + 1);
     // Self-hosted assets only (CSP 'self') — never the package's default CDN.
     expect(dfn.ctor).toHaveBeenCalledWith(
       expect.objectContaining({ assetConfig: { cdnUrl: "/deepfilternet" } }),
     );
+  });
+
+  it("mode 'rnnoise' never attempts DFN on failure (chain is deepfilter-only)", async () => {
+    dfn.initialize.mockClear();
+    const raw = fakeTrack("audio");
+    const { ctx } = fakeCtx();
+    breakRnnoiseOn(ctx);
+
+    await expect(applyNoiseWorklet(ctx, raw, "rnnoise")).resolves.toBe(raw);
+    expect(dfn.initialize).not.toHaveBeenCalled();
   });
 });

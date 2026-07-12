@@ -17,6 +17,8 @@ declare global {
       publishState: string;
       pullStates: Record<string, string>;
       stats(session: "voice"): Promise<{ bytesReceived: number; audioLevel: number | null }>;
+      // Per-trackName inbound audio bytes (mic:{uid} → bytesReceived) — @realtime pairwise probe.
+      statsByTrack(session: "voice"): Promise<Record<string, number>>;
       // Kept identical to voice.spec's ambient block (interface-merge requires it); unused here.
       outboundVideoStats(trackName: string): Promise<
         Array<{
@@ -30,6 +32,7 @@ declare global {
         }>
       >;
       layerCalls: Array<{ trackName: string; rid: "h" | "l" }>;
+      pullCalls: Array<{ trackName: string; rid: "h" | "l" | null }>;
     };
   }
 }

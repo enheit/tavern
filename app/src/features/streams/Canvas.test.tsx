@@ -15,8 +15,8 @@ vi.mock("@tavern/shared", async (importActual) => {
 
 // Stub the tile — Canvas.test asserts layout (rows/order/focus), not tile internals (useWatch).
 vi.mock("@/features/streams/StreamTile", () => ({
-  StreamTile: ({ stream: tile, focused }: { stream: StreamInfo; focused: boolean }) => (
-    <div data-testid={`stream-tile-${tile.trackName}`} data-focused={focused} />
+  StreamTile: ({ stream: tile }: { stream: StreamInfo }) => (
+    <div data-testid={`stream-tile-${tile.trackName}`} />
   ),
 }));
 
@@ -110,7 +110,9 @@ describe("FR-33 focus mode layout", () => {
     expect(screen.queryByTestId("canvas-row-0")).toBeNull();
     const strip = screen.getByTestId("focus-strip");
     expect(strip.querySelectorAll('[data-testid^="stream-tile-"]')).toHaveLength(2);
-    // The focused tile is rendered with focused=true.
-    expect(screen.getByTestId("stream-tile-s2").getAttribute("data-focused")).toBe("true");
+    // The focused tile renders in the main area (outside the filmstrip), the other two inside it.
+    expect(strip.contains(screen.getByTestId("stream-tile-s2"))).toBe(false);
+    expect(strip.contains(screen.getByTestId("stream-tile-s1"))).toBe(true);
+    expect(strip.contains(screen.getByTestId("stream-tile-s3"))).toBe(true);
   });
 });

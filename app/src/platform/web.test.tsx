@@ -71,6 +71,18 @@ describe("FR-42 web platform bridge", () => {
     expect(typeof p.shell.focusWindow).toBe("function");
   });
 
+  it("permissionState mirrors Notification.permission, 'unsupported' when the API is absent", () => {
+    const p = createWebPlatform();
+    fakeNotification.permission = "default";
+    expect(p.notifications.permissionState()).toBe("default");
+    fakeNotification.permission = "granted";
+    expect(p.notifications.permissionState()).toBe("granted");
+    fakeNotification.permission = "denied";
+    expect(p.notifications.permissionState()).toBe("denied");
+    vi.stubGlobal("Notification", undefined);
+    expect(p.notifications.permissionState()).toBe("unsupported");
+  });
+
   it("secrets resolve null", async () => {
     const p = createWebPlatform();
     expect(await p.secrets.getToken()).toBeNull();
@@ -100,6 +112,52 @@ describe("FR-42 web platform bridge", () => {
     // denial → the store never flips (the controlled switch stays off) + S6.2's toast key fires.
     expect(useSettingsStore.getState().notifyMentions).toBe(false);
     await waitFor(() => expect(toast).toHaveBeenCalledWith(m.settings_notifications_denied()));
+  });
+
+  it("show() constructs a real Notification when granted (no e2e sink) and routes its click", async () => {
+    // The e2e sink short-circuits show() before the permission gate + construction, so that path has
+    // no e2e coverage — this exercises it directly. No sink is installed in this jsdom env.
+    const calls: [string, { body?: string; tag?: string }][] = [];
+    class ConstructableNotification {
+      static permission: NotificationPermission = "granted";
+      clickHandler?: () => void;
+      constructor(title: string, opts: { body?: string; tag?: string }) {
+        calls.push([title, opts]);
+        instances.push(this);
+      }
+      addEventListener(type: string, cb: () => void): void {
+        if (type === "click") this.clickHandler = cb;
+      }
+    }
+    const instances: ConstructableNotification[] = [];
+    vi.stubGlobal("Notification", ConstructableNotification);
+
+    const p = createWebPlatform();
+    const clicked = vi.fn();
+    p.notifications.onClick(clicked);
+    await p.notifications.show({ title: "Alice — tavern", body: "hello", tag: "srv-9" });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(["Alice — tavern", { body: "hello", tag: "srv-9" }]);
+    instances[0]?.clickHandler?.(); // simulate the OS click on the notification
+    expect(clicked).toHaveBeenCalledWith("srv-9");
+  });
+
+  it("show() no-ops (constructs nothing) when permission is not granted", async () => {
+    const calls: unknown[] = [];
+    class ConstructableNotification {
+      static permission: NotificationPermission = "default";
+      constructor(...args: unknown[]) {
+        calls.push(args);
+      }
+      addEventListener(): void {
+        // unused
+      }
+    }
+    vi.stubGlobal("Notification", ConstructableNotification);
+    const p = createWebPlatform();
+    await p.notifications.show({ title: "T", body: "B", tag: "srv-1" });
+    expect(calls).toHaveLength(0);
   });
 
   it("update surface is inert on web (the S12.2 update pill has nothing to render)", () => {

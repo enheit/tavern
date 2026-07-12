@@ -160,16 +160,43 @@ tests. Test files reference FR ids in `describe()` strings so coverage is greppa
 - **FR-19 Voice transport**: mic published to the Cloudflare Realtime SFU; every voice member's
   audio auto-subscribed (voice is automatic; video is opt-in per FR-30). AC: two clients in voice
   hear each other (e2e via fake-media + `getStats` assertions on audioLevel/bytes).
+  AMENDED (Task-1 audibility, 2026-07-12) — the auto-subscribe pipeline is self-healing, each
+  piece load-bearing (removing any one re-opens an asymmetric-deafness class): (1) per-track SFU
+  pull errors (200 + `tracks[].error`) THROW client-side (`PullTracksError`) after renegotiating
+  the successful tracks — never silently swallowed; (2) the mic pull retries with capped
+  exponential backoff (500 ms·2ⁿ, cap 5 s, ≈2.3 min) — a slow joiner's permission prompt / DFN
+  fetch outlives any flat budget; (3) the DO broadcasts `voice.state` with a bumped
+  `VoiceMember.micSeq` on every mic registration — peers re-pull on a seq change (rejoin/recovery
+  re-registers `mic:{uid}` under a NEW SFU session invisibly otherwise); (4) a terminal transport
+  failure (pc `connectionState 'failed'`) on either PC auto-recovers via full teardown + rejoin,
+  preserving mute/deafen. Regression net: mock e2e "four concurrent joiners all hear each other
+  pairwise" (graph-attach truth) + @realtime "every ordered pair's per-mic bytesReceived grows"
+  (per-trackName inbound-rtp split via the §10 statsByTrack hook).
 - **FR-20 Per-user local volume + mute.** Slider 0–200% and a mute toggle per remote user, local
   only, persisted locally. AC: gain applied via WebAudio per-user node; survives restart.
 - **FR-21 Device selection**: input mic + output device pickers. AC: switching mid-call works
   without rejoin; persisted; output routing includes remote voice, streams, and soundboard.
-- **FR-22 Noise suppression toggle** ("voice cancellation" in task.md). Pin: toggle controls
-  `noiseSuppression` + `autoGainControl`; `echoCancellation` is ALWAYS on (turning it off with
-  speakers = feedback). Mechanism (pinned — Chromium WontFix crbug 327472528 makes
-  `applyConstraints` a no-op for these): stop the mic track, re-`getUserMedia` with the new
-  constraints, `RTCRtpSender.replaceTrack` — the call never renegotiates. AC: toggle mid-call
-  works without leaving voice.
+- **FR-22 Noise suppression** ("voice cancellation" in task.md) — 4-mode enum
+  `off / standard / rnnoise / deepfilter`. AMENDED (Task-2 voice-quality stack, 2026-07-12), the
+  pinned matrix:
+  **Default = `deepfilter`** (DeepFilterNet3 WASM worklet, self-hosted assets under
+  `/deepfilternet`) with an AUTOMATIC runtime fallback chain `deepfilter → rnnoise → raw` when the
+  DFN assets/wasm fail to load (the setting itself never rewrites; the chain re-tries DFN on the
+  next acquisition). Legacy boolean records migrate `true → deepfilter`, `false → off`; invalid →
+  `deepfilter`.
+  `echoCancellation` is ALWAYS on (turning it off with speakers = feedback — Chromium WebRTC AEC).
+  `autoGainControl` is ALWAYS off (AGC pumps speech levels between words; the suppressor's own
+  leveling wins — Discord-parity choice). `noiseSuppression` (browser NS) only in `standard`; the
+  WASM modes feed their model the unprocessed signal. Capture is **48 kHz mono** in every mode
+  (Opus voice is mono 48 kHz; the models are mono 48 kHz). No hard noise gate anywhere. All
+  processing is client-side in the AudioWorklet (§7.3 one-context rule).
+  The published mic targets **Opus 64 kbps** (publishSession.publishMic: fmtp
+  `maxaveragebitrate=64000` munged into the applied SFU answer + sender `maxBitrate` cap — either
+  lever alone is engine-dependent).
+  Mechanism (pinned — Chromium WontFix crbug 327472528 makes `applyConstraints` a no-op for
+  these): stop the mic track, re-`getUserMedia` with the new constraints,
+  `RTCRtpSender.replaceTrack` — the call never renegotiates. AC: toggle mid-call works without
+  leaving voice.
 - **FR-23 Speaking indicators.** Green ring on the speaking member (local analyser, threshold in
   §App-B). AC: visible for both remote and self.
 - **FR-24 Voice session timer + auto-close.** Timer shows how long the voice session has been
@@ -206,11 +233,43 @@ tests. Test files reference FR ids in `describe()` strings so coverage is greppa
   macOS also gets `'loopbackWithoutChrome'`: the catap backend (14.2+, feature on by default)
   excludes the audio service's process objects; the SCK fallback (13+) sets
   `excludesCurrentProcessAudio` — both fail OPEN to full loopback if exclusion can't resolve.
-  **Linux** — best-effort behind `app.commandLine.appendSwitch('enable-features',
-  'PulseaudioLoopbackForScreenShare')` (works on PulseAudio/pipewire-pulse; experimental).
-  Known v1 limitation (old-Windows <20348 only, shown once in UI there): loopback captures ALL
-  system audio including Tavern's own output — voices/soundboard leak into the stream.
-  AC: viewer hears stream audio on supporting OSes, controlled by FR-31's slider, absent otherwise.
+  **Linux (desktop)** — REVISED 2026-07-12 (replaces the flag-gated loopback plan), LAYERED
+  same-day (Task-3): the main process first tries **@vencord/venmic** (MPL-2.0, an
+  `optionalDependency` — os:linux glibc x64/arm64 prebuilds only): gated on
+  `PatchBay.hasPipeWire()`, it `link()`s a PipeWire virtual mic (upstream-hardcoded node
+  `vencord-screen-share`) capturing application streams only (`ignore_devices`) with Tavern's own
+  audio excluded at the SOURCE — `exclude [{ "application.process.id": <Electron audio-service
+  pid> }]` — so no echo canceller sits in the content path (full music/game fidelity, no
+  double-talk ducking). The renderer's auto-pick prefers that node above all, and captures it with
+  `echoCancellation:false`. ANY venmic failure (no PipeWire, missing module/prebuild, no
+  audio-service process yet, link error) falls back SILENTLY to the remap path below — which stays
+  the web path and the non-PipeWire fallback. Packaging: `asarUnpack` the venmic tree +
+  `npmRebuild:false` (N-API prebuilds; a rebuild would need PipeWire headers CI lacks). Per-app
+  audio selection over venmic's include filter is an explicit FOLLOW-UP, not in scope.
+  Fallback path: the main process wraps each audio share in a pactl `module-remap-source` clone of
+  the default sink's monitor (`tavern_stream_audio`, description `TavernStreamMonitor` — SPACELESS,
+  pipewire-pulse truncates multi-word descriptions; volume+mute pinned at creation against AGC
+  drift), unloaded on share stop/app quit. Chromium never enumerates raw pulse monitors (audio_manager_pulse.cc
+  filters them), but a remap-source IS enumerated; the renderer captures it via the FR-28
+  fallback below. The `PulseaudioLoopbackForScreenShare` device path was probed on Electron 43 +
+  pulse and REJECTED: its 'loopback' stream ignores echoCancellation and 'loopbackWithoutChrome'
+  falls open (Chromium documents it Windows/Mac/ChromeOS-only), so Tavern voices would echo.
+  **Web + Linux fallback (media/capture.ts captureScreen)** — when a wanted share resolves with
+  NO display audio on a NON-tab surface (Chrome/Linux screen+window shares, Firefox everywhere),
+  the renderer captures a system-audio input instead: the settings-picked device
+  (`DeviceSettingsV1.streamAudio`, "auto"/"off"/deviceId — an explicit device also SUPERSEDES
+  display audio), else `TavernStreamMonitor`, else the first /monitor/i-labeled input (Firefox
+  lists pulse monitors; Chrome users can point "auto" at any user-made virtual source).
+  Anti-loopback: the fallback captures with `echoCancellation:true` — Chromium's AEC reference is
+  Chrome's own playout (chrome-wide AEC default-on since ~M110, WebAudio included), so Tavern
+  voices/soundboard cancel OUT of the monitor while external app audio passes. Container-probed
+  on real pulse: self-playout −54 dB, external untouched, 43.7 dB separation in double-talk.
+  Known limitation (old-Windows <20348 endpoint loopback, and Windows/mac-web "system audio"
+  picker audio, shown once in UI): loopback captures ALL system audio including Tavern's own
+  output — voices/soundboard leak into the stream. Tab-audio shares carry no Tavern audio and get
+  no caveat; the monitor fallback gets a "voices are filtered out" note instead.
+  AC: viewer hears stream audio on supporting OSes, controlled by FR-31's slider, absent otherwise;
+  e2e: explicit-device fallback publishes a screenAudio companion the watcher pulls (streams.spec).
 - **FR-29 Webcam share** appears as a normal tile on the same canvas. AC: webcam + screen can be
   shared simultaneously by the same user (two tiles).
 - **FR-30 Watching is opt-in.** Nobody receives a stream until they click it; users can watch any
@@ -220,9 +279,11 @@ tests. Test files reference FR ids in `describe()` strings so coverage is greppa
   the soundboard volume. Local, persisted.
 - **FR-32 Auto-layout** of tiles on the canvas exactly per §App-C (from `images/`). AC: unit tests
   lock the table for n=1..12; e2e screenshot-asserts 2-stream side-by-side.
-- **FR-33 Viewer quality follows tile size** via simulcast: grid tiles pull the low layer; a
-  focused (double-clicked, fullscreen) tile pulls the high layer. AC: layer switch verified via
-  `getStats` resolution change; no publisher involvement.
+- **FR-33 Viewers always pull the high simulcast layer** — grid, focused, and fullscreen tiles all
+  receive best quality; focus/fullscreen is a layout toggle only (amended 2026-07-12; originally
+  quality followed tile size). The `tracks/update` layer-switch path stays wired (a future
+  data-saver toggle) but the default UI never downswitches. AC: `getStats` resolution on an
+  UNFOCUSED grid tile reaches the high layer; no layer switch issued on focus/unfocus.
 
 ### 1.6 Soundboard
 
@@ -316,7 +377,10 @@ Pinned decisions (rationale kept for humans; implementers just obey):
   (single-use, expiry) and resolves userId from it — invalid → accept-then-close 4002. The DO
   never sees auth tokens.
 - **A5 — Sessions**: BetterAuth; Electron uses bearer tokens stored via `safeStorage` (IPC),
-  web uses same-origin cookies. One `authTransport` module hides the difference.
+  web uses same-origin cookies. One `authTransport` module hides the difference. Keyring-less
+  Linux falls back to Chromium's basic v10 obfuscation (Electron `setUsePlainTextEncryption`,
+  same scheme Chrome uses there); if even that fails (dead keyring daemon) the token is held
+  in memory for the process so login still works.
 - **A6 — Client connects a WS to EVERY joined server** while running (presence + notifications
   across servers); hibernation makes idle sockets ~free. Voice/media only on the active server.
 - **A7 — Soundboard audio never touches WebRTC** (FR-36 pinned mechanism).
@@ -655,7 +719,10 @@ URLs in v1 (files ≤ ~200MB stream fine through the Worker; recording upload is
 `Member = UserProfile & { presence: 'offline'|'online'|'in-voice', isAdmin, joinedAt }` ·
 `StreamInfo { trackName, kind: 'screen'|'webcam', userId, hasAudio, preset: PresetId }` ·
 `VoiceState { members: VoiceMember[], sessionStartedAt: number|null }` ·
-`VoiceMember { userId, muted, deafened, speaking? (client-derived, not on wire) }` ·
+`VoiceMember { userId, muted, deafened, micSeq?, speaking? (client-derived, not on wire) }`
+(`micSeq` — bumped by the DO whenever the member's `mic:{uid}` track (re)registers on a publish;
+peers re-pull on a change, since a rejoin/transport-recovery re-registers the SAME trackName under
+a NEW SFU session with no other roster-visible signal) ·
 `RecordingState { active: boolean, recordingId?, startedBy?, startedAt? }` ·
 `VolumesV1 { users: Record<userId, number 0..2>, streams: Record<trackName, number 0..2>,
 soundboard: number 0..2, mutedUsers: userId[] }` (the localStorage `settings.volumes.v1` schema)
@@ -773,8 +840,9 @@ pair from the SFU app id/secret — both provisioned in S7.1, both stored per R7
 
 Screen shares and webcams publish **two simulcast layers** (`h` = the chosen preset, `l` = the
 pinned low layer) via `addTransceiver(track, { direction:'sendonly', sendEncodings:[{rid:'h',…},
-{rid:'l', scaleResolutionDownBy,…}] })`. Watchers: grid tile → `l`, focused/fullscreen tile → `h`
-(FR-33 via `tracks/update`), voice-only users → nothing (FR-30). Publisher preset changes (FR-27)
+{rid:'l', scaleResolutionDownBy,…}] })`. Watchers: every watched tile → `h` from the initial pull
+(FR-33 amended — `tracks/update` stays as the unused downswitch mechanism), voice-only users →
+nothing (FR-30). Publisher preset changes (FR-27)
 = `applyConstraints` on the capture track (frame-rate ceiling only) + `RTCRtpSender.setParameters`
 (maxBitrate/maxFramerate/scaleResolutionDownBy on both rids) — never re-create the track. Amended
 S12.4: RESOLUTION is owned by the encoder scales computed from the acquisition height — a
@@ -859,7 +927,8 @@ case for this product shape is $600+/mo; capped it is ~free. Therefore:
   watch click). Enforced client-side AND rejected server-side (Worker refuses pulls of tracks the
   DO doesn't map to an active voice membership / watch grant).
 - **G2 maxBitrate on every encoding** per §App-D. Missing maxBitrate = review-blocking bug.
-- **G3 Simulcast mandatory** for screen+webcam; grid pulls `l` (FR-33).
+- **G3 Simulcast mandatory** for screen+webcam; every watcher pulls `h` (FR-33 amended — the `l`
+  layer stays published for a future data-saver toggle).
 - **G4 Concurrent screen-share cap**: `LIMITS.maxConcurrentScreenShares = 4` per server; 5th
   `stream.start` → `error{code:'share_cap'}`.
 - **G5 Egress meter**: DO accumulates estimated egress (Σ active pulls × §App-D bitrate × dt,
@@ -1118,7 +1187,9 @@ voice:VoiceState, streams:StreamInfo[], recording:RecordingState, lastMessageId,
 `member.update { profile }` · `member.joined { member }` · `member.left { userId }` ·
 `chat.new { message{ id,userId,body,mentions,at }, nonce? }` · `chat.page { messages[], hasMore }` ·
 `voice.state { VoiceState }` (full snapshot on every change — 10 users, snapshots are cheap and
-race-free) · `stream.added { StreamInfo }` · `stream.updated { trackName, preset }` ·
+race-free; ALSO broadcast when a member's mic track (re)registers, carrying their bumped
+`micSeq` — the "mic is now pullable" signal that closes the join-time publish race and re-pulls
+stale mic sessions) · `stream.added { StreamInfo }` · `stream.updated { trackName, preset }` ·
 `stream.removed { trackName }` ·
 `sound.played { soundId, byUserId }` · `sound.updated { }` (list refetch signal) ·
 `rec.state { recording: RecordingState, at }` · `activity.new { entry }` ·

@@ -32,5 +32,8 @@
   "dependencies": {
     "@tavern/shared": "workspace:*",
     "zod": "4.4.3"
+  },
+  "optionalDependencies": {
+    "@vencord/venmic": "6.1.0"
   }
 }

@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { PullSession } from "@/media/rtc/pullSession";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PullSession, PullTracksError } from "@/media/rtc/pullSession";
 import { EventLog } from "../fakes/log";
 import { fakeStream, fakeTrack } from "../fakes/media";
 import { FakeRtcPort } from "../fakes/rtc";
@@ -79,6 +79,115 @@ describe("FR-19 pull flow", () => {
     await connect();
     await session.addRemoteTracks([{ trackName: "mic:u2", preferredRid: "l" }]);
     expect(signal.pulled[0]?.tracks).toEqual([{ trackName: "mic:u2", preferredRid: "l" }]);
+  });
+});
+
+// TASK-1 (D1): the SFU answers 200 with PER-TRACK errors when a pull races the publisher's own
+// registration. Swallowing them (pre-fix) marked the pull successful — no retry, permanent silence.
+describe("per-track pull errors", () => {
+  it("a pull whose only track errors throws PullTracksError (callers retry)", async () => {
+    await connect();
+    signal.pullResponse = {
+      requiresImmediateRenegotiation: false,
+      tracks: [
+        { trackName: "mic:u2", error: { code: "track_not_found", message: "no such track" } },
+      ],
+    };
+    await expect(session.addRemoteTracks([{ trackName: "mic:u2" }])).rejects.toBeInstanceOf(
+      PullTracksError,
+    );
+    await expect(
+      session.addRemoteTracks([{ trackName: "mic:u2" }]).catch((err: unknown) => {
+        if (err instanceof PullTracksError) return err.failed;
+        throw err;
+      }),
+    ).resolves.toEqual(["mic:u2"]);
+    // No SFU offer came back → nothing to renegotiate.
+    expect(log.entries).not.toContain("setRemoteDescription");
+  });
+
+  it("a partial failure renegotiates the successful track FIRST, then throws with the failed names", async () => {
+    await connect();
+    signal.pullResponse = {
+      requiresImmediateRenegotiation: true,
+      tracks: [
+        { trackName: "screen:u2:1", mid: "0" },
+        { trackName: "screenAudio:u2:1", error: { code: "track_not_found", message: "gone" } },
+      ],
+      sessionDescription: { type: "offer", sdp: "sfu-offer" },
+    };
+    const err = await session
+      .addRemoteTracks([{ trackName: "screen:u2:1" }, { trackName: "screenAudio:u2:1" }])
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(PullTracksError);
+    if (err instanceof PullTracksError) expect(err.failed).toEqual(["screenAudio:u2:1"]);
+    // The successful m-line was renegotiated before the throw (an unanswered
+    // requiresImmediateRenegotiation kills the session — §7.1).
+    expect(log.entries).toEqual([
+      "pullTracks",
+      "setRemoteDescription",
+      "createAnswer",
+      "setLocalDescription",
+      "renegotiate",
+    ]);
+    // …and the successful track is wired: its track event still maps.
+    const received: string[] = [];
+    session.onTrack((trackName) => received.push(trackName));
+    port.last().emitTrack("0", fakeTrack("video"), fakeStream());
+    expect(received).toEqual(["screen:u2:1"]);
+  });
+
+  it("a track with neither mid nor error is treated as failed", async () => {
+    await connect();
+    signal.pullResponse = {
+      requiresImmediateRenegotiation: false,
+      tracks: [{ trackName: "mic:u2" }],
+    };
+    await expect(session.addRemoteTracks([{ trackName: "mic:u2" }])).rejects.toBeInstanceOf(
+      PullTracksError,
+    );
+  });
+});
+
+describe("per-track inbound audio stats", () => {
+  it("keys inbound-rtp audio bytes by pulled trackName via the mid map", async () => {
+    await connect();
+    signal.pullResponse = {
+      requiresImmediateRenegotiation: true,
+      tracks: [
+        { trackName: "mic:u2", mid: "0" },
+        { trackName: "mic:u3", mid: "1" },
+      ],
+      sessionDescription: { type: "offer", sdp: "sfu-offer" },
+    };
+    await session.addRemoteTracks([{ trackName: "mic:u2" }, { trackName: "mic:u3" }]);
+    port.last().statsReport = [
+      { type: "inbound-rtp", kind: "audio", mid: "0", bytesReceived: 111 },
+      { type: "inbound-rtp", kind: "audio", mid: "1", bytesReceived: 222 },
+      { type: "inbound-rtp", kind: "video", mid: "9", bytesReceived: 999 }, // ignored
+      { type: "outbound-rtp", kind: "audio", mid: "0", bytesReceived: 5 }, // ignored
+    ];
+    await expect(session.inboundAudioBytesByTrack()).resolves.toEqual({
+      "mic:u2": 111,
+      "mic:u3": 222,
+    });
+  });
+});
+
+describe("transport failure signal", () => {
+  it("onConnectionFailed fires on pc connectionState 'failed' and unsubscribes cleanly", async () => {
+    await connect();
+    const failed = vi.fn();
+    const unsub = session.onConnectionFailed(failed);
+    port.last().setConnectionState("failed");
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(session.state).toBe("failed");
+    unsub();
+    port.last().setConnectionState("failed");
+    expect(failed).toHaveBeenCalledTimes(1);
   });
 });
 

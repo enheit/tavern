@@ -76,43 +76,65 @@ function workletNodeFor(ctx: AudioContext, mode: WorkletMode): Promise<AudioWork
   return node;
 }
 
-// raw mic → source → worklet → MediaStreamAudioDestinationNode; returns the processed track the
-// engine publishes/holds. Fails OPEN: any load/graph error returns the raw track (voice keeps
-// working without suppression) — never a failed join. The processed track's stop() is wrapped to
-// also release the raw gUM track (stopping a destination track never releases the mic — the OS
+// One suppression pipeline attempt: raw mic → source → worklet → MediaStreamAudioDestinationNode;
+// returns the processed track the engine publishes/holds. The processed track's stop() is wrapped
+// to also release the raw gUM track (stopping a destination track never releases the mic — the OS
 // record indicator would stay on) and detach this acquisition's source/dest from the shared node.
+async function buildPipeline(
+  ctx: AudioContext,
+  raw: MediaStreamTrack,
+  mode: WorkletMode,
+): Promise<MediaStreamTrack> {
+  const node = await workletNodeFor(ctx, mode);
+  const source = ctx.createMediaStreamSource(new MediaStream([raw]));
+  // Voice is mono end-to-end (Opus mic track): downmix ahead of the model — RNNoise runs
+  // per-channel (maxChannels 1) and DFN3 expects mono frames.
+  source.channelCount = 1;
+  source.channelCountMode = "explicit";
+  const dest = ctx.createMediaStreamDestination();
+  dest.channelCount = 1;
+  source.connect(node);
+  node.connect(dest);
+  const processed = dest.stream.getAudioTracks()[0];
+  if (!processed) {
+    source.disconnect();
+    node.disconnect(dest); // leave the cached node reusable for the next attempt
+    throw new Error("no audio track in destination stream");
+  }
+  const stopProcessed = processed.stop.bind(processed);
+  let disposed = false;
+  processed.stop = () => {
+    if (!disposed) {
+      disposed = true;
+      raw.stop();
+      source.disconnect();
+      node.disconnect(dest); // node itself stays cached for the next acquisition
+    }
+    stopProcessed();
+  };
+  return processed;
+}
+
+// Task-2 fallback chain: "deepfilter" degrades to RNNoise when the DFN3 assets/wasm fail to load
+// (24 MB fetch — offline or a blocked path must not cost the user ALL suppression), and any mode
+// fails OPEN to the raw track (voice keeps working unprocessed — never a failed join). The chain
+// re-attempts DFN on the next acquisition (join/retoggle): a transient fetch failure heals itself,
+// and the loader's poison-reset keeps a failed core from sticking.
 export async function applyNoiseWorklet(
   ctx: AudioContext,
   raw: MediaStreamTrack,
   mode: WorkletMode,
 ): Promise<MediaStreamTrack> {
-  try {
-    const node = await workletNodeFor(ctx, mode);
-    const source = ctx.createMediaStreamSource(new MediaStream([raw]));
-    // Voice is mono end-to-end (Opus mic track): downmix ahead of the model — RNNoise runs
-    // per-channel (maxChannels 1) and DFN3 expects mono frames.
-    source.channelCount = 1;
-    source.channelCountMode = "explicit";
-    const dest = ctx.createMediaStreamDestination();
-    dest.channelCount = 1;
-    source.connect(node);
-    node.connect(dest);
-    const processed = dest.stream.getAudioTracks()[0];
-    if (!processed) throw new Error("no audio track in destination stream");
-    const stopProcessed = processed.stop.bind(processed);
-    let disposed = false;
-    processed.stop = () => {
-      if (!disposed) {
-        disposed = true;
-        raw.stop();
-        source.disconnect();
-        node.disconnect(dest); // node itself stays cached for the next acquisition
-      }
-      stopProcessed();
-    };
-    return processed;
-  } catch (err) {
-    console.warn(`[noise] ${mode} pipeline unavailable — using unprocessed mic`, err);
-    return raw;
+  const chain: WorkletMode[] = mode === "deepfilter" ? ["deepfilter", "rnnoise"] : [mode];
+  /* oxlint-disable no-await-in-loop -- each attempt exists only because the previous one failed */
+  for (const attempt of chain) {
+    try {
+      return await buildPipeline(ctx, raw, attempt);
+    } catch (err) {
+      const next = attempt === chain.at(-1) ? "using unprocessed mic" : "falling back to rnnoise";
+      console.warn(`[noise] ${attempt} pipeline unavailable — ${next}`, err);
+    }
   }
+  /* oxlint-enable no-await-in-loop */
+  return raw;
 }

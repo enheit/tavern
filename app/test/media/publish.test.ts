@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PresetId } from "@tavern/shared";
-import { PublishSession } from "@/media/rtc/publishSession";
+import { PublishSession, withOpusMaxAverageBitrate } from "@/media/rtc/publishSession";
 import { EventLog } from "../fakes/log";
 import { fakeTrack } from "../fakes/media";
 import { FakeRtcPort } from "../fakes/rtc";
@@ -213,5 +213,87 @@ describe("PublishSession lifecycle", () => {
     await connect();
     port.last().setConnectionState("failed");
     expect(session.state).toBe("failed");
+  });
+});
+
+// Task-2 (d): the published mic targets Opus 64 kbps — fmtp maxaveragebitrate in the applied
+// answer raises the encoder target; sender maxBitrate caps it to the same figure.
+describe("Task-2 mic Opus bitrate", () => {
+  const MIC_ANSWER_SDP = [
+    "v=0",
+    "o=- 1 2 IN IP4 127.0.0.1",
+    "s=-",
+    "t=0 0",
+    "a=group:BUNDLE 0",
+    "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+    "c=IN IP4 0.0.0.0",
+    "a=mid:0",
+    "a=recvonly",
+    "a=rtpmap:111 opus/48000/2",
+    "a=fmtp:111 minptime=10;useinbandfec=1",
+    "",
+  ].join("\r\n");
+
+  it("publishMic munges the applied answer's opus fmtp and caps the sender", async () => {
+    await connect();
+    signal.publishResponse = {
+      requiresImmediateRenegotiation: false,
+      tracks: [],
+      sessionDescription: { type: "answer", sdp: MIC_ANSWER_SDP },
+    };
+
+    await session.publishMic(fakeTrack("audio"));
+
+    const applied = port.last().remoteDescription?.sdp ?? "";
+    expect(applied).toContain("a=fmtp:111 minptime=10;useinbandfec=1;maxaveragebitrate=64000");
+    const sender = port.last().transceivers[0]?.sender;
+    expect(sender?.encodings[0]?.maxBitrate).toBe(64_000);
+    expect(sender?.setParametersCount).toBe(1);
+  });
+
+  it("screen/cam publishes keep their answer untouched (no mic bitrate hint)", async () => {
+    await connect();
+    signal.publishResponse = {
+      requiresImmediateRenegotiation: false,
+      tracks: [],
+      sessionDescription: { type: "answer", sdp: MIC_ANSWER_SDP },
+    };
+    await session.publishCam(fakeTrack("video"));
+    expect(port.last().remoteDescription?.sdp).toBe(MIC_ANSWER_SDP);
+  });
+});
+
+describe("withOpusMaxAverageBitrate", () => {
+  const base = [
+    "v=0",
+    "s=-",
+    "m=video 9 UDP/TLS/RTP/SAVPF 96",
+    "a=mid:0",
+    "a=rtpmap:96 VP8/90000",
+    "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+    "a=mid:1",
+    "a=rtpmap:111 opus/48000/2",
+    "",
+  ].join("\r\n");
+
+  it("inserts a new fmtp after the rtpmap when none exists (video sections skipped)", () => {
+    const out = withOpusMaxAverageBitrate(base, "1", 64_000);
+    expect(out).toContain("a=rtpmap:111 opus/48000/2\r\na=fmtp:111 maxaveragebitrate=64000");
+    expect(out).not.toContain("a=fmtp:96");
+  });
+
+  it("replaces an existing maxaveragebitrate in place", () => {
+    const withRate = base.replace(
+      "a=rtpmap:111 opus/48000/2",
+      "a=rtpmap:111 opus/48000/2\r\na=fmtp:111 maxaveragebitrate=32000;useinbandfec=1",
+    );
+    const out = withOpusMaxAverageBitrate(withRate, "1", 64_000);
+    expect(out).toContain("a=fmtp:111 maxaveragebitrate=64000;useinbandfec=1");
+    expect(out).not.toContain("32000");
+  });
+
+  it("returns the SDP untouched for an unknown mid or a non-SDP string", () => {
+    expect(withOpusMaxAverageBitrate(base, "9", 64_000)).toBe(base);
+    expect(withOpusMaxAverageBitrate("sfu-answer", "0", 64_000)).toBe("sfu-answer");
   });
 });

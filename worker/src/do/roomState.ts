@@ -259,9 +259,25 @@ export class RoomState {
     this.voice = {
       ...this.voice,
       members: this.voice.members.map((m) =>
-        m.userId === userId
-          ? { userId: m.userId, muted: flags.muted, deafened: flags.deafened }
-          : m,
+        // Spread keeps micSeq — rebuilding the literal here silently reset every peer's re-pull
+        // cursor on any mute toggle.
+        m.userId === userId ? { ...m, muted: flags.muted, deafened: flags.deafened } : m,
+      ),
+    };
+    return this.voice;
+  }
+
+  // A mic track (re)registered for `userId` (op:publish below): bump the member's micSeq so peers
+  // holding a pull of the PREVIOUS mic session re-pull the new one, and give first-time publishes a
+  // "mic is now pullable" voice.state signal (the join-time voice.state races the REST publish —
+  // §7.1 — and the client's bounded retry alone gave up before slow mic acquisitions finished).
+  // Returns null when the user is not in voice (authorize already guarantees they are).
+  private bumpMicSeq(userId: string): VoiceState | null {
+    if (!this.voice.members.some((m) => m.userId === userId)) return null;
+    this.voice = {
+      ...this.voice,
+      members: this.voice.members.map((m) =>
+        m.userId === userId ? { ...m, micSeq: (m.micSeq ?? 0) + 1 } : m,
       ),
     };
     return this.voice;
@@ -457,8 +473,18 @@ export class RoomState {
           };
         }
         await this.writeRtc(reg);
-        // Registration success → stream.added for the video kinds (mic broadcasts nothing — peers
-        // learn mics from voice.state). This is how peers learn a video stream is now pullable.
+        // Registration success → stream.added for the video kinds. A mic registration broadcasts a
+        // fresh voice.state with the member's micSeq bumped: peers use it both as the "mic is now
+        // pullable" signal (first publish — the join-time broadcast raced this registration) and as
+        // the re-pull trigger when a rejoin/recovery re-registered mic:{uid} under a NEW SFU session
+        // (existing pulls point at the dead one; nothing else ever tells the peers).
+        if (req.tracks.some((t) => t.kind === "mic")) {
+          const snapshot = this.bumpMicSeq(req.userId);
+          if (snapshot !== null) {
+            await this.persistVoice();
+            this.broadcast({ t: "voice.state", voice: snapshot, at });
+          }
+        }
         for (const t of req.tracks) {
           const stream = this.streamInfoFor(
             t.trackName,

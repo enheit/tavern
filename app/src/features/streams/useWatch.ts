@@ -176,9 +176,10 @@ export class WatchController {
           framesPerSecond: null,
         }),
     );
-    // G3: grid tiles pin the low simulcast layer; audio (screen loopback) has no rid.
+    // G3: every watcher pins the HIGH simulcast layer from the initial pull — streams render at best
+    // quality regardless of tile size, focus, or fullscreen. Audio (screen loopback) has no rid.
     const tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }> = [
-      { trackName: this.stream.trackName, preferredRid: "l" },
+      { trackName: this.stream.trackName, preferredRid: "h" },
     ];
     if (this.stream.hasAudio) tracks.push({ trackName: this.audioTrackName() });
     try {
@@ -221,8 +222,8 @@ export class WatchController {
     this.finish();
   }
 
-  // FR-33: quality follows tile size — a focused tile pulls the high layer, a grid tile the low one.
-  // tracks/update on the existing pull, no PC teardown.
+  // FR-33 layer escape hatch: tracks/update on the existing pull, no PC teardown. The UI no longer
+  // downswitches (every tile pulls "h" from the start); kept for a future data-saver toggle.
   setLayer(rid: "h" | "l"): void {
     void this.pull?.setLayer(this.stream.trackName, rid);
   }

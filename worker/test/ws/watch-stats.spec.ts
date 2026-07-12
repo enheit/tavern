@@ -144,7 +144,7 @@ describe("FR-40 watch wiring", () => {
     wsB.send(JSON.stringify({ t: "watch.start", trackName: track }));
     await vi.waitFor(async () => {
       const s = await readState(stub, b.userId, track);
-      expect(s).toEqual({ grant: "l", openWatch: true, openMeter: true });
+      expect(s).toEqual({ grant: "h", openWatch: true, openMeter: true });
     });
 
     wsB.send(JSON.stringify({ t: "watch.stop", trackName: track }));

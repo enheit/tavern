@@ -40,9 +40,10 @@ export function applyFlags(): void {
     }
   }
 
-  if (process.platform === "linux") {
-    app.commandLine.appendSwitch("enable-features", "PulseaudioLoopbackForScreenShare");
-  }
+  // (FR-28 note: the PulseaudioLoopbackForScreenShare switch that used to be appended here is
+  // gone — container-probed on Electron 43: its 'loopback' device ignores echoCancellation and
+  // 'loopbackWithoutChrome' falls open, so Tavern audio would echo into the stream. Linux stream
+  // audio is the pactl remap-source path in capture.ts instead.)
 
   if (existsSync(gpuCrashFlagPath())) {
     app.commandLine.appendSwitch("disable-gpu");

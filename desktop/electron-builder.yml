@@ -8,6 +8,14 @@ files:
   - out/**
   - from: ../app/dist
     to: renderer
+# @vencord/venmic (Linux optionalDependency, Task-3): a native N-API addon must load from a real
+# file, not from inside app.asar — unpack its tree (lib/index.js resolves the prebuild beside it).
+asarUnpack:
+  - "**/node_modules/@vencord/venmic/**"
+# venmic ships N-API prebuilds (ABI-stable across Electron versions); its rebuild path is cmake-js
+# against PipeWire headers — absent on CI runners and never needed. Without this, electron-builder's
+# default native-deps rebuild would attempt exactly that and break the AppImage build.
+npmRebuild: false
 # Fuses: deliberately NOT configured in v1 — Electron defaults keep the nodeCliInspect fuse ON,
 # which Playwright _electron.launch requires (PLAN §10). Flipping fuses needs a blocker first.
 mac:

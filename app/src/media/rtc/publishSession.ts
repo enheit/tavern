@@ -14,10 +14,66 @@ export type PublishState =
 
 const KBPS = 1000; // App-D tables are in kbps; RTCRtpEncodingParameters.maxBitrate is bits per second.
 
+// Task-2 voice quality: target Opus rate for the published mic. Chromium's default voice encode
+// (~32 kbps mono) is the audible fidelity gap to Discord's 64 kbps default. Applied twice — fmtp
+// maxaveragebitrate in the APPLIED answer raises the encoder's target, sender maxBitrate caps it —
+// because either lever alone is engine-dependent.
+export const VOICE_OPUS_BITRATE_BPS = 64_000;
+
 interface PublishSpec {
   track: MediaStreamTrack;
   trackName: string;
   encodings?: RTCRtpEncodingParameters[];
+  // When set, the SFU's answer is rewritten before setRemoteDescription so this m-line's Opus fmtp
+  // carries maxaveragebitrate=<bps> (the mic path — content/screen audio keeps browser defaults).
+  opusMaxAverageBitrate?: number;
+}
+
+// Rewrites ONE audio m-line's Opus fmtp in an SDP: the section owning `a=mid:<mid>` gets
+// maxaveragebitrate=<bps> (patched into an existing fmtp line, else inserted after the rtpmap).
+// Unknown mid / no audio section / no opus codec → the SDP is returned untouched (unit-test fakes
+// use non-SDP strings; never throw over a bitrate hint). Exported for its unit tests.
+export function withOpusMaxAverageBitrate(sdp: string, mid: string, bps: number): string {
+  const lines = sdp.split("\r\n");
+  let start = -1;
+  let end = lines.length;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!(lines[i] ?? "").startsWith("m=audio")) continue;
+    let j = i + 1;
+    let hasMid = false;
+    while (j < lines.length && !(lines[j] ?? "").startsWith("m=")) {
+      if (lines[j] === `a=mid:${mid}`) hasMid = true;
+      j += 1;
+    }
+    if (hasMid) {
+      start = i;
+      end = j;
+      break;
+    }
+    i = j - 1;
+  }
+  if (start === -1) return sdp;
+  let pt: string | null = null;
+  let rtpmapAt = -1;
+  for (let i = start; i < end; i += 1) {
+    const match = (lines[i] ?? "").match(/^a=rtpmap:(\d+) opus\//i);
+    if (match?.[1] !== undefined) {
+      pt = match[1];
+      rtpmapAt = i;
+      break;
+    }
+  }
+  if (pt === null) return sdp;
+  for (let i = start; i < end; i += 1) {
+    const line = lines[i] ?? "";
+    if (!line.startsWith(`a=fmtp:${pt} `)) continue;
+    lines[i] = /maxaveragebitrate=\d+/.test(line)
+      ? line.replace(/maxaveragebitrate=\d+/, `maxaveragebitrate=${bps}`)
+      : `${line};maxaveragebitrate=${bps}`;
+    return lines.join("\r\n");
+  }
+  lines.splice(rtpmapAt + 1, 0, `a=fmtp:${pt} maxaveragebitrate=${bps}`);
+  return lines.join("\r\n");
 }
 
 // The height the capture track actually delivers, read ONCE at acquisition (getSettings() is
@@ -92,6 +148,7 @@ export class PublishSession {
   // from (capture geometry never changes after acquisition; see screenEncodings).
   private readonly captureHeights = new Map<string, number>();
   private readonly listeners = new Set<(s: PublishState) => void>();
+  private readonly connFailedListeners = new Set<() => void>();
 
   constructor(deps: { rtc: RtcPort; signal: SfuSignal; serverId: string; userId: string }) {
     this.rtc = deps.rtc;
@@ -112,6 +169,17 @@ export class PublishSession {
     this.listeners.add(cb);
     return () => {
       this.listeners.delete(cb);
+    };
+  }
+
+  // Terminal transport failure only (pc.connectionState 'failed') — the voice controller's
+  // auto-recover signal; mirrors PullSession.onConnectionFailed (see the rationale there). A dead
+  // publish transport keeps sending nothing: the SFU GCs the mic track ~30s later and every peer
+  // goes deaf to this user while their UI still shows 'joined'.
+  onConnectionFailed(cb: () => void): () => void {
+    this.connFailedListeners.add(cb);
+    return () => {
+      this.connFailedListeners.delete(cb);
     };
   }
 
@@ -145,7 +213,10 @@ export class PublishSession {
       const iceServers = await this.signal.getIceServers();
       const pc = this.rtc.createPeerConnection({ iceServers, bundlePolicy: "max-bundle" });
       pc.addEventListener("connectionstatechange", () => {
-        if (pc.connectionState === "failed") this.setState("failed");
+        if (pc.connectionState === "failed") {
+          this.setState("failed");
+          for (const cb of this.connFailedListeners) cb();
+        }
       });
       this.pc = pc;
       const { sessionId } = await this.signal.newSession(this.serverId);
@@ -181,7 +252,22 @@ export class PublishSession {
           this.transceivers.set(spec.trackName, transceiver);
         }
         const answer = await this.signal.publishTracks(this.serverId, sessionId, offer, tracks);
-        if (answer.sessionDescription) await pc.setRemoteDescription(answer.sessionDescription);
+        if (answer.sessionDescription) {
+          let desc = answer.sessionDescription;
+          for (const { spec, transceiver } of added) {
+            if (spec.opusMaxAverageBitrate !== undefined) {
+              desc = {
+                ...desc,
+                sdp: withOpusMaxAverageBitrate(
+                  desc.sdp,
+                  midOf(transceiver),
+                  spec.opusMaxAverageBitrate,
+                ),
+              };
+            }
+          }
+          await pc.setRemoteDescription(desc);
+        }
         this.setState("connected");
       } catch (err) {
         this.setState("failed");
@@ -192,7 +278,17 @@ export class PublishSession {
 
   async publishMic(track: MediaStreamTrack): Promise<{ trackName: string }> {
     const trackName = micTrackName(this.userId); // audio carries no simulcast encodings
-    await this.publish([{ track, trackName }]);
+    await this.publish([{ track, trackName, opusMaxAverageBitrate: VOICE_OPUS_BITRATE_BPS }]);
+    // Cap the sender to the same figure (the fmtp raised the target; this keeps BWE from ever
+    // allocating past it). Audio senders expose one encoding; a test double may expose none.
+    const sender = this.senders.get(trackName);
+    if (sender) {
+      const params = sender.getParameters();
+      if (params.encodings.length > 0) {
+        for (const enc of params.encodings) enc.maxBitrate = VOICE_OPUS_BITRATE_BPS;
+        await sender.setParameters(params);
+      }
+    }
     return { trackName };
   }
 

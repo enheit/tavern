@@ -3,7 +3,12 @@ import type { Member, ServerMessage, UserProfile, VolumesV1 } from "@tavern/shar
 import { VolumesV1 as VolumesV1Schema } from "@tavern/shared";
 import type { RoomState } from "@/stores/room";
 import { createRoomStore } from "@/stores/room";
-import { useSettingsStore, VOLUMES_STORAGE_KEY } from "@/stores/settings";
+import {
+  DEVICE_SETTINGS_KEY,
+  loadDeviceSettings,
+  useSettingsStore,
+  VOLUMES_STORAGE_KEY,
+} from "@/stores/settings";
 
 function profile(userId: string, displayName = "Alice"): UserProfile {
   return { userId, username: "alice", displayName, color: "#aabbcc" };
@@ -230,5 +235,61 @@ describe("§5.4 volumes persistence", () => {
     const parsed = VolumesV1Schema.parse(JSON.parse(raw ?? "null"));
     expect(parsed).toEqual(sample);
     expect(useSettingsStore.getState().volumes).toEqual(sample);
+  });
+});
+
+describe("FR-16 notification-pref hydration", () => {
+  it("adopts the server row over the local defaults", () => {
+    // Defaults are both on; a user who disabled them on another device must be respected.
+    useSettingsStore.setState({ notifyAll: true, notifyMentions: true });
+    useSettingsStore.getState().hydrateNotifyPrefs({ notifyAll: false, notifyMentions: true });
+    expect(useSettingsStore.getState().notifyAll).toBe(false);
+    expect(useSettingsStore.getState().notifyMentions).toBe(true);
+  });
+
+  it("re-enables from a server row that turns them back on", () => {
+    useSettingsStore.setState({ notifyAll: false, notifyMentions: false });
+    useSettingsStore.getState().hydrateNotifyPrefs({ notifyAll: true, notifyMentions: false });
+    expect(useSettingsStore.getState().notifyAll).toBe(true);
+    expect(useSettingsStore.getState().notifyMentions).toBe(false);
+  });
+});
+
+// Task-2 (FR-22): the canonical default suppression is DeepFilterNet3. Legacy boolean records and
+// garbage land on the default; an explicitly stored mode is always honored.
+function seedNoiseSetting(value: unknown): void {
+  localStorage.setItem(DEVICE_SETTINGS_KEY, JSON.stringify({ noiseSuppression: value }));
+}
+
+describe("FR-22 noise-suppression setting migration", () => {
+  it("fresh install (no record) → deepfilter", () => {
+    localStorage.removeItem(DEVICE_SETTINGS_KEY);
+    expect(loadDeviceSettings().noiseSuppression).toBe("deepfilter");
+  });
+
+  it("every stored enum value is kept verbatim", () => {
+    for (const mode of ["off", "standard", "rnnoise", "deepfilter"]) {
+      seedNoiseSetting(mode);
+      expect(loadDeviceSettings().noiseSuppression).toBe(mode);
+    }
+  });
+
+  it("legacy boolean: true → deepfilter (the new canonical 'on'), false → off", () => {
+    seedNoiseSetting(true);
+    expect(loadDeviceSettings().noiseSuppression).toBe("deepfilter");
+    seedNoiseSetting(false);
+    expect(loadDeviceSettings().noiseSuppression).toBe("off");
+  });
+
+  it("invalid values → deepfilter; sibling keys survive", () => {
+    for (const junk of ["loud", 3, null, { nested: true }]) {
+      localStorage.setItem(
+        DEVICE_SETTINGS_KEY,
+        JSON.stringify({ noiseSuppression: junk, micId: "mic-9" }),
+      );
+      const settings = loadDeviceSettings();
+      expect(settings.noiseSuppression).toBe("deepfilter");
+      expect(settings.micId).toBe("mic-9");
+    }
   });
 });

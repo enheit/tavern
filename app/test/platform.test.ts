@@ -77,6 +77,8 @@ function makeIpc(): TavernIpc {
       loopbackAudioSupported: vi.fn(async () => true),
       screenAccessStatus: vi.fn(async () => "denied" as const),
       openScreenRecordingSettings: vi.fn(async () => undefined),
+      prepareStreamAudio: vi.fn(async () => true),
+      releaseStreamAudio: vi.fn(async () => undefined),
     },
     notifications: {
       show: vi.fn(async () => undefined),

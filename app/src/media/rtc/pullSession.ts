@@ -6,6 +6,20 @@ export type PullState = "idle" | "connecting" | "connected" | "renegotiating" | 
 
 type TrackCb = (trackName: string, track: MediaStreamTrack, stream: MediaStream) => void;
 
+// A pull the SFU answered 200 but rejected per-track (tracks[].error — e.g. the publisher's session
+// registered in the DO but not yet/no longer live on the SFU). Distinct from an HTTP failure so
+// callers can retry exactly the failed names; tracks that DID succeed in the same call were already
+// renegotiated before this throws. Swallowing these (the pre-fix behavior) left a watcher silently
+// deaf to that publisher forever — the voice-audibility asymmetry root cause (D1).
+export class PullTracksError extends Error {
+  readonly failed: string[];
+  constructor(failed: string[], detail: string) {
+    super(`pull rejected for ${failed.join(", ")}: ${detail}`);
+    this.name = "PullTracksError";
+    this.failed = failed;
+  }
+}
+
 // One instance per watched stream (watchPC) + one shared 'voicePull' instance (PLAN §7.1). The SFU
 // is the SDP offerer on pull — the client answers (do not invert). Every SDP-mutating op is chained
 // on `queue` (one serialization point per session). A layer switch is tracks/update, never a re-pull.
@@ -21,6 +35,7 @@ export class PullSession {
   private readonly nameToMid = new Map<string, string>();
   private readonly stateListeners = new Set<(s: PullState) => void>();
   private readonly trackListeners = new Set<TrackCb>();
+  private readonly connFailedListeners = new Set<() => void>();
 
   constructor(deps: { rtc: RtcPort; signal: SfuSignal; serverId: string }) {
     this.rtc = deps.rtc;
@@ -43,6 +58,19 @@ export class PullSession {
     this.trackListeners.add(cb);
     return () => {
       this.trackListeners.delete(cb);
+    };
+  }
+
+  // Fires ONLY on the terminal ICE/DTLS transition (pc.connectionState === 'failed') — never on a
+  // rejected signaling op (those set state 'failed' transiently and are retried by callers). The
+  // voice controller uses this to auto-recover a session whose transport silently died (laptop
+  // sleep, network change): without it the UI stays 'joined' over a dead pull and the user is
+  // one-way deaf until a manual rejoin. Under the mock SFU the offer carries no ICE candidates, so
+  // checks never start and this never fires (PR e2e stays deterministic).
+  onConnectionFailed(cb: () => void): () => void {
+    this.connFailedListeners.add(cb);
+    return () => {
+      this.connFailedListeners.delete(cb);
     };
   }
 
@@ -76,7 +104,10 @@ export class PullSession {
       const iceServers = await this.signal.getIceServers();
       const pc = this.rtc.createPeerConnection({ iceServers, bundlePolicy: "max-bundle" });
       pc.addEventListener("connectionstatechange", () => {
-        if (pc.connectionState === "failed") this.setState("failed");
+        if (pc.connectionState === "failed") {
+          this.setState("failed");
+          for (const cb of this.connFailedListeners) cb();
+        }
       });
       pc.addEventListener("track", (ev) => {
         const mid = ev.transceiver.mid;
@@ -102,12 +133,33 @@ export class PullSession {
       const pc = this.requirePc();
       const sessionId = this.requireSession();
       this.setState("renegotiating");
+      // §10 e2e hook: record each initial pull's simulcast rid so the streams spec can assert the
+      // always-high-layer policy (mirrors the setLayer record below). Installed only under the harness.
+      if (platform.isE2E && typeof window !== "undefined") {
+        for (const t of tracks) {
+          // oxlint-disable-next-line no-underscore-dangle -- pinned §10 e2e hook global window.__tavernTestRtc
+          window.__tavernTestRtc?.pullCalls.push({
+            trackName: t.trackName,
+            rid: t.preferredRid ?? null,
+          });
+        }
+      }
       try {
         const response = await this.signal.pullTracks(this.serverId, sessionId, tracks);
+        // The SFU can answer 200 with PER-TRACK errors (tracks[].error — e.g. a pull racing the
+        // publisher's own SFU registration). A requested track with neither a mid nor an error is
+        // equally un-wireable. Collect them, but FIRST complete the renegotiation for the tracks
+        // that DID succeed — an unanswered requiresImmediateRenegotiation silently kills the whole
+        // session (§7.1) — and only then throw so callers retry exactly the failed names.
+        const failed: string[] = [];
+        let detail = "no mid in SFU response";
         for (const t of response.tracks) {
           if (t.mid) {
             this.midToName.set(t.mid, t.trackName);
             this.nameToMid.set(t.trackName, t.mid);
+          } else {
+            failed.push(t.trackName);
+            if (t.error) detail = `${t.error.code} ${t.error.message}`;
           }
         }
         // Pulls typically require an immediate renegotiation: apply the SFU offer, answer, PUT it.
@@ -117,6 +169,7 @@ export class PullSession {
           await pc.setLocalDescription(answer);
           await this.signal.renegotiate(this.serverId, sessionId, answer);
         }
+        if (failed.length > 0) throw new PullTracksError(failed, detail);
         this.setState("connected");
       } catch (err) {
         this.setState("failed");
@@ -177,6 +230,28 @@ export class PullSession {
       }
     });
     return { bytesReceived, audioLevel };
+  }
+
+  // Read-only PER-TRACK inbound-rtp audio bytes, keyed by pulled trackName (inbound-rtp `mid` →
+  // the session's mid→trackName map). The aggregate `inboundAudioStats` cannot distinguish WHICH
+  // remote mic is flowing — the 4-client @realtime pairwise regression (every pair hears every
+  // pair) needs the split. Read-only getStats, no engine capability added (§10).
+  async inboundAudioBytesByTrack(): Promise<Record<string, number>> {
+    const pc = this.pc;
+    if (!pc) return {};
+    const report = await pc.getStats();
+    const out: Record<string, number> = {};
+    report.forEach((stat) => {
+      if (stat.type !== "inbound-rtp") return;
+      if (!("kind" in stat) || stat.kind !== "audio") return;
+      if (!("mid" in stat) || typeof stat.mid !== "string") return;
+      const trackName = this.midToName.get(stat.mid);
+      if (trackName === undefined) return;
+      const bytes =
+        "bytesReceived" in stat && typeof stat.bytesReceived === "number" ? stat.bytesReceived : 0;
+      out[trackName] = (out[trackName] ?? 0) + bytes;
+    });
+    return out;
   }
 
   // Read-only inbound-rtp VIDEO summary of this watch pull PC — the source for the pinned §10 @realtime

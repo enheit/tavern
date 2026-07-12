@@ -27,15 +27,18 @@ export function truncateBody(body: string): string {
   return body.length > NOTIFY_BODY_MAX ? `${body.slice(0, NOTIFY_BODY_MAX)}…` : body;
 }
 
-// Pinned truth: notify only when the message is NOT already visible to the user (window unfocused OR a
-// different server is active) AND the relevant per-account toggle is on. For a message that mentions
-// the user ONLY `notifyMentions` decides (`notifyAll` is ignored for mentions). Own messages never
-// notify.
+// Notify only when the message is NOT already visible to the user (window unfocused OR a different
+// server is active) AND the relevant per-account toggle is on. `notifyAll` is a SUPERSET — "notify me
+// for all messages" includes mentions of me — so a plain message needs `notifyAll`, while a mention
+// notifies if EITHER toggle is on. `notifyMentions` is therefore the "even with all-messages off,
+// still ping me when I'm named" switch. Own messages never notify. (This supersedes the earlier rule
+// where notifyAll was ignored for mentions, which silently dropped @mentions whenever a user had
+// all-messages on but mentions off — the one message class they'd most want.)
 export function shouldNotify(msg: NotifyMessage, ctx: NotifyContext): boolean {
   if (msg.userId === ctx.myUserId) return false;
   const mentionsMe = msg.mentions.includes(ctx.myUserId);
   const notVisibleHere = !ctx.windowFocused || ctx.activeServerId !== msg.serverId;
-  const toggleOn = mentionsMe ? ctx.settings.notifyMentions : ctx.settings.notifyAll;
+  const toggleOn = ctx.settings.notifyAll || (mentionsMe && ctx.settings.notifyMentions);
   return notVisibleHere && toggleOn;
 }
 
@@ -84,10 +87,66 @@ function focusAndNavigate(tag: string): void {
   }
 }
 
+function anyNotifyPrefOn(): boolean {
+  const s = useSettingsStore.getState();
+  return s.notifyAll || s.notifyMentions;
+}
+
+// FR-16 permission bootstrap. The notify toggles default ON, so a fresh account never flips them —
+// which means the enable-toggle gesture that would request browser permission never fires, and the
+// web bridge's `show()` (no-ops unless permission is "granted") would stay silent forever. When a
+// notify pref is on but the browser has never been asked ("default"), request permission — twice over:
+//   1. Once immediately at init. Chromium/Firefox surface the prompt with no user gesture, covering a
+//      user who enters and tabs away without ever clicking. (The web bridge's requestPermission is
+//      async, so a Safari-style "needs a gesture" throw becomes a swallowed rejection, not a crash.)
+//   2. On each real user gesture thereafter, as the reliable fallback for engines that ignore the
+//      gestureless call — and to re-ask if the first prompt was DISMISSED (which leaves state at
+//      "default"; a genuine grant/deny ends the loop). The listener stays armed until the browser
+//      actually decides, so one accidental dismissal doesn't silence the whole session.
+// Desktop reports "granted" (the OS owns its gate) so none of this runs there. Returns a teardown.
+function bootstrapWebPermission(): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  if (platform.notifications.permissionState() !== "default") return () => undefined;
+  if (!anyNotifyPrefOn()) return () => undefined;
+
+  let inFlight = false;
+  let removed = false;
+  const events: ("pointerdown" | "keydown")[] = ["pointerdown", "keydown"];
+  const remove = (): void => {
+    if (removed) return;
+    removed = true;
+    for (const ev of events) window.removeEventListener(ev, onGesture, true);
+  };
+  const attempt = (): void => {
+    // Stop for good once the browser has actually decided (granted/denied), or the API vanished.
+    if (platform.notifications.permissionState() !== "default") {
+      remove();
+      return;
+    }
+    // Nothing to ask while a request is pending or both prefs are off (the user may re-enable a
+    // pref later via Settings, so stay armed rather than tearing down).
+    if (inFlight || !anyNotifyPrefOn()) return;
+    inFlight = true;
+    void platform.notifications
+      .requestPermission()
+      .catch(() => undefined)
+      .finally(() => {
+        inFlight = false;
+        // Granted/denied → done; a dismissed prompt is still "default", so keep listening.
+        if (platform.notifications.permissionState() !== "default") remove();
+      });
+  };
+  const onGesture = (): void => attempt();
+  for (const ev of events) window.addEventListener(ev, onGesture, true);
+  attempt(); // best-effort immediate request (no-op-safe when the engine needs a gesture)
+  return remove;
+}
+
 // Subscribes to `chat.new` on every joined server's socket (and any joined later) and shows a
 // notification for messages that pass `shouldNotify`. Returns a teardown that removes every listener.
 export function initNotifications(): () => void {
   const stopFocus = initFocusTracking();
+  const stopPermission = bootstrapWebPermission();
   const listeners = new Map<string, () => void>();
 
   const attach = (serverId: string): void => {
@@ -110,6 +169,7 @@ export function initNotifications(): () => void {
 
   return () => {
     stopFocus();
+    stopPermission();
     stopServers();
     stopClick();
     for (const off of listeners.values()) off();

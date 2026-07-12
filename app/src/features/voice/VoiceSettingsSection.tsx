@@ -8,7 +8,9 @@ import {
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { getWebcamController } from "@/features/streams/useWebcam";
+import { SYSTEM_AUDIO_AUTO, SYSTEM_AUDIO_OFF } from "@/media/capture";
 import { m } from "@/paraglide/messages.js";
+import { platform } from "@/platform/types";
 import { useMediaStore } from "@/stores/media";
 import {
   type DeviceSettingsV1,
@@ -98,6 +100,20 @@ export function VoiceSettingsSection() {
     void getWebcamController().switchDevice(cameraDeviceId);
   };
 
+  // FR-28 stream-audio source (web + desktop Linux, where display capture has no system audio of
+  // its own): persist only — the next share start reads it. No live retoggle of anything.
+  const streamAudioVisible = platform.kind === "web" || platform.os === "linux";
+  const applyStreamAudio = (streamAudio: string): void => {
+    const next = { ...deviceSettings, streamAudio };
+    useSettingsStore.getState().setDeviceSettings(next);
+    useMediaStore.getState().setDeviceSelection(next);
+  };
+  const streamAudioItems: Record<string, string> = {
+    [SYSTEM_AUDIO_AUTO]: m.settings_voice_stream_audio_auto(),
+    [SYSTEM_AUDIO_OFF]: m.settings_voice_stream_audio_off(),
+    ...toItems(inputs),
+  };
+
   return (
     <div data-testid="settings-voice" className="flex flex-col gap-5 py-2">
       <div className="flex flex-col gap-2">
@@ -166,6 +182,33 @@ export function VoiceSettingsSection() {
           </SelectContent>
         </Select>
       </div>
+      {streamAudioVisible && (
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium">{m.settings_voice_stream_audio()}</span>
+          <Select
+            value={deviceSettings.streamAudio ?? SYSTEM_AUDIO_AUTO}
+            items={streamAudioItems}
+            onValueChange={(value) => {
+              if (typeof value !== "string") return;
+              applyStreamAudio(value);
+            }}
+          >
+            <SelectTrigger data-testid="settings-voice-stream-audio" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(streamAudioItems).map(([value, label]) => (
+                <SelectItem key={value} value={value} data-testid={`stream-audio-${value}`}>
+                  {label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <span className="text-xs text-muted-foreground">
+            {m.settings_voice_stream_audio_hint()}
+          </span>
+        </div>
+      )}
       <div className="flex flex-col gap-2">
         <span className="text-sm font-medium">{m.settings_voice_noise()}</span>
         <RadioGroup

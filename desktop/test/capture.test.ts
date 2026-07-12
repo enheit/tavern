@@ -3,6 +3,8 @@ import {
   getScreenSources,
   handleDisplayMediaRequest,
   openScreenRecordingSettings,
+  prepareStreamAudio,
+  releaseStreamAudio,
   screenAccessStatus,
   selectSource,
   setupDisplayMediaHandler,
@@ -15,6 +17,43 @@ vi.mock("electron", () => import("./electron-mock"));
 // os.release() drives the Windows process-loopback gate (build 20348+); mutable per test.
 const osRelease = vi.hoisted(() => ({ value: "10.0.26100" }));
 vi.mock("node:os", () => ({ default: { release: () => osRelease.value } }));
+
+// venmic double (Task-3): capture.ts consults it FIRST on linux; these tests pin the fallback
+// layering (venmic true → no pactl; venmic false → the remap path exactly as before).
+const venmicState = vi.hoisted(() => ({
+  prepared: false,
+  prepareCalls: 0,
+  releaseCalls: 0,
+}));
+vi.mock("../src/main/venmic", () => ({
+  prepareVenmic: vi.fn(async () => {
+    venmicState.prepareCalls += 1;
+    return venmicState.prepared;
+  }),
+  releaseVenmic: vi.fn(() => {
+    venmicState.releaseCalls += 1;
+  }),
+}));
+
+// pactl double: records argv per call; `respond` maps the subcommand (args[0]) to stdout, null =
+// spawn/exec failure (pactl missing, pulse down).
+const pactlState = vi.hoisted(() => ({
+  calls: [] as string[][],
+  respond: new Map<string, string | null>(),
+}));
+vi.mock("node:child_process", () => ({
+  execFile: (
+    _cmd: string,
+    args: string[],
+    _opts: unknown,
+    cb: (err: Error | null, stdout: string) => void,
+  ) => {
+    pactlState.calls.push(args);
+    const out = pactlState.respond.get(args[0] ?? "");
+    if (out === null || out === undefined) cb(new Error("pactl failed"), "");
+    else cb(null, out);
+  },
+}));
 
 const realPlatform = process.platform;
 
@@ -166,5 +205,111 @@ describe("FR-28 capture plumbing", () => {
     await openScreenRecordingSettings("win32");
     await openScreenRecordingSettings("linux");
     expect(shell.openExternal).not.toHaveBeenCalled();
+  });
+});
+
+describe("FR-28 Linux stream-audio remap source (pactl)", () => {
+  beforeEach(() => {
+    venmicState.prepared = false; // venmic declines → these tests pin the remap path
+    venmicState.prepareCalls = 0;
+    venmicState.releaseCalls = 0;
+    pactlState.calls.length = 0;
+    pactlState.respond = new Map([
+      ["list", "5\tmodule-null-sink\tsink_name=x\n"],
+      ["get-default-sink", "alsa_output.pci.analog-stereo\n"],
+      ["load-module", "23\n"],
+      ["unload-module", ""],
+    ]);
+  });
+
+  it("off-linux: resolves false without touching pactl", async () => {
+    expect(await prepareStreamAudio("darwin")).toBe(false);
+    expect(await prepareStreamAudio("win32")).toBe(false);
+    await releaseStreamAudio("darwin");
+    expect(pactlState.calls).toHaveLength(0);
+  });
+
+  it("linux: remaps the DEFAULT sink's monitor under the label the renderer heuristic matches", async () => {
+    expect(await prepareStreamAudio("linux")).toBe(true);
+    const load = pactlState.calls.find((args) => args[0] === "load-module");
+    expect(load).toEqual([
+      "load-module",
+      "module-remap-source",
+      "master=alsa_output.pci.analog-stereo.monitor",
+      "source_name=tavern_stream_audio",
+      // spaceless: pipewire-pulse truncates quoted multi-word descriptions (main capture.ts note)
+      "source_properties=device.description=TavernStreamMonitor",
+    ]);
+    // AGC-drift guard: monitor + remap pinned to 100%/unmuted right after creation.
+    const volumes = pactlState.calls.filter((args) => args[0] === "set-source-volume");
+    expect(volumes).toEqual([
+      ["set-source-volume", "alsa_output.pci.analog-stereo.monitor", "100%"],
+      ["set-source-volume", "tavern_stream_audio", "100%"],
+    ]);
+    const mutes = pactlState.calls.filter((args) => args[0] === "set-source-mute");
+    expect(mutes).toHaveLength(2);
+  });
+
+  it("linux: unloads stale tavern_stream_audio modules before loading a fresh one", async () => {
+    pactlState.respond.set(
+      "list",
+      "5\tmodule-null-sink\tsink_name=x\n31\tmodule-remap-source\tsource_name=tavern_stream_audio\n",
+    );
+    expect(await prepareStreamAudio("linux")).toBe(true);
+    const unloadAt = pactlState.calls.findIndex((args) => args[0] === "unload-module");
+    const loadAt = pactlState.calls.findIndex((args) => args[0] === "load-module");
+    expect(pactlState.calls[unloadAt]).toEqual(["unload-module", "31"]);
+    expect(unloadAt).toBeLessThan(loadAt);
+  });
+
+  it("linux: resolves false when pactl is missing or the default sink can't be read", async () => {
+    pactlState.respond = new Map(); // every exec errors (no pactl at all)
+    expect(await prepareStreamAudio("linux")).toBe(false);
+
+    pactlState.respond = new Map([
+      ["list", ""],
+      ["get-default-sink", null],
+    ]);
+    expect(await prepareStreamAudio("linux")).toBe(false);
+    expect(pactlState.calls.some((args) => args[0] === "load-module")).toBe(false);
+  });
+
+  it("release on linux unloads every module owning the source name", async () => {
+    pactlState.respond.set(
+      "list",
+      "7\tmodule-remap-source\tsource_name=tavern_stream_audio\n9\tmodule-remap-source\tsource_name=tavern_stream_audio master=x\n",
+    );
+    await releaseStreamAudio("linux");
+    const unloaded = pactlState.calls.filter((args) => args[0] === "unload-module");
+    expect(unloaded).toEqual([
+      ["unload-module", "7"],
+      ["unload-module", "9"],
+    ]);
+  });
+
+  // Task-3 layering: venmic first, remap only as the fallback.
+  it("linux: a successful venmic link short-circuits — pactl is never touched", async () => {
+    venmicState.prepared = true;
+    expect(await prepareStreamAudio("linux")).toBe(true);
+    expect(venmicState.prepareCalls).toBe(1);
+    expect(pactlState.calls).toHaveLength(0);
+  });
+
+  it("linux: venmic declining falls back to the remap path (both consulted)", async () => {
+    venmicState.prepared = false;
+    expect(await prepareStreamAudio("linux")).toBe(true);
+    expect(venmicState.prepareCalls).toBe(1);
+    expect(pactlState.calls.some((args) => args[0] === "load-module")).toBe(true);
+  });
+
+  it("off-linux: venmic is never consulted", async () => {
+    await prepareStreamAudio("darwin");
+    expect(venmicState.prepareCalls).toBe(0);
+  });
+
+  it("release on linux releases venmic AND unloads the remap modules", async () => {
+    await releaseStreamAudio("linux");
+    expect(venmicState.releaseCalls).toBe(1);
+    expect(pactlState.calls.some((args) => args[0] === "list")).toBe(true);
   });
 });

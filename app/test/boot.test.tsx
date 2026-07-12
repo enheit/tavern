@@ -44,6 +44,7 @@ import { BootGate } from "@/features/boot/BootGate";
 import { useBootStore } from "@/features/boot/bootStore";
 import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
+import { useSettingsStore } from "@/stores/settings";
 
 function uid(): string {
   return crypto.randomUUID();
@@ -140,6 +141,20 @@ describe("FR-43 boot gate", () => {
       await Promise.resolve();
     });
     await screen.findByTestId("page-server");
+  });
+
+  it("hydrates the notification prefs from /api/me over the local defaults", async () => {
+    // Store starts with the defaults (both on); the server row disables all-messages. After boot the
+    // store must reflect the server, not the default — otherwise settings never survive a reload.
+    useSettingsStore.setState({ notifyAll: true, notifyMentions: true });
+    const me = meResponse([]) as { settings: { notifyAll: boolean; notifyMentions: boolean } };
+    me.settings.notifyAll = false;
+    me.settings.notifyMentions = true;
+    vi.mocked(apiClient.get).mockResolvedValue(me);
+    renderGate();
+    await screen.findByTestId("page-server");
+    expect(useSettingsStore.getState().notifyAll).toBe(false);
+    expect(useSettingsStore.getState().notifyMentions).toBe(true);
   });
 
   it("zero joined servers → ready, no active server, no room connections", async () => {

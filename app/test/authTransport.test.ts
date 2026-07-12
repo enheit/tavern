@@ -19,11 +19,14 @@ function makeBridge(
       loopbackSelfAudioExcluded: false,
       screenAccessStatus: async () => "granted" as const,
       openScreenRecordingSettings: () => undefined,
+      prepareStreamAudio: async () => false,
+      releaseStreamAudio: () => undefined,
     },
     notifications: {
       show: async () => undefined,
       onClick: () => () => undefined,
       requestPermission: async () => true,
+      permissionState: () => "granted",
     },
     updates: {
       onUpdateReady: () => () => undefined,

@@ -6,6 +6,7 @@ import { authTransport } from "@/lib/authTransport";
 import { closeAllRooms, connectRoom } from "@/lib/wsClient";
 import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
+import { useSettingsStore } from "@/stores/settings";
 
 // FR-43 boot state machine: loading → unauthed | loadingMe → connectingActive → ready | error.
 // Pinned rules: no token / 401 → unauthed (any other /me failure → error, session kept); GET
@@ -67,6 +68,12 @@ async function runMachine(set: SetPhase): Promise<void> {
 
     useSessionStore.getState().setAuthed(me.user);
     useServersStore.getState().setServers(me.servers);
+    // FR-16: adopt the server's notification prefs before initNotifications runs at `ready`, so the
+    // decision rule (and the web permission bootstrap) both see the account's real settings.
+    useSettingsStore.getState().hydrateNotifyPrefs({
+      notifyAll: me.settings.notifyAll,
+      notifyMentions: me.settings.notifyMentions,
+    });
 
     const [active] = me.servers;
     if (!active) {

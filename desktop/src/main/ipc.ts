@@ -18,6 +18,8 @@ export interface IpcServices {
     loopbackAudioSupported(): boolean | Promise<boolean>;
     screenAccessStatus(): Promise<ScreenAccessStatus>;
     openScreenRecordingSettings(): Promise<void>;
+    prepareStreamAudio(): Promise<boolean>;
+    releaseStreamAudio(): Promise<void>;
   };
   notifications: {
     show(payload: { title: string; body: string; tag: string }): void | Promise<void>;
@@ -71,6 +73,14 @@ export function registerIpc(services: IpcServices): void {
   ipcMain.handle("capture:openScreenRecordingSettings", async (event) => {
     assertTrustedSender(event);
     return services.capture.openScreenRecordingSettings();
+  });
+  ipcMain.handle("capture:prepareStreamAudio", async (event) => {
+    assertTrustedSender(event);
+    return services.capture.prepareStreamAudio();
+  });
+  ipcMain.handle("capture:releaseStreamAudio", async (event) => {
+    assertTrustedSender(event);
+    return services.capture.releaseStreamAudio();
   });
   ipcMain.handle("notifications:show", async (event, arg: unknown) => {
     assertTrustedSender(event);

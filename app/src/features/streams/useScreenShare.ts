@@ -3,11 +3,13 @@ import { toast } from "sonner";
 import { ApiError } from "@/lib/apiClient";
 import { errorMessage } from "@/lib/errorMessage";
 import { connectRoom } from "@/lib/wsClient";
-import { captureScreen } from "@/media/capture";
+import { captureScreen, SYSTEM_AUDIO_OFF } from "@/media/capture";
+import type { ScreenCapture } from "@/media/capture";
 import { m } from "@/paraglide/messages.js";
 import { platform } from "@/platform/types";
 import { getVoiceController } from "@/features/voice/voiceController";
 import { useMediaStore } from "@/stores/media";
+import { useSettingsStore } from "@/stores/settings";
 import type { ShareSelection } from "./types";
 
 // The shared publishPC surface screen share needs (§7.1: mic + screen + cam share ONE publish
@@ -31,27 +33,47 @@ interface WsSend {
 }
 
 export interface ScreenShareDeps {
-  capture(
-    sel: ShareSelection,
-  ): Promise<{ video: MediaStreamTrack; audio: MediaStreamTrack | null }>;
+  capture(sel: ShareSelection): Promise<ScreenCapture>;
   publisher(): ScreenPublisher | null;
   wsFor(serverId: string): WsSend;
   activeServerId(): string | null;
-  caveat(): void;
+  notice(capture: ScreenCapture, wantedAudio: boolean): void;
 }
 
 const CAVEAT_FLAG = "tavern.selfAudioCaveatShown.v1";
+const MONITOR_NOTE_FLAG = "tavern.systemAudioNoteShown.v1";
 
-// FR-28 limitation: loopback captures ALL system audio (Tavern voices/soundboard leak into the
-// stream). Shown once, the first time a share starts with audio, gated by a localStorage flag.
-// Moot where capture excludes Tavern's own audio ("loopbackWithoutChrome": Windows 20348+ and
-// macOS) — there the toast would be a lie, so it is skipped entirely.
-export function showSelfAudioCaveatOnce(): void {
-  if (platform.capture.loopbackSelfAudioExcluded) return;
+function toastOnce(flag: string, message: string): void {
   const store = typeof localStorage === "undefined" ? null : localStorage;
-  if (store?.getItem(CAVEAT_FLAG) === "1") return;
-  toast(m.streams_self_audio_caveat());
-  store?.setItem(CAVEAT_FLAG, "1");
+  if (store?.getItem(flag) === "1") return;
+  toast(message);
+  store?.setItem(flag, "1");
+}
+
+// FR-28 share-audio notices, keyed on where the audio track came from:
+//  - "display" on a NON-tab surface = OS loopback (win/mac handler, or Windows-web system audio):
+//    ALL system sound is in the stream, Tavern voices included — the classic caveat, shown once,
+//    skipped where the loopback device already excludes Tavern ("loopbackWithoutChrome").
+//  - "display" on a tab surface = tab audio only — nothing of Tavern's leaks; no notice.
+//  - "monitor" = the web/Linux fallback: monitor capture with AEC self-exclusion — tell the user
+//    once that system sound is on and call voices are filtered out.
+//  - null while audio was wanted (web/Linux, fallback not "off") = nothing captured: hint where
+//    the sound can come from. Shown per share — it flags an unmet expectation, not a fact of life.
+export function showShareAudioNotice(capture: ScreenCapture, wantedAudio: boolean): void {
+  if (capture.audioSource === "monitor") {
+    toastOnce(MONITOR_NOTE_FLAG, m.streams_system_audio_note());
+    return;
+  }
+  if (capture.audioSource === "display") {
+    if (capture.tabAudio || platform.capture.loopbackSelfAudioExcluded) return;
+    toastOnce(CAVEAT_FLAG, m.streams_self_audio_caveat());
+    return;
+  }
+  const fallbackPlatform = platform.kind === "web" || platform.os === "linux";
+  const pref = useSettingsStore.getState().deviceSettings.streamAudio;
+  if (wantedAudio && fallbackPlatform && pref !== SYSTEM_AUDIO_OFF) {
+    toast(m.streams_no_system_audio_hint());
+  }
 }
 
 // Non-React orchestrator (single self-share at a time). Publishes on the voiceController's shared
@@ -75,7 +97,20 @@ export class ScreenShareController {
     if (serverId === null) throw new Error("screen share requires an active voice server");
     const publisher = this.deps.publisher();
     if (publisher === null) throw new Error("no publish session");
-    const { video, audio } = await this.deps.capture(sel);
+    // Desktop Linux FR-28: create the pulse remap-source the fallback will capture BEFORE the
+    // capture enumerates devices. No-op false elsewhere; failure just means video-only + hint.
+    if (sel.withAudio) await platform.capture.prepareStreamAudio();
+    let capture: ScreenCapture;
+    try {
+      capture = await this.deps.capture(sel);
+    } catch (err) {
+      platform.capture.releaseStreamAudio();
+      throw err;
+    }
+    const { video, audio } = capture;
+    // The remap-source exists only to be captured — drop it right away when the fallback didn't
+    // end up using it (display audio won, no device matched, or the user cancelled nothing).
+    if (capture.audioSource !== "monitor") platform.capture.releaseStreamAudio();
     let names: { videoTrackName: string; audioTrackName?: string };
     try {
       names = await publisher.publishStream(video, audio, sel.preset);
@@ -85,6 +120,7 @@ export class ScreenShareController {
       // other non-ApiError rejection is not toasted (the user closed the picker themselves).
       video.stop();
       audio?.stop();
+      platform.capture.releaseStreamAudio();
       if (err instanceof ApiError) toast.error(errorMessage(err.code));
       throw err;
     }
@@ -111,7 +147,7 @@ export class ScreenShareController {
             preset: sel.preset,
           },
     );
-    if (this.audioTrackName !== null) this.deps.caveat();
+    this.deps.notice(capture, sel.withAudio);
   }
 
   async stop(): Promise<void> {
@@ -128,6 +164,8 @@ export class ScreenShareController {
     } finally {
       this.video?.stop();
       this.audio?.stop();
+      // Idempotent, no-op off desktop Linux: tears down the share's pulse remap-source.
+      platform.capture.releaseStreamAudio();
       this.video = null;
       this.audio = null;
       this.videoTrackName = null;
@@ -165,7 +203,7 @@ function defaultDeps(): ScreenShareDeps {
     publisher: () => getVoiceController().screenPublisher(),
     wsFor: (serverId) => connectRoom(serverId),
     activeServerId: () => useMediaStore.getState().inVoiceServerId,
-    caveat: showSelfAudioCaveatOnce,
+    notice: showShareAudioNotice,
   };
 }
 

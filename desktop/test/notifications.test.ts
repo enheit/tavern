@@ -27,6 +27,12 @@ describe("FR-16 notification transport", () => {
     expect(() => notification?.emit("click")).not.toThrow();
   });
 
+  it("no-ops (no throw, no instance) when the OS has no notification support", () => {
+    Notification.isSupported.mockReturnValue(false);
+    expect(() => showNotification({ title: "t", body: "b", tag: "srv-1" })).not.toThrow();
+    expect(Notification.instances).toHaveLength(0);
+  });
+
   it("sets the win32 AppUserModelId, and only on win32", () => {
     setPlatform("win32");
     setupNotifications();

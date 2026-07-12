@@ -50,6 +50,11 @@ export const VoiceMember = z.object({
   userId: z.uuid(),
   muted: z.boolean(),
   deafened: z.boolean(),
+  // Bumped by the DO each time this member's mic track (re)registers on a publish (a rejoin or a
+  // transport recovery creates a NEW SFU session under the SAME mic:{uid} name — invisible in the
+  // roster otherwise). Peers re-pull when it changes; absent (old worker) reads as 0. Additive:
+  // clients on the previous schema strip the key on parse.
+  micSeq: z.number().int().nonnegative().optional(),
 });
 export type VoiceMember = z.infer<typeof VoiceMember>;
 

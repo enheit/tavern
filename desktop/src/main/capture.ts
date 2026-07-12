@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process";
 import os from "node:os";
 import { desktopCapturer, session, shell, systemPreferences } from "electron";
 import type { DesktopCapturerSource, Session } from "electron";
 import { ScreenSourceSchema, loopbackAudioDevice, screenAccessStatusSchema } from "@tavern/shared";
 import type { LoopbackDevice, ScreenAccessStatus, ScreenSource } from "@tavern/shared";
+import { prepareVenmic, releaseVenmic } from "./venmic";
 
 // The source armed by capture:selectSource; consumed once by the display-media handler, then cleared.
 let armedSourceId: string | null = null;
@@ -88,4 +90,84 @@ export function setupDisplayMediaHandler(target: Session = session.defaultSessio
     // what lets "loopbackWithoutChrome" through. Widen at this one Electron boundary only.
     void handleDisplayMediaRequest(callback as (streams: DisplayMediaStreams) => void);
   });
+}
+
+// ---------------------------------------------------------------------------------------------
+// FR-28 Linux stream audio (system sound). Chromium's native loopback options are dead ends on
+// Linux, both container-probed on Electron 43 + pulse: the display handler's 'loopback' device
+// (behind PulseaudioLoopbackForScreenShare) delivers a track that IGNORES echoCancellation and
+// 'loopbackWithoutChrome' falls open to full loopback — Tavern voices would echo into the stream.
+// Raw "Monitor of …" sources are excluded from Chromium's input enumeration outright
+// (audio_manager_pulse.cc). What DOES work: a `module-remap-source` clone of the default sink's
+// monitor — a first-class source Chromium enumerates, captures via getUserMedia, and (probed)
+// APM-cancels the app's own playout from when echoCancellation:true. So the main process loads
+// the remap around each audio share; the renderer's fallback picks it up by its "Monitor" label.
+// Works against PulseAudio and pipewire-pulse; missing pactl (rare) → false → video-only + hint.
+const STREAM_AUDIO_SOURCE = "tavern_stream_audio";
+const PACTL_TIMEOUT_MS = 3000;
+
+function pactl(args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("pactl", args, { timeout: PACTL_TIMEOUT_MS }, (err, stdout) => {
+      resolve(err ? null : stdout);
+    });
+  });
+}
+
+// Unloads every remap module owning our source name — covers the live one AND strays from a
+// crashed previous run (loading a second module with the same source_name would fail anyway).
+async function unloadStreamAudioModules(): Promise<void> {
+  const modules = await pactl(["list", "short", "modules"]);
+  if (modules === null) return;
+  const ids = modules
+    .split("\n")
+    .filter((line) => line.includes(STREAM_AUDIO_SOURCE))
+    .map((line) => line.split("\t")[0])
+    .filter((id): id is string => id !== undefined && /^\d+$/.test(id));
+  await Promise.all(ids.map((id) => pactl(["unload-module", id])));
+}
+
+export async function prepareStreamAudio(
+  platform: NodeJS.Platform = process.platform,
+): Promise<boolean> {
+  if (platform !== "linux") return false;
+  // Task-3 layering: venmic first (PipeWire-native loopback, Tavern's own audio excluded by PID at
+  // the source — no echo canceller in the content path). ANY venmic failure — no PipeWire, missing
+  // optional module/prebuild, link error — falls through SILENTLY to the pactl remap below, which
+  // stays the web path and the non-PipeWire fallback.
+  if (await prepareVenmic({ platform })) return true;
+  await unloadStreamAudioModules();
+  const sink = (await pactl(["get-default-sink"]))?.trim();
+  if (sink === undefined || sink.length === 0) return false;
+  // device.description is what Chromium shows as the input label — the renderer's auto-pick
+  // matches it exactly (and /monitor/i as a net). SPACELESS on purpose: pipewire-pulse's
+  // remap-source module truncates quoted AND escaped multi-word descriptions at the first space
+  // (probed on PipeWire 1.0.5 — "Tavern Stream …" became "Tavern"); one word survives every server.
+  const loaded = await pactl([
+    "load-module",
+    "module-remap-source",
+    `master=${sink}.monitor`,
+    `source_name=${STREAM_AUDIO_SOURCE}`,
+    "source_properties=device.description=TavernStreamMonitor",
+  ]);
+  if (loaded === null) return false;
+  // Defensive volume reset, best-effort: any AGC-enabled capture (Chromium's own, another app's)
+  // can leave the sink's MONITOR source dragged down and it persists — container-probed at 8% /
+  // −66 dB, which would make the stream near-silent. Monitor volume feeds the remap, so both get
+  // pinned to 100%/unmuted at creation.
+  await Promise.all([
+    pactl(["set-source-volume", `${sink}.monitor`, "100%"]),
+    pactl(["set-source-mute", `${sink}.monitor`, "0"]),
+    pactl(["set-source-volume", STREAM_AUDIO_SOURCE, "100%"]),
+    pactl(["set-source-mute", STREAM_AUDIO_SOURCE, "0"]),
+  ]);
+  return true;
+}
+
+export async function releaseStreamAudio(
+  platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+  if (platform !== "linux") return;
+  releaseVenmic();
+  await unloadStreamAudioModules();
 }

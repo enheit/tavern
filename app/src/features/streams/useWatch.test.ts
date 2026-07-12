@@ -167,7 +167,7 @@ describe("FR-30 opt-in watching", () => {
     expect(controller.mediaStream).toBeNull();
   });
 
-  it("watch() sends watch.start then creates one PullSession pulling preferredRid l", async () => {
+  it("watch() sends watch.start then creates one PullSession pulling preferredRid h", async () => {
     const stream = makeStream();
     const h = harness();
     const controller = new WatchController(stream, h.deps);
@@ -177,7 +177,7 @@ describe("FR-30 opt-in watching", () => {
 
     expect(h.ws.sent[0]).toEqual({ t: "watch.start", trackName: stream.trackName });
     expect(h.createPull).toHaveBeenCalledTimes(1);
-    expect(h.pull.added[0]).toEqual([{ trackName: stream.trackName, preferredRid: "l" }]);
+    expect(h.pull.added[0]).toEqual([{ trackName: stream.trackName, preferredRid: "h" }]);
     expect(controller.state).toBe("watching");
 
     // A video frame arriving populates mediaStream for the tile's <video>.
@@ -195,7 +195,7 @@ describe("FR-30 opt-in watching", () => {
     await flush();
 
     expect(h.pull.added[0]).toEqual([
-      { trackName: `screen:${UID}:1`, preferredRid: "l" },
+      { trackName: `screen:${UID}:1`, preferredRid: "h" },
       { trackName: `screenAudio:${UID}:1` },
     ]);
 

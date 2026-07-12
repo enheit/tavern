@@ -55,6 +55,13 @@ const api: TavernIpc = {
     async openScreenRecordingSettings() {
       await ipcRenderer.invoke("capture:openScreenRecordingSettings");
     },
+    async prepareStreamAudio() {
+      const value: unknown = await ipcRenderer.invoke("capture:prepareStreamAudio");
+      return booleanSchema.parse(value);
+    },
+    async releaseStreamAudio() {
+      await ipcRenderer.invoke("capture:releaseStreamAudio");
+    },
   },
   notifications: {
     async show(payload) {

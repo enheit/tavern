@@ -6,7 +6,7 @@ import { useMediaStore } from "@/stores/media";
 import { resetRoomStores, roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
-import { fakeTrack } from "../fakes/media";
+import { fakeStream, fakeTrack } from "../fakes/media";
 
 const SELF = "11111111-1111-1111-1111-111111111111";
 const REMOTE = "22222222-2222-2222-2222-222222222222";
@@ -31,6 +31,13 @@ class FakePublish {
   async publishMic(_track: MediaStreamTrack): Promise<{ trackName: string }> {
     this.log.push("publish.publishMic");
     return { trackName: `mic:${this.userId}` };
+  }
+  connFailed: (() => void) | null = null;
+  onConnectionFailed(cb: () => void): () => void {
+    this.connFailed = cb;
+    return () => {
+      this.connFailed = null;
+    };
   }
   // Screen share (S8.1) publishes on this shared session; unused by the voice-only tests here.
   async publishStream(): Promise<{ videoTrackName: string; audioTrackName?: string }> {
@@ -70,6 +77,11 @@ class FakePull {
   closed = false;
   readonly added: Array<Array<{ trackName: string; preferredRid?: "h" | "l" }>> = [];
   readonly removed: string[][] = [];
+  // Captured transport-failure listener (TASK-1 auto-recover) — tests fire it directly.
+  connFailed: (() => void) | null = null;
+  private trackCb:
+    | ((trackName: string, track: MediaStreamTrack, stream: MediaStream) => void)
+    | null = null;
   constructor(log: string[]) {
     this.log = log;
   }
@@ -77,8 +89,20 @@ class FakePull {
     this.log.push("pull.connect");
     this.connected = true;
   }
-  onTrack(): () => void {
+  onTrack(
+    cb: (trackName: string, track: MediaStreamTrack, stream: MediaStream) => void,
+  ): () => void {
+    this.trackCb = cb;
     return () => undefined;
+  }
+  emitTrack(trackName: string): void {
+    this.trackCb?.(trackName, fakeTrack("audio"), fakeStream());
+  }
+  onConnectionFailed(cb: () => void): () => void {
+    this.connFailed = cb;
+    return () => {
+      this.connFailed = null;
+    };
   }
   async addRemoteTracks(
     tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>,
@@ -578,6 +602,175 @@ describe("FR-20", () => {
       mutedUsers: string[];
     };
     expect(parsed.mutedUsers).toContain(REMOTE);
+  });
+});
+
+// TASK-1: the cross-platform audibility fixes — micSeq re-pull, backoff persistence, transport
+// auto-recover. Each defect here produced a silent asymmetric pair in a 3+ member call.
+describe("TASK-1 audibility", () => {
+  it("micSeq bump in voice.state → old pull closed, mic re-pulled (publisher rejoined)", async () => {
+    const h = makeHarness();
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
+    await controller.join("A");
+    const pull = h.pulls[0];
+    if (!pull) throw new Error("expected the voice pull session");
+    expect(pull.added).toEqual([[{ trackName: `mic:${REMOTE}` }]]);
+
+    // The remote re-registered their mic (new SFU session) — same roster, higher micSeq.
+    h.ws.emit({
+      t: "voice.state",
+      voice: {
+        members: [
+          { userId: SELF, muted: false, deafened: false },
+          { userId: REMOTE, muted: false, deafened: false, micSeq: 2 },
+        ],
+        sessionStartedAt: 1000,
+      },
+      at: 3000,
+    });
+    await flush();
+
+    expect(pull.removed).toEqual([[`mic:${REMOTE}`]]);
+    expect(pull.added).toEqual([
+      [{ trackName: `mic:${REMOTE}` }],
+      [{ trackName: `mic:${REMOTE}` }],
+    ]);
+    expect(h.graph.detached).toContain(REMOTE);
+  });
+
+  it("an unchanged micSeq does not re-pull (mute toggles must not churn the session)", async () => {
+    const h = makeHarness();
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
+    await controller.join("A");
+    const pull = h.pulls[0];
+    if (!pull) throw new Error("expected the voice pull session");
+
+    h.ws.emit({
+      t: "voice.state",
+      voice: {
+        members: [
+          { userId: SELF, muted: false, deafened: false },
+          { userId: REMOTE, muted: true, deafened: false, micSeq: 1 },
+        ],
+        sessionStartedAt: 1000,
+      },
+      at: 3000,
+    });
+    await flush();
+
+    expect(pull.removed).toEqual([]);
+    expect(pull.added).toHaveLength(1);
+  });
+
+  it("mic pull retry backs off (500ms → 5s cap) and outlives the old 10-attempt budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness();
+      const controller = new VoiceController(h.deps);
+      seedVoice("A", []);
+      await controller.join("A");
+      const pull = h.pulls[0];
+      if (!pull) throw new Error("expected the voice pull session");
+      // 12 failures — the old flat budget (10) gave up here; the backoff schedule keeps going.
+      let failures = 12;
+      const original = pull.addRemoteTracks.bind(pull);
+      pull.addRemoteTracks = async (tracks) => {
+        if (failures > 0 && tracks.some((t) => t.trackName === `mic:${REMOTE}`)) {
+          failures -= 1;
+          throw new Error("pull_denied");
+        }
+        return original(tracks);
+      };
+      h.ws.emit({
+        t: "voice.state",
+        voice: {
+          members: [
+            { userId: SELF, muted: false, deafened: false },
+            { userId: REMOTE, muted: false, deafened: false },
+          ],
+          sessionStartedAt: 1000,
+        },
+        at: 3000,
+      });
+
+      // Backoff: 500+1000+2000+4000 then 5s per retry — 12 failures need 500·(2⁰..2³)+8·5000 = 47.5s.
+      await vi.advanceTimersByTimeAsync(48_000);
+      expect(failures).toBe(0);
+      expect(pull.added).toContainEqual([{ trackName: `mic:${REMOTE}` }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a member leaving cancels their pending mic retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness();
+      const controller = new VoiceController(h.deps);
+      seedVoice("A", []);
+      await controller.join("A");
+      const pull = h.pulls[0];
+      if (!pull) throw new Error("expected the voice pull session");
+      let attempts = 0;
+      pull.addRemoteTracks = async () => {
+        attempts += 1;
+        throw new Error("pull_denied");
+      };
+      const withRemote = {
+        members: [
+          { userId: SELF, muted: false, deafened: false },
+          { userId: REMOTE, muted: false, deafened: false },
+        ],
+        sessionStartedAt: 1000,
+      };
+      h.ws.emit({ t: "voice.state", voice: withRemote, at: 3000 });
+      await vi.advanceTimersByTimeAsync(600); // first retry scheduled + fired
+      const seen = attempts;
+      expect(seen).toBeGreaterThanOrEqual(2);
+
+      // REMOTE leaves — the retry chain must die with them.
+      h.ws.emit({
+        t: "voice.state",
+        voice: {
+          members: [{ userId: SELF, muted: false, deafened: false }],
+          sessionStartedAt: 1000,
+        },
+        at: 4000,
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(attempts).toBe(seen);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("transport failure (ICE 'failed') → automatic teardown + rejoin preserving mute", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness();
+      const controller = new VoiceController(h.deps);
+      seedVoice("A", []);
+      await controller.join("A");
+      controller.setMuted(true);
+      expect(h.publishes).toHaveLength(1);
+
+      h.pulls[0]?.connFailed?.();
+      h.publishes[0]?.connFailed?.(); // double fire (both PCs die together) → single rejoin
+      await vi.advanceTimersByTimeAsync(1_100);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(h.publishes).toHaveLength(2);
+      expect(h.publishes[0]?.closed).toBe(true);
+      expect(h.pulls).toHaveLength(2);
+      expect(useMediaStore.getState().voiceStatus).toBe("joined");
+      expect(useMediaStore.getState().muted).toBe(true);
+      // the restored mute re-disabled the fresh mic track
+      expect(h.publishes[1]?.enabled).toContainEqual([`mic:${SELF}`, false]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

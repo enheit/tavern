@@ -60,6 +60,10 @@ export function createElectronPlatform(ipc: TavernIpc): PlatformBridge {
       openScreenRecordingSettings: () => {
         void ipc.capture.openScreenRecordingSettings();
       },
+      prepareStreamAudio: () => ipc.capture.prepareStreamAudio(),
+      releaseStreamAudio: () => {
+        void ipc.capture.releaseStreamAudio();
+      },
     },
     notifications: {
       show: (n) => {
@@ -83,6 +87,9 @@ export function createElectronPlatform(ipc: TavernIpc): PlatformBridge {
       // Desktop notifications are shown by the main process at the OS level — no browser permission
       // gate — so enabling a toggle is always allowed.
       requestPermission: () => Promise.resolve(true),
+      // No renderer-side permission gate on desktop (the OS owns it, and the main process shows
+      // notifications unconditionally), so there is never a pending request to make.
+      permissionState: () => "granted",
     },
     updates: {
       onUpdateReady: (cb) => {

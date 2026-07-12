@@ -70,6 +70,8 @@ interface PublishLike {
   // it on the shared publishPC exposed via screenPublisher().
   setPreset(trackName: string, preset: PresetId): Promise<void>;
   close(): Promise<void>;
+  // Optional — real PublishSession only. Terminal transport failure (ICE 'failed'); see PullLike.
+  onConnectionFailed?(cb: () => void): () => void;
   // Optional so unit-test fakes need not implement it; the real PublishSession exposes it. Surfaced
   // via the §10 e2e publish-state hook only.
   readonly state?: PublishState;
@@ -85,9 +87,13 @@ interface PullLike {
   addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>): Promise<void>;
   removeRemoteTracks(trackNames: string[]): Promise<void>;
   close(): Promise<void>;
+  // Optional — real PullSession only. Terminal transport failure (ICE 'failed'): the controller
+  // auto-recovers the whole voice session (teardown + rejoin). Test fakes may omit it.
+  onConnectionFailed?(cb: () => void): () => void;
   // Optional — real PullSession only. Feed the §10 e2e pull-state and voice-stats hooks.
   readonly state?: PullState;
   inboundAudioStats?(): Promise<VoiceStats>;
+  inboundAudioBytesByTrack?(): Promise<Record<string, number>>;
 }
 // The subset of the S7.2 AudioGraph that watched-stream tiles route their audio + volume through
 // (FR-31). Streams share the ONE app AudioContext (§7.3) — a watcher is always in voice (pulling a
@@ -163,6 +169,17 @@ export class VoiceController {
   // True once graph.init() has run (voice joined) and false after teardown — gates streamAudioSink().
   private graphReady = false;
   private readonly pulledMics = new Set<string>();
+  // userId → the micSeq (shared VoiceMember.micSeq) the current pull was made against. A voice.state
+  // carrying a HIGHER seq means the member re-registered their mic on a new SFU session (rejoin /
+  // transport recovery) — the existing pull points at a dead track and must be redone.
+  private readonly micSeqs = new Map<string, number>();
+  // userId → pending retry timer for a failed mic pull — cancelled when the member leaves, when a
+  // micSeq bump forces a fresh pull, and on teardown (the old code leaked live timers into the next
+  // session).
+  private readonly micRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Single-flight guard for the transport-failure auto-recover (one ICE 'failed' can fire on both
+  // the publish and pull PCs at once — one rejoin covers both).
+  private recovering = false;
   private readonly speakingSubs = new Map<string, () => void>();
   // FR-36 soundboard player for the CURRENT voice server (single-voice-at-a-time); rebuilt lazily when
   // the voice server changes, torn down on leave.
@@ -171,6 +188,8 @@ export class VoiceController {
   private unsubReconnect: (() => void) | null = null;
   private unsubTrack: (() => void) | null = null;
   private unsubSoundPlayed: (() => void) | null = null;
+  private unsubPublishFailed: (() => void) | null = null;
+  private unsubPullFailed: (() => void) | null = null;
 
   constructor(deps: VoiceDeps) {
     this.deps = deps;
@@ -235,13 +254,19 @@ export class VoiceController {
       this.pull = pull;
       this.unsubTrack = pull.onTrack((tn, _t, stream) => this.onPulledTrack(tn, stream));
       await pull.connect();
-      const remoteIds = roomStore(serverId)
+      // Terminal ICE failure on either PC → auto-recover the session (a dead transport keeps the
+      // UI 'joined' while the user goes one-way deaf/mute; the WS reconnect path never notices).
+      this.unsubPublishFailed =
+        publish.onConnectionFailed?.(() => this.recoverFromTransportFailure()) ?? null;
+      this.unsubPullFailed =
+        pull.onConnectionFailed?.(() => this.recoverFromTransportFailure()) ?? null;
+      const remoteMembers = roomStore(serverId)
         .getState()
-        .voice.members.map((m) => m.userId)
-        .filter((id) => id !== selfId);
-      for (const id of remoteIds) {
-        this.pulledMics.add(id);
-        this.pullMicWithRetry(id, 0);
+        .voice.members.filter((m) => m.userId !== selfId);
+      for (const m of remoteMembers) {
+        this.pulledMics.add(m.userId);
+        this.micSeqs.set(m.userId, m.micSeq ?? 0);
+        this.pullMicWithRetry(m.userId, 0);
       }
 
       this.unsubVoiceState = ws.on("voice.state", (m) => this.onVoiceState(m.voice.members));
@@ -483,14 +508,25 @@ export class VoiceController {
   private onVoiceState(members: VoiceMember[]): void {
     const selfId = this.selfId();
     const ids = new Set(members.map((m) => m.userId));
-    for (const id of ids) {
-      if (id === selfId || this.pulledMics.has(id)) continue;
-      this.pulledMics.add(id);
-      this.pullMicWithRetry(id, 0);
+    for (const m of members) {
+      if (m.userId === selfId) continue;
+      const seq = m.micSeq ?? 0;
+      if (!this.pulledMics.has(m.userId)) {
+        this.pulledMics.add(m.userId);
+        this.micSeqs.set(m.userId, seq);
+        this.pullMicWithRetry(m.userId, 0);
+      } else if (this.micSeqs.get(m.userId) !== seq) {
+        // The member's mic re-registered on a NEW SFU session (micSeq bump): the current pull —
+        // live OR still retrying — targets the previous session's track. Close it and pull fresh.
+        this.micSeqs.set(m.userId, seq);
+        this.repullMic(m.userId);
+      }
     }
     for (const id of Array.from(this.pulledMics)) {
       if (ids.has(id)) continue;
       this.pulledMics.delete(id);
+      this.micSeqs.delete(id);
+      this.cancelMicRetry(id);
       void this.pull?.removeRemoteTracks([micTrackName(id)]);
       this.deps.graph.detachRemoteMic(id);
       this.stopSpeaking(id);
@@ -499,22 +535,93 @@ export class VoiceController {
   }
 
   // voice.state announcing a joiner races that joiner's REST publish (§7.1): the mic track may not
-  // be registered yet, so the first pull can 403 (pull_denied). Retry briefly (10 × 500 ms covers
-  // any realistic publish handshake); on final failure unmark the id so a later voice.state
-  // retriggers the pull instead of leaving the member permanently silent (S12.3 soak finding).
+  // be registered yet, so the first pull can 403 (pull_denied) — or reach the SFU before the
+  // publisher's track exists there and come back as a per-track error (PullTracksError). Retry with
+  // capped exponential backoff (500 ms · 2ⁿ, cap 5 s, ≈2.3 min total — a slow joiner's permission
+  // prompt or a cold 24 MB DeepFilterNet fetch easily outlives the old flat 10 × 500 ms budget); on
+  // final failure unmark the id so a later voice.state — now guaranteed by the DO's mic-registration
+  // broadcast — retriggers the pull instead of leaving the member permanently silent.
   private pullMicWithRetry(id: string, attempt: number): void {
     const pull = this.pull;
     if (pull === null) return;
-    pull.addRemoteTracks([{ trackName: micTrackName(id) }]).catch(() => {
+    pull.addRemoteTracks([{ trackName: micTrackName(id) }]).catch((err: unknown) => {
+      // Every failed attempt is visible — a silent retry loop hid the Task-1 asymmetric-deafness
+      // class for weeks (nothing in any log while a member was unhearable).
+      console.warn(`[voice] mic pull failed (user ${id}, attempt ${attempt})`, err);
+      if (this.pull !== pull) return; // session replaced (rejoin) — its own pulls take over
       if (!this.pulledMics.has(id)) return; // member already left — the pull is moot
-      if (attempt >= 9) {
+      if (attempt >= 29) {
         this.pulledMics.delete(id);
+        this.micSeqs.delete(id);
         return;
       }
-      setTimeout(() => {
-        if (this.pulledMics.has(id)) this.pullMicWithRetry(id, attempt + 1);
-      }, 500);
+      const timer = setTimeout(
+        () => {
+          this.micRetryTimers.delete(id);
+          if (this.pull === pull && this.pulledMics.has(id)) this.pullMicWithRetry(id, attempt + 1);
+        },
+        Math.min(500 * 2 ** attempt, 5_000),
+      );
+      this.cancelMicRetry(id);
+      this.micRetryTimers.set(id, timer);
     });
+  }
+
+  private cancelMicRetry(id: string): void {
+    const timer = this.micRetryTimers.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.micRetryTimers.delete(id);
+    }
+  }
+
+  // micSeq bump: tear the old pull down (graph detach + tracks/close) and pull the mic fresh. The
+  // remove is queued on the SAME pull session as any in-flight add, so it always closes what the
+  // add mapped — then the new pull negotiates a new mid. The fresh pull rides the normal retry (the
+  // bump broadcast can arrive before the publisher's SFU registration answered — §7.1 order).
+  private repullMic(id: string): void {
+    this.cancelMicRetry(id);
+    this.deps.graph.detachRemoteMic(id);
+    this.stopSpeaking(id);
+    useMediaStore.getState().setSpeaking(id, false);
+    const pull = this.pull;
+    if (pull === null) return;
+    pull
+      .removeRemoteTracks([micTrackName(id)])
+      .catch(() => undefined)
+      .then(() => {
+        if (this.pull === pull && this.pulledMics.has(id)) this.pullMicWithRetry(id, 0);
+      })
+      .catch(() => undefined);
+  }
+
+  // Terminal transport failure (ICE 'failed' on the publish or pull PC): full teardown + rejoin,
+  // preserving the self mute/deafen flags — same shape as the WS-reconnect resnapshot path. The 1 s
+  // delay lets the network settle (a route change flaps both PCs at once); the single-flight guard
+  // collapses the double fire. A rejoin that fails leaves voiceStatus 'error' (doJoin's contract) —
+  // visible, instead of the silent zombie 'joined' this replaces.
+  private recoverFromTransportFailure(): void {
+    if (this.recovering || useMediaStore.getState().voiceStatus !== "joined") return;
+    const serverId = this.serverId;
+    if (serverId === null) return;
+    this.recovering = true;
+    setTimeout(() => {
+      void (async () => {
+        try {
+          if (useMediaStore.getState().voiceStatus !== "joined") return;
+          const wasMuted = this.userMuted;
+          const wasDeafened = this.deafened;
+          await this.teardown();
+          await this.doJoin(serverId);
+          if (wasDeafened) this.setDeafened(true);
+          if (wasMuted) this.setMuted(true);
+        } catch {
+          // doJoin already surfaced the failure (voiceStatus 'error', ghost-leave sent).
+        } finally {
+          this.recovering = false;
+        }
+      })();
+    }, 1_000);
   }
 
   private startSpeaking(userId: string, analyser: AnalyserNode | null): void {
@@ -550,14 +657,21 @@ export class VoiceController {
     this.unsubReconnect?.();
     this.unsubTrack?.();
     this.unsubSoundPlayed?.();
+    this.unsubPublishFailed?.();
+    this.unsubPullFailed?.();
     this.unsubVoiceState = null;
     this.unsubReconnect = null;
     this.unsubTrack = null;
     this.unsubSoundPlayed = null;
+    this.unsubPublishFailed = null;
+    this.unsubPullFailed = null;
     for (const stop of this.speakingSubs.values()) stop();
     this.speakingSubs.clear();
+    for (const timer of this.micRetryTimers.values()) clearTimeout(timer);
+    this.micRetryTimers.clear();
     for (const id of this.pulledMics) this.deps.graph.detachRemoteMic(id);
     this.pulledMics.clear();
+    this.micSeqs.clear();
     await this.pull?.close();
     this.pull = null;
     await this.publish?.close();
@@ -592,6 +706,21 @@ export class VoiceController {
     return (
       this.pull?.inboundAudioStats?.() ?? Promise.resolve({ bytesReceived: 0, audioLevel: null })
     );
+  }
+
+  // Per-trackName inbound audio bytes of the voice pull (§10 @realtime pairwise regression: every
+  // member's bytes from EVERY other member grow — the aggregate hides a one-way-deaf pair).
+  voiceStatsByTrackForTest(): Promise<Record<string, number>> {
+    return this.pull?.inboundAudioBytesByTrack?.() ?? Promise.resolve({});
+  }
+
+  // The userIds whose remote mics are LIVE in the audio graph — the mock-SFU e2e's pairwise wiring
+  // truth (no media plane there, so getStats is useless; a graph attach proves the pull negotiated
+  // and the track event fired). instanceof narrows like recorderInputs (§9.1); unit-test fake
+  // graphs are not AudioGraphs and read [].
+  remoteMicUserIdsForTest(): string[] {
+    const graph = this.deps.graph;
+    return graph instanceof AudioGraph ? graph.remoteMicUserIds() : [];
   }
 
   outboundVideoStatsForTest(trackName: string): Promise<OutboundVideoLayer[]> {
@@ -635,6 +764,8 @@ export function getVoiceController(): VoiceController {
     publishState: () => controller.publishStateForTest(),
     pullStates: () => controller.pullStatesForTest(),
     voiceStats: () => controller.voiceStatsForTest(),
+    voiceStatsByTrack: () => controller.voiceStatsByTrackForTest(),
+    remoteMicUserIds: () => controller.remoteMicUserIdsForTest(),
     outboundVideoStats: (trackName) => controller.outboundVideoStatsForTest(trackName),
   });
   return controller;

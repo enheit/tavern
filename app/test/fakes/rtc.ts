@@ -40,7 +40,9 @@ export class FakeRtcTransceiver {
   constructor(mid: string, track: MediaStreamTrack | null, init: RTCRtpTransceiverInit) {
     this.mid = mid;
     this.init = init;
-    this.sender = new FakeRtcSender(track, init.sendEncodings ?? []);
+    // No sendEncodings (audio) still yields ONE parameter encoding — mirrors Chromium, where an
+    // audio sender's getParameters().encodings has a single entry (the mic bitrate cap rides it).
+    this.sender = new FakeRtcSender(track, init.sendEncodings ?? [{}]);
   }
 
   stop(): void {
@@ -103,6 +105,17 @@ export class FakeRtcPeerConnection {
     const set = this.listeners.get(type) ?? new Set();
     set.add(cb);
     this.listeners.set(type, set);
+  }
+
+  // Minimal RTCStatsReport stand-in: tests push plain stat records; the sessions only use forEach.
+  statsReport: Array<Record<string, unknown>> = [];
+  getStats(): Promise<{ forEach(cb: (stat: Record<string, unknown>) => void): void }> {
+    const entries = this.statsReport;
+    return Promise.resolve({
+      forEach(cb: (stat: Record<string, unknown>) => void): void {
+        for (const stat of entries) cb(stat);
+      },
+    });
   }
 
   close(): void {

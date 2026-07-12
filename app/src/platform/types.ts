@@ -26,6 +26,12 @@ export interface PlatformBridge {
     screenAccessStatus(): Promise<ScreenAccessStatus>;
     // Deep-links System Settings → Privacy & Security → Screen Recording on macOS; no-op elsewhere.
     openScreenRecordingSettings(): void;
+    // FR-28 desktop Linux: loads/unloads the pulse remap-source ("Tavern Stream Audio Monitor")
+    // the share's system-audio fallback captures. false / no-op everywhere else (web included —
+    // the browser can't create OS sources; there the fallback rides existing monitor-labeled or
+    // user-picked inputs).
+    prepareStreamAudio(): Promise<boolean>;
+    releaseStreamAudio(): void;
   };
   notifications: {
     show(n: { title: string; body: string; tag: string }): Promise<void>;
@@ -35,6 +41,12 @@ export interface PlatformBridge {
     // Notification permission). The renderer never touches the raw Notification API — this stays the
     // only route (A1/A10).
     requestPermission(): Promise<boolean>;
+    // Current permission WITHOUT prompting — the renderer reads it through this seam instead of the
+    // raw `Notification.permission` (A1). "default" = never asked (web only); "unsupported" = the
+    // browser has no Notification API. Desktop shows OS notifications from the main process with no
+    // renderer-side gate, so it always reports "granted". Notifications init uses this to decide
+    // whether default-on prefs still need a one-time permission request.
+    permissionState(): "granted" | "denied" | "default" | "unsupported";
   };
   // onUpdateReady forwards the downloaded version (S12.2: the pill label interpolates it) — the
   // payload shape matches the canonical shared/src/ipc.ts updateInfoSchema.
