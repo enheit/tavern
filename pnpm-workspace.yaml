@@ -10,6 +10,13 @@ allowBuilds:
   workerd: true
   electron: true
   electron-winstaller: false
+  # venmic (Linux-only, os=linux) ships an N-API prebuilt binary loaded at
+  # runtime via pkg-prebuilds; its `install` script only re-verifies that
+  # prebuild and, failing that, source-compiles with cmake-js — which would
+  # hard-fail on CI/release runners that lack pipewire/cmake dev headers. Skip
+  # the script: the bundled prebuild loads without it, and the desktop loader
+  # falls back to monitor-capture if it ever doesn't.
+  "@vencord/venmic": false
 minimumReleaseAgeExclude:
   - "@cloudflare/vitest-pool-workers@0.18.4"
   - miniflare@4.20260708.1
