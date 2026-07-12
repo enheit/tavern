@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { useStore } from "zustand";
 import { captureStreamScreenshot } from "@/features/screenshots/captureScreenshot";
 import { m } from "@/paraglide/messages.js";
+import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
@@ -51,12 +52,19 @@ function CanvasInner({ serverId }: { serverId: string }) {
   const setFullscreen = useStore(store, (s) => s.setFullscreenTrackName);
   const selfUserId = useSessionStore((s) => s.profile?.userId);
 
-  // FR-29 self-preview: the live LOCAL webcam stream is rendered directly on its own `cam:{userId}`
-  // tile (never pulled from the SFU). Matched by trackName so only the sharer's own cam tile gets it.
+  // FR-29 self-preview: the live LOCAL stream is rendered directly on the sharer's own tile (never
+  // pulled from the SFU). Matched by trackName so only the sharer's own tile gets it — BOTH the webcam
+  // (`cam:{userId}`, from useWebcamStore) and the screen share (from stores/media.ts). Without the
+  // screen branch a self screen-share tile got a null stream and rendered black.
   const camStream = useWebcamStore((s) => s.stream);
   const camTrackName = useWebcamStore((s) => s.trackName);
-  const selfStreamFor = (trackName: string): MediaStream | null =>
-    trackName === camTrackName ? camStream : null;
+  const shareStream = useMediaStore((s) => s.shareStream);
+  const shareTrackName = useMediaStore((s) => s.shareTrackName);
+  const selfStreamFor = (trackName: string): MediaStream | null => {
+    if (trackName === camTrackName) return camStream;
+    if (trackName === shareTrackName) return shareStream;
+    return null;
+  };
 
   // Guards against a second capture starting while one round-trip (draw → webp → upload) is still in
   // flight, so a quick double-tap of Space uploads once rather than racing two identical stills.

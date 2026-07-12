@@ -98,13 +98,13 @@ describe("FR-22 noise toggle", () => {
     expect(sender.replaceTrack).toHaveBeenCalledWith(next);
   });
 
-  // Task-2 voice-capture matrix: AEC always on; NS only in "standard" (the WASM modes feed their
-  // model the unprocessed signal); AGC OFF in EVERY mode; 48 kHz mono capture for all modes.
-  it("constraint matrix: AEC always on, NS per mode, AGC never, 48kHz mono everywhere", async () => {
+  // Task-2 voice-capture matrix: AEC always on; NS only in "standard" ("deepfilter" feeds its model
+  // the unprocessed signal); AGC defaults OFF but is opt-in per opts; 48 kHz mono capture for all modes.
+  it("constraint matrix: AEC always on, NS per mode, AGC opt-in, 48kHz mono everywhere", async () => {
     await getMic({ noiseSuppression: "standard" });
     await getMic({ noiseSuppression: "off", deviceId: "mic-2" });
-    await getMic({ noiseSuppression: "rnnoise" });
     await getMic({ noiseSuppression: "deepfilter" });
+    await getMic({ noiseSuppression: "deepfilter", autoGainControl: true });
     await retoggleMic(
       fakeTrack("audio"),
       { replaceTrack: vi.fn(async () => undefined) } as unknown as RTCRtpSender,
@@ -114,7 +114,6 @@ describe("FR-22 noise toggle", () => {
     for (const call of getUserMedia.mock.calls) {
       const audio = (call[0] as { audio: Record<string, unknown> }).audio;
       expect(audio.echoCancellation).toBe(true);
-      expect(audio.autoGainControl).toBe(false);
       expect(audio.channelCount).toEqual({ ideal: 1 });
       expect(audio.sampleRate).toEqual({ ideal: 48000 });
     }
@@ -122,8 +121,10 @@ describe("FR-22 noise toggle", () => {
       nthConstraints(getUserMedia, n).audio as Record<string, unknown>;
     expect(byMode(0).noiseSuppression).toBe(true); // standard = browser NS
     expect(byMode(1).noiseSuppression).toBe(false); // off = raw
-    expect(byMode(2).noiseSuppression).toBe(false); // rnnoise = model sees unprocessed signal
-    expect(byMode(3).noiseSuppression).toBe(false); // deepfilter = model sees unprocessed signal
+    expect(byMode(2).noiseSuppression).toBe(false); // deepfilter = model sees unprocessed signal
+    // AGC defaults off, honored when explicitly enabled
+    expect(byMode(2).autoGainControl).toBe(false);
+    expect(byMode(3).autoGainControl).toBe(true);
     // deviceId only appears when supplied (no undefined key)
     expect(byMode(1).deviceId).toEqual({ exact: "mic-2" });
     expect("deviceId" in byMode(0)).toBe(false);

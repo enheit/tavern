@@ -1,7 +1,9 @@
 import type { ChatMessage, Member } from "@tavern/shared";
 import { type ReactNode, useState } from "react";
 import { cn } from "@/lib/utils";
+import { m } from "@/paraglide/messages.js";
 import { getLocale } from "@/paraglide/runtime.js";
+import { chatImageViewUrl } from "./uploadChatImage";
 
 // One chat row (FR-14/15/17): a small avatar + displayName in the member's color, HH:mm time, and a
 // pre-wrapped body with `@mention` highlighting. A row with a negative (synthetic) id is a pending
@@ -11,6 +13,8 @@ interface MessageRowProps {
   member: Member | undefined;
   selfUserId: string | undefined;
   selfUsername: string | undefined;
+  // The active server — needed to build a pasted image's public capability URL (§ chat image paste).
+  serverId: string;
 }
 
 // Split on the mention token but KEEP it (capturing group) so odd indices are the `@handle` tokens.
@@ -78,7 +82,13 @@ function RowAvatar({ member }: { member: Member | undefined }) {
   );
 }
 
-export function MessageRow({ message, member, selfUserId, selfUsername }: MessageRowProps) {
+export function MessageRow({
+  message,
+  member,
+  selfUserId,
+  selfUsername,
+  serverId,
+}: MessageRowProps) {
   const pending = message.id < 0;
   const displayName = member?.displayName ?? message.userId;
   return (
@@ -119,6 +129,36 @@ export function MessageRow({ message, member, selfUserId, selfUsername }: Messag
             }}
             className="mt-1 block h-auto max-h-80 w-auto rounded-md bg-muted"
           />
+        ) : null}
+        {message.image ? (
+          // A pasted image (§ chat image paste). Clicking opens the full image in a NEW browser tab —
+          // the same public capability URL as the inline thumbnail, so it works in the web app and, in
+          // Electron, via setWindowOpenHandler → the OS default browser. Intrinsic w/h + a fixed
+          // aspect-ratio box reserve space so the row doesn't jump on load; `min(320px, 100%)` caps the
+          // on-screen size at 320px OR the column width, whichever is smaller (a wide image in a narrow
+          // column can never force the chat to scroll horizontally).
+          <a
+            href={chatImageViewUrl(serverId, message.image.id)}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="message-image-open"
+            aria-label={m.chat_image_open()}
+            className="mt-1 block w-fit"
+          >
+            <img
+              data-testid="message-image"
+              src={chatImageViewUrl(serverId, message.image.id)}
+              alt={m.chat_image_open()}
+              loading="lazy"
+              width={message.image.width}
+              height={message.image.height}
+              style={{
+                aspectRatio: `${message.image.width} / ${message.image.height}`,
+                maxWidth: "min(320px, 100%)",
+              }}
+              className="block h-auto max-h-80 w-auto rounded-md bg-muted"
+            />
+          </a>
         ) : null}
       </div>
     </li>

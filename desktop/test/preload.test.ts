@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { loopbackAudioDevice } from "@tavern/shared";
+import { captureSourceMode, loopbackAudioDevice } from "@tavern/shared";
 import type { TavernIpc } from "@tavern/shared";
 import { bridgeInstalled } from "../src/preload/index";
 import {
@@ -27,6 +27,7 @@ describe("IPC preload bridge (window.tavern)", () => {
     expect(Object.keys(api).toSorted()).toEqual(
       [
         "capture",
+        "captureSourceMode",
         "isE2E",
         "loopbackSelfAudioExcluded",
         "notifications",
@@ -52,6 +53,12 @@ describe("IPC preload bridge (window.tavern)", () => {
     expect(api.loopbackSelfAudioExcluded).toBe(
       loopbackAudioDevice(process.platform, "") === "loopbackWithoutChrome",
     );
+  });
+
+  it("captureSourceMode mirrors captureSourceMode() for this host env", () => {
+    // Deterministic per host: "portal" only on a real linux Wayland session; unit-test hosts
+    // (darwin dev, headless linux CI) read "grid".
+    expect(api.captureSourceMode).toBe(captureSourceMode(process.platform, process.env));
   });
 
   it("secrets.getToken invokes the channel and parses string|null", async () => {

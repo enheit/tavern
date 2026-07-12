@@ -21,6 +21,9 @@ export function migrate(sql: SqlStorage): void {
   // idempotent, so this runs only when the column is missing — brand-new DOs get it right after the
   // CREATE above; DOs that predate this migration (production) get it on their next construction.
   addColumnIfMissing(sql, "messages", "gif", "TEXT");
+  // Additive image-attachment column (nullable JSON of the shared `ImageAttachment`) — same additive
+  // migration shape as `gif`: NULL for text/gif-only rows and every row that predates this column.
+  addColumnIfMissing(sql, "messages", "image", "TEXT");
   sql.exec(
     `CREATE TABLE IF NOT EXISTS activity(id INTEGER PRIMARY KEY AUTOINCREMENT,
        type TEXT NOT NULL,

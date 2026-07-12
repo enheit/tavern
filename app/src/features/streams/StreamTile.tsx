@@ -4,8 +4,9 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Slider } from "@/components/ui/slider";
+import { useVolumeScroll } from "@/features/volume/useVolumeScroll";
 import { getVoiceController } from "@/features/voice/voiceController";
+import { focusStore } from "@/lib/focusState";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
@@ -110,6 +111,11 @@ function SelfTile({
   onToggleFullscreen: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // FR-29 preview pause: when the Tavern window loses focus/visibility the browser stops painting the
+  // local <video>, leaving a black tile. Rather than show black we cover it with a "still running" card
+  // (Discord-style). The video stays mounted (srcObject intact) so the live preview snaps back the
+  // instant the window is focused again — nothing is torn down, only the cover is toggled.
+  const focused = useStore(focusStore, (s) => s.focused);
   useEffect(() => {
     const el = videoRef.current;
     if (el) el.srcObject = selfStream;
@@ -129,6 +135,7 @@ function SelfTile({
         data-testid={`stream-self-${stream.trackName}`}
         className="h-full w-full object-contain"
       />
+      {!focused && <PreviewPausedCover stream={stream} />}
       <span
         data-testid={`stream-self-badge-${stream.trackName}`}
         className="absolute top-2 left-2 rounded bg-black/60 px-1.5 py-0.5 text-xs font-medium text-white"
@@ -142,6 +149,32 @@ function SelfTile({
           onToggle={onToggleFullscreen}
         />
       </TileOverlay>
+    </div>
+  );
+}
+
+// Discord-style "your stream is still running" cover shown over the local preview whenever the Tavern
+// window is unfocused/hidden (the browser stops painting the <video>, so it would otherwise be black).
+// A pulsing green dot signals the stream is live, and the kind icon (screen/webcam) grounds what's
+// being shared. High-contrast card so it reads as intentional rather than a broken black tile.
+function PreviewPausedCover({ stream }: { stream: StreamInfo }) {
+  const KindIcon = stream.kind === "screen" ? MonitorIcon : VideoIcon;
+  return (
+    <div
+      data-testid={`stream-self-paused-${stream.trackName}`}
+      className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-900 px-6 text-center"
+    >
+      <span className="relative flex size-14 items-center justify-center rounded-full bg-white/10 text-white/90">
+        <KindIcon className="size-6" />
+        <span className="absolute -top-0.5 -right-0.5 flex size-3">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex size-3 rounded-full bg-emerald-500" />
+        </span>
+      </span>
+      <div className="space-y-1">
+        <p className="text-sm font-medium text-white">{m.streams_preview_paused_title()}</p>
+        <p className="text-xs text-white/55">{m.streams_preview_paused_body()}</p>
+      </div>
     </div>
   );
 }
@@ -169,8 +202,9 @@ function TileOverlay({ fullscreen, children }: { fullscreen: boolean; children: 
 }
 
 // FR-30/31/33 remote canvas tile: a placeholder (Watch, FR-30) until the viewer opts in, then the live
-// video (letterboxed 16:9, muted — audio flows through the gain node) with an unwatch button and,
-// when the stream carries audio, an independent volume slider. A single left-click on a watched tile
+// video (letterboxed 16:9, muted — audio flows through the gain node) with an unwatch button. When the
+// stream carries audio, scrolling the tile boosts/cuts its local volume (FR-31, center-HUD feedback;
+// middle-click resets to 0) — the old per-tile slider is gone. A single left-click on a watched tile
 // escalates the layout (grid → main → fullscreen ↔ main; the Canvas decides, FR-33) — a pure layout
 // toggle: the pull is pinned to the high simulcast layer from the start, so focus/fullscreen never
 // changes quality. Overlay controls stop propagation.
@@ -189,8 +223,23 @@ function RemoteTile({
   const watching = state !== "idle";
   const streamKey = `${stream.userId}:${stream.kind}`;
 
+  // FR-31: scroll anywhere on a watched, audio-carrying tile to boost/cut ITS sound locally (0–200%),
+  // middle-click to silence. Replaces the old bottom-strip slider — the center HUD is the only readout.
+  const serverId = useServersStore((s) => s.activeServerId) ?? "";
+  const ownerName = useStore(roomStore(serverId), (s) => {
+    const mm = s.members.find((x) => x.userId === stream.userId);
+    return mm?.displayName ?? stream.userId.slice(0, 8);
+  });
+  const { ref } = useVolumeScroll<HTMLDivElement>({
+    enabled: watching && stream.hasAudio,
+    read: () => useSettingsStore.getState().volumes.streams[streamKey] ?? 1,
+    write: (gain) => setStreamVolume(streamKey, gain),
+    meta: () => ({ key: streamKey, label: ownerName }),
+  });
+
   return (
     <div
+      ref={ref}
       data-testid={`stream-tile-${stream.trackName}`}
       data-watching={watching}
       onClick={watching ? onToggleFocus : undefined}
@@ -202,7 +251,6 @@ function RemoteTile({
       {watching ? (
         <WatchingView
           stream={stream}
-          streamKey={streamKey}
           mediaStream={mediaStream}
           onUnwatch={unwatch}
           fullscreen={fullscreen}
@@ -217,14 +265,12 @@ function RemoteTile({
 
 function WatchingView({
   stream,
-  streamKey,
   mediaStream,
   onUnwatch,
   fullscreen,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
-  streamKey: string;
   mediaStream: MediaStream | null;
   onUnwatch: () => void;
   fullscreen: boolean;
@@ -263,30 +309,8 @@ function WatchingView({
             {m.streams_unwatch()}
           </Button>
         )}
-        {stream.hasAudio && <StreamVolume streamKey={streamKey} />}
       </TileOverlay>
     </>
-  );
-}
-
-function StreamVolume({ streamKey }: { streamKey: string }) {
-  const gain = useSettingsStore((s) => s.volumes.streams[streamKey] ?? 1);
-  const percent = Math.round(gain * 100);
-  return (
-    <div className="flex min-w-0 flex-1 items-center gap-2" title={m.streams_volume()}>
-      <Slider
-        value={[percent]}
-        min={0}
-        max={200}
-        step={5}
-        data-testid={`stream-volume-${streamKey}`}
-        onValueChange={(value) => {
-          const next = Array.isArray(value) ? (value[0] ?? 0) : value;
-          setStreamVolume(streamKey, next / 100);
-        }}
-      />
-      <span className="w-9 shrink-0 text-right text-xs text-white/80 tabular-nums">{percent}%</span>
-    </div>
   );
 }
 

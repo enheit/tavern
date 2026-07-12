@@ -133,9 +133,78 @@ export const desktopCapturer = {
   getSources: vi.fn((_opts: unknown) => Promise.resolve<FakeSource[]>(state.sources)),
 };
 
+// venmic.ts imports this; its tests inject a fake host via deps.fork, so the real fork must never
+// be reached — throwing keeps an accidental reach loud instead of silently undefined.
+export const utilityProcess = {
+  fork: vi.fn(() => {
+    throw new Error("mock utilityProcess.fork not configured");
+  }),
+};
+
 export const shell = {
   openExternal: vi.fn((_url: string) => Promise.resolve()),
 };
+
+// ---- tray ---------------------------------------------------------------------------------------
+export type MenuItemTemplate = {
+  label?: string;
+  type?: string;
+  click?: () => void;
+};
+
+export type FakeNativeImage = {
+  dataUrl: string;
+  template: boolean;
+  resize: (options: unknown) => FakeNativeImage;
+  setTemplateImage: (value: boolean) => void;
+};
+
+export const nativeImage = {
+  createFromDataURL: vi.fn((dataUrl: string): FakeNativeImage => {
+    const image: FakeNativeImage = {
+      dataUrl,
+      template: false,
+      resize: vi.fn(() => image),
+      setTemplateImage: vi.fn((value: boolean) => {
+        image.template = value;
+      }),
+    };
+    return image;
+  }),
+};
+
+export const Menu = {
+  buildFromTemplate: vi.fn((template: MenuItemTemplate[]) => ({ template })),
+};
+
+export class Tray {
+  static instances: Tray[] = [];
+  readonly image: unknown;
+  toolTip: string | null = null;
+  contextMenu: { template: MenuItemTemplate[] } | null = null;
+  readonly handlers = new Map<string, () => void>();
+  setToolTip = vi.fn((tip: string) => {
+    this.toolTip = tip;
+  });
+  setContextMenu = vi.fn((menu: { template: MenuItemTemplate[] }) => {
+    this.contextMenu = menu;
+  });
+  destroy = vi.fn();
+
+  constructor(image: unknown) {
+    this.image = image;
+    Tray.instances.push(this);
+  }
+
+  on(event: string, listener: () => void): this {
+    this.handlers.set(event, listener);
+    return this;
+  }
+
+  emit(event: string): void {
+    this.handlers.get(event)?.();
+  }
+}
 
 export const systemPreferences = {
   getMediaAccessStatus: vi.fn((_mediaType: string) => state.mediaAccessStatus),
@@ -195,7 +264,14 @@ export class BrowserWindow {
   readonly webContents = new FakeWebContents();
   private readonly handlers = new Map<string, (...args: unknown[]) => void>();
   minimized = false;
-  show = vi.fn();
+  visible = true;
+  show = vi.fn(() => {
+    this.visible = true;
+  });
+  hide = vi.fn(() => {
+    this.visible = false;
+  });
+  isVisible = vi.fn(() => this.visible);
   focus = vi.fn();
   restore = vi.fn(() => {
     this.minimized = false;
@@ -233,6 +309,7 @@ export function resetElectronMock(): void {
   Notification.isSupported.mockReset();
   Notification.isSupported.mockReturnValue(true);
   BrowserWindow.instances.length = 0;
+  Tray.instances.length = 0;
   state.userDataDir = "/tmp/tavern-mock";
   state.appPath = "/tmp/tavern-app";
   state.version = "1.0.0";

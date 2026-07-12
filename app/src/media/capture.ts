@@ -3,7 +3,7 @@ import type { ShareSelection } from "@/features/streams/types";
 // captureScreen takes only a ShareSelection (S8.1), so it reads the platform singleton directly.
 import { platform as platformBridge } from "@/platform/types";
 import type { NoiseSuppressionMode } from "@/stores/settings";
-import { useSettingsStore } from "@/stores/settings";
+import { DEEPFILTER_ATTEN_DEFAULT, useSettingsStore } from "@/stores/settings";
 import { applyNoiseWorklet } from "./noiseWorklet";
 
 // Capture acquisition (PLAN §7.2). This module + ports.ts are the only app files permitted to call
@@ -12,8 +12,13 @@ import { applyNoiseWorklet } from "./noiseWorklet";
 interface MicOpts {
   deviceId?: string;
   noiseSuppression: NoiseSuppressionMode;
-  // Shared app AudioContext (§7.3) hosting the WASM worklet modes. When absent (unit tests, graph
-  // not initialized) the worklet modes degrade to raw capture — never a second AudioContext here.
+  // DeepFilterNet3 attenuation limit (dB, 0..100); undefined = DEEPFILTER_ATTEN_DEFAULT. Only read
+  // when noiseSuppression === "deepfilter".
+  deepfilterAtten?: number;
+  // getUserMedia AGC constraint (applies to every mode); undefined = off (see the matrix comment).
+  autoGainControl?: boolean;
+  // Shared app AudioContext (§7.3) hosting the WASM worklet model. When absent (unit tests, graph
+  // not initialized) deepfilter degrades to raw capture — never a second AudioContext here.
   audioContext?: AudioContext;
 }
 
@@ -30,13 +35,14 @@ function firstVideoTrack(stream: MediaStream): MediaStreamTrack {
 }
 
 // FR-22 voice capture matrix (Task-2 quality stack): echoCancellation is ALWAYS on (off + speakers
-// = feedback); "standard" drives Chromium's noiseSuppression; the WASM modes ("rnnoise"/
-// "deepfilter") turn browser NS OFF so the model sees the unprocessed signal (double suppression =
-// artifacts). autoGainControl is OFF for EVERY mode: Chromium's AGC pumps speech levels and drags
-// quiet-room gain up between words (the FR-28 monitor probe even measured it dragging a device
-// volume down persistently) — a fixed input level with the suppressor's own leveling sounds
-// closer to Discord. Capture is 48 kHz mono for all modes: Opus encodes voice mono at 48 kHz and
-// the worklet models are mono 48 kHz — stereo/44.1k capture just costs a resample+downmix.
+// = feedback — the one setting we don't expose); "standard" drives Chromium's noiseSuppression; the
+// WASM "deepfilter" mode turns browser NS OFF so the model sees the unprocessed signal (double
+// suppression = artifacts). autoGainControl DEFAULTS off but is user-toggleable (Voice settings):
+// Chromium's AGC pumps speech levels and drags quiet-room gain up between words (the FR-28 monitor
+// probe even measured it dragging a device volume down persistently) — a fixed input level with
+// the suppressor's own leveling sounds closer to Discord, but some quiet mics benefit from it, so
+// it's a knob. Capture is 48 kHz mono for all modes: Opus encodes voice mono at 48 kHz and the
+// worklet model is mono 48 kHz — stereo/44.1k capture just costs a resample+downmix.
 // §10 e2e seam: the harness's fake mic is a STEADY 440 Hz sine (tone WAV), and Chromium's audio
 // processing treats a stationary tone as noise — NS/AEC adapt it to near-silence within seconds
 // (measured: RMS 0.36 raw → 0.04 at 3 s and falling), which zeroes the remote audioLevel the
@@ -53,7 +59,7 @@ function micConstraints(opts: MicOpts): MediaTrackConstraints {
   return {
     echoCancellation: true,
     noiseSuppression: opts.noiseSuppression === "standard",
-    autoGainControl: false,
+    autoGainControl: opts.autoGainControl ?? false,
     channelCount: { ideal: 1 },
     sampleRate: { ideal: 48000 },
     ...(opts.deviceId ? { deviceId: { exact: opts.deviceId } } : {}),
@@ -65,8 +71,8 @@ export async function getMic(opts: MicOpts): Promise<MediaStreamTrack> {
   const raw = firstAudioTrack(stream);
   // §10: the worklet pipeline never runs under the e2e harness — the sine seam must stay raw.
   if (platformBridge.isE2E || !opts.audioContext) return raw;
-  if (opts.noiseSuppression !== "rnnoise" && opts.noiseSuppression !== "deepfilter") return raw;
-  return applyNoiseWorklet(opts.audioContext, raw, opts.noiseSuppression);
+  if (opts.noiseSuppression !== "deepfilter") return raw;
+  return applyNoiseWorklet(opts.audioContext, raw, opts.deepfilterAtten ?? DEEPFILTER_ATTEN_DEFAULT);
 }
 
 // FR-22 retoggle: applyConstraints is a Chromium WontFix no-op for these (crbug 327472528), so

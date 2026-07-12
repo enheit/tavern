@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { BasePresetId, PresetId, ScreenAccessStatus, ScreenSource } from "@tavern/shared";
-import { BASE_PRESET_IDS, DEFAULT_SCREEN_PRESET, PRESET_IDS } from "@tavern/shared";
+import { BASE_PRESET_IDS, DEFAULT_SCREEN_PRESET, PORTAL_SOURCE_ID, PRESET_IDS } from "@tavern/shared";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -54,11 +54,14 @@ interface SharePickerDialogProps {
 
 // FR-28 source/quality/audio picker. Desktop: Screens/Windows tabs of enumerated sources + preset +
 // a Share-audio switch — enabled where the OS loopback device exists (win/mac) AND on Linux, where
-// audio rides the pactl remap-source + AEC fallback instead (media/capture.ts) — the S8.1
-// "hidden on Linux" pin is revised by that fallback. Web: preset + an audio hint only — the
-// browser's native picker chooses the source and audio.
+// audio rides venmic / the pactl remap-source + AEC fallback instead (media/capture.ts) — the S8.1
+// "hidden on Linux" pin is revised by that fallback. Desktop Wayland ("portal" sourceMode): no
+// grid — enumeration ids die with each portal session, so the OS ScreenCast dialog (opened by the
+// display-media handler at capture time) is the picker; this dialog only sets quality + audio.
+// Web: preset + an audio hint only — the browser's native picker chooses the source and audio.
 export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDialogProps) {
   const isDesktop = platform.kind === "desktop";
+  const portalPicker = isDesktop && platform.capture.sourceMode === "portal";
   const audioSwitchVisible = isDesktop;
   const [sources, setSources] = useState<ScreenSource[]>([]);
   const [sourceId, setSourceId] = useState<string | null>(null);
@@ -71,22 +74,34 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
   useEffect(() => {
     if (!open || !isDesktop) return;
     let cancelled = false;
-    // On macOS the getSources call below is also what registers Tavern in the Screen Recording
-    // privacy list (and triggers the one-time system prompt on 15+) — keep it before the status
-    // read so a fresh install lands in System Settings with the row already present.
-    void platform.capture.getScreenSources().then((list) => {
-      if (!cancelled) setSources(list);
-    });
-    void platform.capture.screenAccessStatus().then((status) => {
-      if (!cancelled) setAccessStatus(status);
-    });
+    if (!portalPicker) {
+      // On macOS the getSources call below is also what registers Tavern in the Screen Recording
+      // privacy list (and triggers the one-time system prompt on 15+) — keep it before the status
+      // read so a fresh install lands in System Settings with the row already present.
+      // Portal mode NEVER enumerates here: on Wayland every getSources opens an OS portal dialog,
+      // and its session (with the ids) would be dead by capture time anyway.
+      void platform.capture.getScreenSources().then((list) => {
+        if (!cancelled) setSources(list);
+      });
+      void platform.capture.screenAccessStatus().then((status) => {
+        if (!cancelled) setAccessStatus(status);
+      });
+    }
     void platform.capture.loopbackAudioSupported().then((ok) => {
       if (!cancelled) setLoopbackSupported(ok);
     });
     return () => {
       cancelled = true;
     };
-  }, [open, isDesktop]);
+  }, [open, isDesktop, portalPicker]);
+
+  useEffect(() => {
+    // Portal mode has no grid pick — arm the handler with the sentinel so Start is enabled and the
+    // main process accepts the display-media request when it arrives.
+    if (!open || !portalPicker) return;
+    setSourceId(PORTAL_SOURCE_ID);
+    void platform.capture.selectSource(PORTAL_SOURCE_ID);
+  }, [open, portalPicker]);
 
   const pickSource = (id: string): void => {
     setSourceId(id);
@@ -108,9 +123,11 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
         <DialogHeader>
           <DialogTitle>{m.streams_share_title()}</DialogTitle>
           {!isDesktop && <DialogDescription>{m.streams_share_web_hint()}</DialogDescription>}
+          {portalPicker && <DialogDescription>{m.streams_share_portal_hint()}</DialogDescription>}
         </DialogHeader>
         <div className="flex flex-col gap-4">
           {isDesktop &&
+            !portalPicker &&
             accessStatus !== "granted" && (
               // macOS denies the whole source list without the Screen Recording permission — the
               // tabs would both be empty grids, so route to System Settings instead.
@@ -129,7 +146,7 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
                 </Button>
               </div>
             )}
-          {isDesktop && accessStatus === "granted" && (
+          {isDesktop && !portalPicker && accessStatus === "granted" && (
             <Tabs defaultValue="screens">
               <TabsList>
                 <TabsTrigger value="screens" data-testid="share-tab-screens">

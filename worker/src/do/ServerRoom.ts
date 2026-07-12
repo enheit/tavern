@@ -598,6 +598,7 @@ export class ServerRoom extends DurableObject<Env> {
       members: this.room.listMembers(),
       now: Date.now(),
       ...(msg.gif === undefined ? {} : { gif: msg.gif }),
+      ...(msg.image === undefined ? {} : { image: msg.image }),
     });
     if (!result.ok) {
       // rate_limited (and the defense-in-depth bad_message) reply on this socket only; it stays open.

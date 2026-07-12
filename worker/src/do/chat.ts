@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ChatMessage, GifAttachment, LIMITS } from "@tavern/shared";
+import { ChatMessage, GifAttachment, ImageAttachment, LIMITS } from "@tavern/shared";
 import type { Member } from "@tavern/shared";
 
 // Server-side mention scan (pinned regex, §S3.2 task 4). `g` is required for matchAll; `i` makes the
@@ -31,14 +31,15 @@ export class ChatModule {
     members: Member[];
     now: number;
     gif?: GifAttachment;
+    image?: ImageAttachment;
   }): { ok: true; message: ChatMessage } | { ok: false; code: "bad_message" | "rate_limited" } {
     // Trust-boundary re-check of what the client schema already enforces (defense-in-depth: a direct
     // call that bypassed `clientMessageSchema` still cannot persist). Body may be empty ONLY when a
-    // gif accompanies it; either way an over-length body is rejected.
+    // gif or image accompanies it; either way an over-length body is rejected.
     if (input.body.length > LIMITS.messageMaxChars) {
       return { ok: false, code: "bad_message" };
     }
-    if (input.body.length < 1 && input.gif === undefined) {
+    if (input.body.length < 1 && input.gif === undefined && input.image === undefined) {
       return { ok: false, code: "bad_message" };
     }
     if (!this.consumeToken(input.userId, input.now)) {
@@ -47,12 +48,13 @@ export class ChatModule {
     const mentions = extractMentions(input.body, input.members);
     const row = this.sql
       .exec<Record<string, SqlStorageValue>>(
-        `INSERT INTO messages (channel_id, user_id, body, mentions, gif, created_at)
-         VALUES ('main', ?, ?, ?, ?, ?) RETURNING id`,
+        `INSERT INTO messages (channel_id, user_id, body, mentions, gif, image, created_at)
+         VALUES ('main', ?, ?, ?, ?, ?, ?) RETURNING id`,
         input.userId,
         input.body,
         JSON.stringify(mentions),
         input.gif === undefined ? null : JSON.stringify(input.gif),
+        input.image === undefined ? null : JSON.stringify(input.image),
         input.now,
       )
       .one();
@@ -63,6 +65,7 @@ export class ChatModule {
       mentions,
       at: input.now,
       ...(input.gif === undefined ? {} : { gif: input.gif }),
+      ...(input.image === undefined ? {} : { image: input.image }),
     };
     return { ok: true, message };
   }
@@ -80,14 +83,14 @@ export class ChatModule {
       input.beforeId === undefined
         ? this.sql
             .exec<Record<string, SqlStorageValue>>(
-              `SELECT id, user_id, body, mentions, gif, created_at FROM messages
+              `SELECT id, user_id, body, mentions, gif, image, created_at FROM messages
                ORDER BY id DESC LIMIT ?`,
               window,
             )
             .toArray()
         : this.sql
             .exec<Record<string, SqlStorageValue>>(
-              `SELECT id, user_id, body, mentions, gif, created_at FROM messages
+              `SELECT id, user_id, body, mentions, gif, image, created_at FROM messages
                WHERE id < ? ORDER BY id DESC LIMIT ?`,
               input.beforeId,
               window,
@@ -175,6 +178,12 @@ function rowToChatMessage(row: Record<string, SqlStorageValue>): ChatMessage {
     gifRaw === null || gifRaw === undefined
       ? undefined
       : GifAttachment.parse(JSON.parse(String(gifRaw)));
+  // Same nullable-JSON read-back trust boundary as `gif` (NULL for text/gif-only + pre-migration rows).
+  const imageRaw = row["image"];
+  const image =
+    imageRaw === null || imageRaw === undefined
+      ? undefined
+      : ImageAttachment.parse(JSON.parse(String(imageRaw)));
   return ChatMessage.parse({
     id: Number(row["id"]),
     userId: String(row["user_id"]),
@@ -182,5 +191,6 @@ function rowToChatMessage(row: Record<string, SqlStorageValue>): ChatMessage {
     mentions,
     at: Number(row["created_at"]),
     ...(gif === undefined ? {} : { gif }),
+    ...(image === undefined ? {} : { image }),
   });
 }

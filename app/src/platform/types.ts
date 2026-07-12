@@ -1,4 +1,4 @@
-import type { ScreenAccessStatus, ScreenSource } from "@tavern/shared";
+import type { CaptureSourceMode, ScreenAccessStatus, ScreenSource } from "@tavern/shared";
 import { createElectronPlatform, desktopIpc } from "./electron";
 import { createWebPlatform } from "./web";
 
@@ -14,6 +14,10 @@ export interface PlatformBridge {
   os: "win32" | "darwin" | "linux" | "web";
   secrets: { getToken(): Promise<string | null>; setToken(t: string | null): Promise<void> };
   capture: {
+    // "portal" on desktop Wayland: enumeration ids die with each portal session, so the share
+    // picker skips the thumbnail grid and the OS ScreenCast dialog (opened by the display-media
+    // handler's single getSources) is the picker. "grid" everywhere else. Static per boot.
+    sourceMode: CaptureSourceMode;
     getScreenSources(): Promise<ScreenSource[]>;
     selectSource(id: string | null): Promise<void>;
     loopbackAudioSupported(): Promise<boolean>;

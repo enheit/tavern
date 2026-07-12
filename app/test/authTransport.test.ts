@@ -13,6 +13,7 @@ function makeBridge(
     os: kind === "web" ? "web" : "darwin",
     secrets,
     capture: {
+      sourceMode: "grid" as const,
       getScreenSources: async () => [],
       selectSource: async () => undefined,
       loopbackAudioSupported: async () => false,

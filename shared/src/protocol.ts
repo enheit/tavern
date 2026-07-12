@@ -11,6 +11,7 @@ import {
   CostStatus,
   ChatMessage,
   GifAttachment,
+  ImageAttachment,
   ActivityEntry,
   Presence,
 } from "./domain";
@@ -21,11 +22,13 @@ const trackName = z.string().min(1).max(128);
 const hello = z.object({ t: z.literal("hello"), proto: z.literal(1) });
 const chatSend = z.object({
   t: z.literal("chat.send"),
-  // Empty body is valid only when a `gif` accompanies it (a pure-GIF send). The DO enforces the
-  // "body non-empty OR gif present" invariant; a discriminatedUnion member cannot carry a `.refine`.
+  // Empty body is valid only when a `gif` or `image` accompanies it (a pure-attachment send). The DO
+  // enforces the "body non-empty OR gif OR image present" invariant; a discriminatedUnion member
+  // cannot carry a `.refine`.
   body: z.string().max(LIMITS.messageMaxChars),
   nonce: z.uuid(),
   gif: GifAttachment.optional(),
+  image: ImageAttachment.optional(),
 });
 const chatHistory = z.object({
   t: z.literal("chat.history"),

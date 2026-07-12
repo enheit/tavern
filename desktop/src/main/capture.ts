@@ -2,7 +2,12 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import { desktopCapturer, session, shell, systemPreferences } from "electron";
 import type { DesktopCapturerSource, Session } from "electron";
-import { ScreenSourceSchema, loopbackAudioDevice, screenAccessStatusSchema } from "@tavern/shared";
+import {
+  ScreenSourceSchema,
+  captureSourceMode,
+  loopbackAudioDevice,
+  screenAccessStatusSchema,
+} from "@tavern/shared";
 import type { LoopbackDevice, ScreenAccessStatus, ScreenSource } from "@tavern/shared";
 import { prepareVenmic, releaseVenmic } from "./venmic";
 
@@ -58,37 +63,59 @@ export async function getScreenSources(): Promise<ScreenSource[]> {
 
 type DisplayMediaStreams = { video?: DesktopCapturerSource; audio?: LoopbackDevice };
 
-// Resolves the armed desktopCapturer source with per-OS loopback audio (FR-28), then disarms.
-// Unarmed / stale request → empty streams object (denial).
+// Denial contract (electron_browser_context.cc DisplayMediaDeviceChosen): callback(null) is the
+// ONLY clean rejection — the renderer's getDisplayMedia rejects and nothing throws. callback({})
+// throws "Video was requested, but no video stream was provided" in the MAIN process (observed on
+// 0.5.0 Wayland as an UnhandledPromiseRejectionWarning per share attempt).
+type DisplayMediaCallback = (streams: DisplayMediaStreams | null) => void;
+
+// Resolves the armed source with per-OS loopback audio (FR-28), then disarms. Unarmed / stale
+// request → callback(null) (denial). Never throws: a rejected getSources (portal cancelled or
+// broken — electron#47980) must still answer the callback or the renderer hangs forever.
 export async function handleDisplayMediaRequest(
-  callback: (streams: DisplayMediaStreams) => void,
+  callback: DisplayMediaCallback,
+  platform: NodeJS.Platform = process.platform,
+  env: Record<string, string | undefined> = process.env,
 ): Promise<void> {
   const targetId = armedSourceId;
-  if (targetId === null) {
-    callback({});
-    return;
-  }
-  const sources = await desktopCapturer.getSources({ types: ["screen", "window"] });
-  const source = sources.find((candidate) => candidate.id === targetId);
   armedSourceId = null;
-  if (source === undefined) {
-    callback({});
+  if (targetId === null) {
+    callback(null);
     return;
   }
-  const audio = loopbackAudioDevice(process.platform, os.release());
-  if (audio !== null) {
-    callback({ video: source, audio });
-  } else {
-    callback({ video: source });
+  try {
+    // Wayland: this getSources call IS the picker — it opens the OS portal dialog and resolves
+    // with exactly the one source the user approved there (grid ids from any earlier enumeration
+    // are already dead, so matching by id would always deny). X11/win/mac: ids are stable — find
+    // the grid pick. thumbnailSize 0×0 skips thumbnail capture either way (only ids are needed).
+    const portal = captureSourceMode(platform, env) === "portal";
+    const sources = await desktopCapturer.getSources({
+      types: ["screen", "window"],
+      thumbnailSize: { width: 0, height: 0 },
+    });
+    const source = portal ? sources[0] : sources.find((candidate) => candidate.id === targetId);
+    if (source === undefined) {
+      callback(null);
+      return;
+    }
+    const audio = loopbackAudioDevice(process.platform, os.release());
+    if (audio !== null) {
+      callback({ video: source, audio });
+    } else {
+      callback({ video: source });
+    }
+  } catch (err) {
+    console.warn("[capture] display-media request failed — denying", err);
+    callback(null);
   }
 }
 
 export function setupDisplayMediaHandler(target: Session = session.defaultSession): void {
   target.setDisplayMediaRequestHandler((_request, callback) => {
-    // Electron's d.ts narrows audio to 'loopback'|'loopbackWithMute', but the implementation
-    // forwards any string as the Chromium input-device id (electron_browser_context.cc), which is
-    // what lets "loopbackWithoutChrome" through. Widen at this one Electron boundary only.
-    void handleDisplayMediaRequest(callback as (streams: DisplayMediaStreams) => void);
+    // Electron's d.ts narrows audio to 'loopback'|'loopbackWithMute' and the callback to non-null,
+    // but the implementation forwards any audio string as the Chromium input-device id and treats
+    // null as the documented denial (electron_browser_context.cc). Widen at this one boundary only.
+    void handleDisplayMediaRequest(callback as DisplayMediaCallback);
   });
 }
 

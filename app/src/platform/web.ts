@@ -30,6 +30,9 @@ export function createWebPlatform(): PlatformBridge {
       },
     },
     capture: {
+      // The web picker never renders a grid regardless (the browser's own dialog picks), so the
+      // desktop-only portal/grid distinction stays at its "grid" default here.
+      sourceMode: "grid",
       // Screen capture on the web goes through the browser's native getDisplayMedia picker, so
       // there is no enumerable source list and no source to pre-select.
       getScreenSources: async () => [],

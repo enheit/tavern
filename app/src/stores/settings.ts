@@ -12,21 +12,34 @@ export const VOLUMES_STORAGE_KEY = "settings.volumes.v1";
 // is validated structurally on read (§9.8 boundary parse without adding a shared/ schema).
 export const DEVICE_SETTINGS_KEY = "tavern.settings.v1";
 
-// FR-22 noise-suppression mode: "standard" = Chromium's built-in NS+AGC constraints; "rnnoise" /
-// "deepfilter" = WASM AudioWorklet models applied after capture (browser NS off so the model sees
-// the raw signal); "off" = no suppression at all. AEC is always on regardless of mode.
-export const NOISE_SUPPRESSION_MODES = ["off", "standard", "rnnoise", "deepfilter"] as const;
+// FR-22 noise-suppression mode: "standard" = Chromium's built-in NS+AGC constraints; "deepfilter" =
+// the DeepFilterNet3 WASM AudioWorklet model applied after capture, on-device (browser NS off so
+// the model sees the raw signal); "off" = no suppression at all. AEC is always on regardless of
+// mode. RNNoise was dropped — DeepFilterNet3 is the single AI model, tunable via `deepfilterAtten`.
+export const NOISE_SUPPRESSION_MODES = ["off", "standard", "deepfilter"] as const;
 export type NoiseSuppressionMode = (typeof NOISE_SUPPRESSION_MODES)[number];
 
 export function isNoiseSuppressionMode(value: unknown): value is NoiseSuppressionMode {
   return (NOISE_SUPPRESSION_MODES as readonly unknown[]).includes(value);
 }
 
+// DeepFilterNet3 attenuation limit (dB), the model's one runtime knob — the max it may attenuate
+// anything it classifies as noise. Higher = cleaner but clips quiet speech; lower = gentler. The
+// package default is 50; we default lower so soft word-onsets survive (the "cutting out" fix).
+export const DEEPFILTER_ATTEN_MIN = 0;
+export const DEEPFILTER_ATTEN_MAX = 100;
+export const DEEPFILTER_ATTEN_DEFAULT = 30;
+
+function clampAtten(value: number): number {
+  if (!Number.isFinite(value)) return DEEPFILTER_ATTEN_DEFAULT;
+  return Math.max(DEEPFILTER_ATTEN_MIN, Math.min(DEEPFILTER_ATTEN_MAX, Math.round(value)));
+}
+
 // Pre-enum records persisted a boolean (the FR-22 on/off switch) — map it onto the enum. Since
-// Task-2 the canonical "suppression on" is DeepFilterNet3 (deepfilter): legacy `true`, absent, and
-// invalid values all land there; an explicit stored mode is always kept. deepfilter degrades to
-// rnnoise → raw at RUNTIME when its assets fail to load (noiseWorklet fallback chain) — the
-// setting itself never silently rewrites.
+// Task-2 the canonical "suppression on" is DeepFilterNet3 (deepfilter): legacy `true`, absent,
+// invalid, and the retired "rnnoise" value all land there; an explicit stored mode is always kept.
+// deepfilter degrades to the raw mic at RUNTIME when its assets fail to load (noiseWorklet fallback)
+// — the setting itself never silently rewrites.
 function parseNoiseSuppression(value: unknown): NoiseSuppressionMode {
   if (isNoiseSuppressionMode(value)) return value;
   if (value === false) return "off";
@@ -39,6 +52,13 @@ export interface DeviceSettingsV1 {
   // FR-29 selected webcam (videoinput deviceId); undefined = the browser default camera.
   cameraDeviceId?: string;
   noiseSuppression: NoiseSuppressionMode;
+  // DeepFilterNet3 tunables, surfaced live in Voice settings so users can dial in what sounds best.
+  // `deepfilterAtten` = the model's attenuation limit (dB, 0..100); undefined = DEEPFILTER_ATTEN_DEFAULT.
+  // `autoGainControl` = the getUserMedia AGC constraint (applies to every mode); undefined = false
+  // (Chromium's AGC pumps quiet-room gain between words — see media/capture.ts). Both only matter
+  // for capture, so a stale value on a non-deepfilter mode is harmless.
+  deepfilterAtten?: number;
+  autoGainControl?: boolean;
   // FR-28 system-audio fallback source, used when a screen share resolves with no audio track of
   // its own (web/Linux — the browser offers audio for tab shares only there). "auto" (= undefined)
   // picks the first monitor-labeled input (PulseAudio/PipeWire "Monitor of …"); "off" disables the
@@ -65,6 +85,8 @@ export function loadDeviceSettings(): DeviceSettingsV1 {
     if (typeof rec.sinkId === "string") next.sinkId = rec.sinkId;
     if (typeof rec.cameraDeviceId === "string") next.cameraDeviceId = rec.cameraDeviceId;
     if (typeof rec.streamAudio === "string") next.streamAudio = rec.streamAudio;
+    if (typeof rec.deepfilterAtten === "number") next.deepfilterAtten = clampAtten(rec.deepfilterAtten);
+    if (typeof rec.autoGainControl === "boolean") next.autoGainControl = rec.autoGainControl;
     return next;
   } catch {
     // localStorage unavailable or corrupt — fall back to defaults.

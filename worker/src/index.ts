@@ -11,6 +11,8 @@ import { soundsRoute } from "./routes/sounds";
 import { recordingsRoute } from "./routes/recordings";
 import { screenshotsRoute } from "./routes/screenshots";
 import { screenshotViewRoute } from "./routes/screenshotView";
+import { chatImagesRoute } from "./routes/chatImages";
+import { chatImageViewRoute } from "./routes/chatImageView";
 import { wsTicketRoute } from "./routes/wsTicket";
 import { rtcRoute } from "./routes/rtc";
 import { gifsRoute } from "./routes/gifs";
@@ -78,6 +80,14 @@ app.route("/api/servers", screenshotsRoute);
 // PUBLIC screenshot image bytes (capability URL keyed by two UUIDs) — no auth so the still opens in a
 // plain browser tab (web) or the OS browser (Electron). Distinct from /api/servers/:id/screenshots.
 app.route("/api/screenshots", screenshotViewRoute);
+
+// Chat image paste (§ chat image paste): member-gated upload of a pasted image to R2. requireMember is
+// applied inside the router; its path (`/:id/chat-images`) doesn't overlap the other /api/servers routers.
+app.route("/api/servers", chatImagesRoute);
+
+// PUBLIC chat image bytes (capability URL keyed by two UUIDs) — same no-auth new-tab model as the
+// screenshot view route. Distinct from /api/servers/:id/chat-images.
+app.route("/api/chat-images", chatImageViewRoute);
 
 // RTC proxy to the Cloudflare Realtime SFU (S7.1, A3): session/tracks/renegotiate/close + ICE creds.
 // Membership + the rtc rate limit are applied inside the router; the DO enforces §8 caps.

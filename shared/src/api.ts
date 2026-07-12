@@ -153,6 +153,24 @@ export type GifSearchResponse = z.infer<typeof GifSearchResponse>;
 export const CreateScreenshotResponse = z.object({ screenshot: Screenshot });
 export type CreateScreenshotResponse = z.infer<typeof CreateScreenshotResponse>;
 
+// POST /api/servers/:id/chat-images (§ chat image paste): the Worker streams the pasted webp to R2 and
+// returns the freshly-minted image id. The client then sends `chat.send` with an `ImageAttachment`
+// carrying this id; the message renderer builds the public capability URL from it.
+export const CreateChatImageResponse = z.object({ id: z.uuid() });
+export type CreateChatImageResponse = z.infer<typeof CreateChatImageResponse>;
+
+// POST /api/servers/:id/chat-images/from-url (§ chat image paste, drag-from-web path): the client drops
+// an image that only carried a URL (a cross-app browser drag that delivered no file bytes). Rather than
+// have the BROWSER fetch it (cross-origin → CORS/hotlink), the WORKER fetches the bytes server-side and
+// stores them in R2, returning the id. `width`/`height` are measured client-side by loading the URL in
+// an `<img>` (a CORS-exempt image load) so the attachment still gets an aspect-ratio box.
+export const ChatImageFromUrlRequest = z.object({
+  url: z.url().max(2048),
+  width: z.number().int().positive().max(8192),
+  height: z.number().int().positive().max(8192),
+});
+export type ChatImageFromUrlRequest = z.infer<typeof ChatImageFromUrlRequest>;
+
 export const OpenRecordingResponse = z.object({ recordingId: z.uuid(), uploadId: z.string() });
 export type OpenRecordingResponse = z.infer<typeof OpenRecordingResponse>;
 

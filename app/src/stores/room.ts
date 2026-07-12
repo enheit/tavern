@@ -3,6 +3,7 @@ import type {
   ChatMessage,
   CostStatus,
   GifAttachment,
+  ImageAttachment,
   Member,
   RecordingState,
   ServerMessage,
@@ -72,7 +73,7 @@ export interface RoomState {
   setStatus: (text: string) => void;
   // FR-14: trim + length-guard, append a pending row, and fire `chat.send { body, nonce }`. An
   // optional `gif` (§ GIF picker) rides along; with a gif the body may be empty (a pure-GIF send).
-  sendMessage: (body: string, gif?: GifAttachment) => void;
+  sendMessage: (body: string, gif?: GifAttachment, image?: ImageAttachment) => void;
   // FR-17: request the previous history page (`chat.history { beforeId, limit }`).
   loadOlder: () => Promise<void>;
   // FR-33: set (or clear with null) the focused tile. Enforces exactly-one by holding a single value.
@@ -250,11 +251,12 @@ export function createRoomStore(serverId: string) {
         // WS not open — the set is dropped; the field reverts to the last broadcast value on reopen.
       }
     },
-    sendMessage: (body, gif) => {
+    sendMessage: (body, gif, image) => {
       const trimmed = body.trim();
       if (trimmed.length > LIMITS.messageMaxChars) return;
-      // Empty body is only sendable when a gif rides along (a pure-GIF message); otherwise no-op.
-      if (trimmed.length < 1 && gif === undefined) return;
+      // Empty body is only sendable when a gif or image rides along (a pure-attachment message);
+      // otherwise no-op.
+      if (trimmed.length < 1 && gif === undefined && image === undefined) return;
       const nonce = crypto.randomUUID();
       syntheticSeq -= 1;
       const tempId = syntheticSeq;
@@ -267,6 +269,7 @@ export function createRoomStore(serverId: string) {
         mentions: [],
         at: Date.now(),
         ...(gif === undefined ? {} : { gif }),
+        ...(image === undefined ? {} : { image }),
       };
       set((state) => {
         const pending = new Set(state.pendingNonces);
@@ -279,6 +282,7 @@ export function createRoomStore(serverId: string) {
           body: trimmed,
           nonce,
           ...(gif === undefined ? {} : { gif }),
+          ...(image === undefined ? {} : { image }),
         });
       } catch {
         // WS not open — the optimistic row stays; a reconnect resnapshot (hello.ok) clears it.

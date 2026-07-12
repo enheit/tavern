@@ -38,6 +38,33 @@ export function loopbackAudioDevice(platform: string, osVersion: string): Loopba
   }
 }
 
+// How the desktop share picker obtains its video source (FR-28 Wayland fix).
+//  - "grid": desktopCapturer enumeration is stable (X11/win/mac) — Tavern shows its own
+//    thumbnail grid and the display-media handler re-finds the picked source by id.
+//  - "portal": Wayland. Chromium routes ALL capture through the xdg-desktop-portal ScreenCast
+//    dialog; every desktopCapturer.getSources() call opens a NEW portal session whose source ids
+//    invalidate the previous ones, so grid-then-re-enumerate can never hand Chromium a live id
+//    (observed on 0.5.0: main-process "Video was requested, but no video stream was provided" +
+//    "ScreenCastPortal failed: 3"). In portal mode the OS dialog IS the picker: the renderer
+//    shows no grid and the handler enumerates exactly once at getDisplayMedia time.
+// Detection mirrors WebRTC's DesktopCapturer::IsRunningUnderWayland() (desktop_capturer.cc):
+// XDG_SESSION_TYPE starts with "wayland" AND WAYLAND_DISPLAY is set — same rule, no drift.
+export type CaptureSourceMode = "grid" | "portal";
+
+export function captureSourceMode(
+  platform: string,
+  env: Record<string, string | undefined>,
+): CaptureSourceMode {
+  if (platform !== "linux") return "grid";
+  const session = env.XDG_SESSION_TYPE ?? "";
+  const wayland = env.WAYLAND_DISPLAY ?? "";
+  return session.startsWith("wayland") && wayland.length > 0 ? "portal" : "grid";
+}
+
+// The armed source id the renderer sends in portal mode — no grid pick exists; the id only has to
+// arm the display-media handler (any non-null value would do; a named constant keeps intent grep-able).
+export const PORTAL_SOURCE_ID = "portal";
+
 export const ScreenSourceSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -79,6 +106,9 @@ export interface TavernIpc {
   // new invoke channel on the frozen S4.1 surface. True when the OS loopback device excludes
   // Tavern's own audio (Windows 20348+ / macOS), i.e. the FR-28 self-audio caveat is moot.
   loopbackSelfAudioExcluded: boolean;
+  // Static per-boot fact (same no-new-channel rule): "portal" on Wayland, where the OS ScreenCast
+  // dialog replaces the thumbnail grid — see captureSourceMode().
+  captureSourceMode: CaptureSourceMode;
   secrets: { getToken(): Promise<string | null>; setToken(t: string | null): Promise<void> };
   capture: {
     getScreenSources(): Promise<ScreenSource[]>;

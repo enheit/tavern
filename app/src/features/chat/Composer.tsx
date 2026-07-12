@@ -3,6 +3,7 @@ import { LIMITS } from "@tavern/shared";
 import { SmileIcon } from "lucide-react";
 import {
   type ChangeEvent,
+  type ClipboardEvent,
   type KeyboardEvent,
   useLayoutEffect,
   useMemo,
@@ -18,11 +19,14 @@ import {
   EmojiPickerSearch,
 } from "@/components/ui/emoji-picker";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { GifPicker } from "./GifPicker";
 import { MentionAutocomplete } from "./MentionAutocomplete";
+import { firstImageFile } from "./uploadChatImage";
+import { useChatImageUpload } from "./useChatImageUpload";
 
 // FR-14/15 message composer: auto-growing textarea (1–5 rows), Enter-to-send / Shift+Enter newline,
 // a >2000 send guard + live counter, a frimousse emoji picker in a popover, and `@username`
@@ -58,6 +62,8 @@ export function Composer({ serverId }: { serverId: string }) {
   const [gifOpen, setGifOpen] = useState(false);
   const [mention, setMention] = useState<MentionState | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  // Paste-to-upload shares the same hook (single-flight guard + spinner state) as the chat drop zone.
+  const { uploading, sendFile } = useChatImageUpload(serverId);
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingCaret = useRef<number | null>(null);
@@ -115,6 +121,17 @@ export function Composer({ serverId }: { serverId: string }) {
     sendMessage(value);
     setValue("");
     setMention(null);
+  }
+
+  // § chat image paste: Ctrl/Cmd+V of a copied image uploads it to R2 and sends it as its own message
+  // (empty body + image attachment), Discord-style. A paste that carries image bytes preempts the
+  // default text paste (`preventDefault`) so the image's alt-text/URL doesn't also land in the box; a
+  // paste with no image bytes falls through to the normal text paste.
+  function onPaste(event: ClipboardEvent<HTMLTextAreaElement>): void {
+    const file = firstImageFile(event.clipboardData);
+    if (!file) return; // no image on the clipboard → let the default text paste proceed
+    event.preventDefault();
+    sendFile(file);
   }
 
   // § GIF picker: a picked GIF sends immediately as its own message (empty body + gif attachment,
@@ -206,6 +223,7 @@ export function Composer({ serverId }: { serverId: string }) {
             rows={rows}
             onChange={onChange}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             placeholder={m.chat_composer_placeholder()}
             className="min-h-9 flex-1 resize-none rounded-md border bg-transparent px-3 py-1.5 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
@@ -228,15 +246,26 @@ export function Composer({ serverId }: { serverId: string }) {
               <GifPicker onPick={pickGif} />
             </PopoverContent>
           </Popover>
-          <Button
-            type="button"
-            size="sm"
-            data-testid="composer-send"
-            disabled={!canSend}
-            onClick={submit}
-          >
-            {m.chat_composer_send()}
-          </Button>
+          <div className="flex items-center gap-2">
+            {uploading ? (
+              <span
+                data-testid="composer-image-uploading"
+                className="flex items-center gap-1.5 text-xs text-muted-foreground"
+              >
+                <Spinner className="size-3.5" />
+                {m.chat_image_uploading()}
+              </span>
+            ) : null}
+            <Button
+              type="button"
+              size="sm"
+              data-testid="composer-send"
+              disabled={!canSend}
+              onClick={submit}
+            >
+              {m.chat_composer_send()}
+            </Button>
+          </div>
         </div>
       </div>
       {showCounter ? (

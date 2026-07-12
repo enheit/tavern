@@ -2,11 +2,14 @@ import type { Member, Presence } from "@tavern/shared";
 import { VolumeXIcon } from "lucide-react";
 import { useState } from "react";
 import { useStore } from "zustand";
+import { getVoiceController } from "@/features/voice/voiceController";
 import { VolumeMenu } from "@/features/voice/VolumeMenu";
+import { useVolumeScroll } from "@/features/volume/useVolumeScroll";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
+import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
 
 // FR-45 People panel with live presence. Sort comparator is pinned: admins first, then presence rank
@@ -51,8 +54,22 @@ function MemberRow({ member }: { member: Member }) {
   const speaking = useMediaStore((s) => s.speakingUserIds.has(member.userId));
   const locallyMuted = useSettingsStore((s) => s.volumes.mutedUsers.includes(member.userId));
   const ring = speaking ? "ring-green-500" : "ring-transparent";
+  // FR-20: scroll the row to boost/cut this member locally (0–200%), middle-click to silence — same
+  // gain the right-click VolumeMenu edits. Disabled on your own row (you don't hear yourself).
+  const selfId = useSessionStore((s) => s.profile?.userId ?? null);
+  const isSelf = member.userId === selfId;
+  const { ref, percent } = useVolumeScroll<HTMLLIElement>({
+    enabled: !isSelf,
+    read: () => useSettingsStore.getState().volumes.users[member.userId] ?? 1,
+    write: (gain) => getVoiceController().setUserVolume(member.userId, gain),
+    meta: () => ({ key: member.userId, label: member.displayName, color: member.color }),
+  });
   return (
-    <li data-testid={`member-${member.userId}`}>
+    <li
+      ref={ref}
+      data-testid={`member-${member.userId}`}
+      className={cn(!isSelf && "cursor-ns-resize")}
+    >
       <VolumeMenu userId={member.userId} name={member.displayName}>
         <span className="relative shrink-0">
           {avatarFailed ? (
@@ -90,12 +107,23 @@ function MemberRow({ member }: { member: Member }) {
         >
           {member.displayName}
         </span>
-        {locallyMuted && (
-          <VolumeXIcon
-            data-testid={`member-muted-${member.userId}`}
-            className="ml-auto size-3.5 shrink-0 text-muted-foreground"
-          />
-        )}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          {/* Transient volume echo right of the name — shown only just after a scroll notch. */}
+          {percent !== null && (
+            <span
+              data-testid={`member-volume-pct-${member.userId}`}
+              className="text-xs text-muted-foreground tabular-nums"
+            >
+              {percent}%
+            </span>
+          )}
+          {locallyMuted && (
+            <VolumeXIcon
+              data-testid={`member-muted-${member.userId}`}
+              className="size-3.5 text-muted-foreground"
+            />
+          )}
+        </span>
       </VolumeMenu>
     </li>
   );

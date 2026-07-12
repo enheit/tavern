@@ -334,19 +334,15 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
       await b.page.getByTestId(`stream-watch-${track}`).click();
       await expect(b.page.getByTestId(`stream-video-${track}`)).toBeVisible({ timeout: 20_000 });
 
-      // The per-stream slider is keyed by the opaque userId:kind (survives trackName rotation).
+      // Per-stream volume is a scroll gesture on the tile now (no slider); keyed by the opaque
+      // userId:kind (survives trackName rotation). Hover the tile, then scroll up 8 notches:
+      // 100% + 8·5% = 140% (deltaY<0 = louder). The center HUD shows it; localStorage is the truth.
       const streamKey = `${a.user.userId}:screen`;
-      const slider = b.page.getByTestId(`stream-volume-${streamKey}`);
-      // Hover the tile to reveal the overlay controls, focus the slider thumb, then drive it to 140%.
-      // Base UI's slider binds Arrow keys (each = the 5% step) but not Home/End, so floor with ArrowLeft
-      // then step up: 0 + 28·5% = 140%.
       await b.page.getByTestId(`stream-tile-${track}`).hover();
-      await slider.locator('[data-slot="slider-thumb"]').click();
-      await pressKeyN(b.page, "ArrowLeft", 40);
-      await pressKeyN(b.page, "ArrowRight", 28);
+      await wheelN(b.page, -100, 8);
       await expect.poll(() => readStreamVolume(b.page, streamKey)).toBe(1.4);
 
-      // Persisted (settings.volumes.streams) → survives a fresh boot; the slider re-reads 140%.
+      // Persisted (settings.volumes.streams) → survives a fresh boot.
       await b.page.goto(`/?e2e=1`);
       await expect(b.page).toHaveURL(new RegExp(`/s/${serverId}$`));
       await expect(b.page.getByTestId("controls-bar")).toBeVisible();
@@ -459,10 +455,11 @@ async function expectGridRows(page: Page, expected: number[]): Promise<void> {
   await expect(page.getByTestId(`canvas-row-${expected.length}`)).toHaveCount(0);
 }
 
-// Presses a key `n` times in sequence (no await-in-loop lint escape hatch; a reduce chain).
-async function pressKeyN(page: Page, key: string, n: number): Promise<void> {
+// Rolls the mouse wheel `n` times at the current pointer position (no await-in-loop; a reduce chain).
+// Each notch is one 5% volume step in useVolumeScroll; deltaY<0 = louder.
+async function wheelN(page: Page, deltaY: number, n: number): Promise<void> {
   await Array.from({ length: n }).reduce<Promise<void>>(
-    (p) => p.then(() => page.keyboard.press(key)),
+    (p) => p.then(() => page.mouse.wheel(0, deltaY)),
     Promise.resolve(),
   );
 }

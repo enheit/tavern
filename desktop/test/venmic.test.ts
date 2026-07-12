@@ -4,30 +4,52 @@ import {
   releaseVenmic,
   resetVenmicForTest,
   resolveAudioServicePid,
+  shutdownVenmic,
 } from "../src/main/venmic";
-import type { ProcessMetricLike } from "../src/main/venmic";
+import type { ProcessMetricLike, VenmicHostLike } from "../src/main/venmic";
 
 vi.mock("electron", () => import("./electron-mock"));
 
-// A fake venmic PatchBay: records link payloads, configurable hasPipeWire/link results.
-function fakeVenmic(over: { hasPipeWire?: boolean; linkResult?: boolean; linkThrows?: boolean }) {
-  const links: unknown[] = [];
-  let unlinks = 0;
-  class PatchBay {
-    link(data: unknown): boolean {
-      if (over.linkThrows === true) throw new Error("pw_core_connect failed");
-      links.push(data);
-      return over.linkResult ?? true;
-    }
-    unlink(): boolean {
-      unlinks += 1;
+// A fake venmic utilityProcess host: records posted messages; `onLink` decides how (and whether)
+// the host answers a {t:"link"} request. Exit/kill are driven by the test.
+function fakeHost(onLink?: (pid: number, emit: (msg: unknown) => void) => void) {
+  const messageListeners = new Set<(msg: unknown) => void>();
+  const exitListeners = new Set<() => void>();
+  const posted: unknown[] = [];
+  let killed = false;
+  const emitMessage = (msg: unknown): void => {
+    for (const listener of messageListeners) listener(msg);
+  };
+  const emitExit = (): void => {
+    for (const listener of exitListeners) listener();
+    exitListeners.clear();
+  };
+  const host: VenmicHostLike = {
+    postMessage(msg: unknown) {
+      posted.push(msg);
+      const rec = msg as { t?: string; pid?: number };
+      if (rec.t === "link" && typeof rec.pid === "number") onLink?.(rec.pid, emitMessage);
+    },
+    on(_event, listener) {
+      messageListeners.add(listener);
+      return host;
+    },
+    off(event, listener) {
+      if (event === "message") messageListeners.delete(listener as (msg: unknown) => void);
+      else exitListeners.delete(listener as () => void);
+      return host;
+    },
+    once(_event, listener) {
+      exitListeners.add(listener);
+      return host;
+    },
+    kill() {
+      killed = true;
+      emitExit();
       return true;
-    }
-    static hasPipeWire(): boolean {
-      return over.hasPipeWire ?? true;
-    }
-  }
-  return { PatchBay, links, unlinkCount: () => unlinks };
+    },
+  };
+  return { host, posted, emitMessage, emitExit, wasKilled: () => killed };
 }
 
 const AUDIO_SERVICE: ProcessMetricLike = {
@@ -70,104 +92,122 @@ describe("Task-3 resolveAudioServicePid", () => {
   });
 });
 
-describe("Task-3 prepareVenmic", () => {
-  it("links with the audio-service PID excluded and app streams only", async () => {
-    const venmic = fakeVenmic({});
-    const ok = await prepareVenmic({
-      platform: "linux",
-      loadCtor: () => venmic.PatchBay,
-      metrics: () => [AUDIO_SERVICE],
+describe("Task-3 prepareVenmic (utilityProcess host)", () => {
+  it("forks the host once and links with the audio-service PID", async () => {
+    const fake = fakeHost((_pid, emit) => {
+      emit({ t: "link.result", ok: true });
     });
-    expect(ok).toBe(true);
-    expect(venmic.links).toEqual([
-      {
-        exclude: [{ "application.process.id": "4242" }],
-        ignore_devices: true,
-      },
-    ]);
+    const fork = vi.fn(() => fake.host);
+    const deps = { platform: "linux" as const, metrics: () => [AUDIO_SERVICE], fork };
+
+    expect(await prepareVenmic(deps)).toBe(true);
+    expect(fork).toHaveBeenCalledTimes(1);
+    expect(fake.posted).toEqual([{ t: "link", pid: 4242 }]);
+
+    // Second share start reuses the SAME host (no respawn while it lives).
+    expect(await prepareVenmic(deps)).toBe(true);
+    expect(fork).toHaveBeenCalledTimes(1);
   });
 
-  it("non-linux is false without touching the module", async () => {
-    const load = vi.fn();
-    expect(await prepareVenmic({ platform: "darwin", loadCtor: load })).toBe(false);
-    expect(await prepareVenmic({ platform: "win32", loadCtor: load })).toBe(false);
-    expect(load).not.toHaveBeenCalled();
+  it("non-linux is false without forking", async () => {
+    const fork = vi.fn();
+    expect(await prepareVenmic({ platform: "darwin", fork })).toBe(false);
+    expect(await prepareVenmic({ platform: "win32", fork })).toBe(false);
+    expect(fork).not.toHaveBeenCalled();
   });
 
-  it("no PipeWire → false, and link is never attempted", async () => {
-    const venmic = fakeVenmic({ hasPipeWire: false });
+  it("no audio-service process yet → false, no fork (voices would leak without the exclusion)", async () => {
+    const fork = vi.fn();
     const ok = await prepareVenmic({
       platform: "linux",
-      loadCtor: () => venmic.PatchBay,
-      metrics: () => [AUDIO_SERVICE],
-    });
-    expect(ok).toBe(false);
-    expect(venmic.links).toEqual([]);
-  });
-
-  it("missing module (optional dep absent / prebuild load error) → false, silently", async () => {
-    const ok = await prepareVenmic({
-      platform: "linux",
-      loadCtor: () => {
-        throw new Error("Cannot find module '@vencord/venmic'");
-      },
-      metrics: () => [AUDIO_SERVICE],
-    });
-    expect(ok).toBe(false);
-  });
-
-  it("no audio-service process yet → false (voices would leak without the exclusion)", async () => {
-    const venmic = fakeVenmic({});
-    const ok = await prepareVenmic({
-      platform: "linux",
-      loadCtor: () => venmic.PatchBay,
       metrics: () => [{ pid: 1, type: "Browser" }],
+      fork,
     });
     expect(ok).toBe(false);
-    expect(venmic.links).toEqual([]);
+    expect(fork).not.toHaveBeenCalled();
   });
 
-  it("a throwing or refusing link() → false", async () => {
-    const throwing = fakeVenmic({ linkThrows: true });
-    expect(
-      await prepareVenmic({
-        platform: "linux",
-        loadCtor: () => throwing.PatchBay,
-        metrics: () => [AUDIO_SERVICE],
-      }),
-    ).toBe(false);
+  it("a host that reports link failure (no PipeWire, link refused) → false", async () => {
+    const fake = fakeHost((_pid, emit) => {
+      emit({ t: "link.result", ok: false });
+    });
+    const ok = await prepareVenmic({
+      platform: "linux",
+      metrics: () => [AUDIO_SERVICE],
+      fork: () => fake.host,
+    });
+    expect(ok).toBe(false);
+  });
 
-    resetVenmicForTest();
-    const refusing = fakeVenmic({ linkResult: false });
-    expect(
-      await prepareVenmic({
-        platform: "linux",
-        loadCtor: () => refusing.PatchBay,
-        metrics: () => [AUDIO_SERVICE],
-      }),
-    ).toBe(false);
+  it("a host that CRASHES mid-link (native PipeWire abort) → false; the next share respawns", async () => {
+    const crashing = fakeHost();
+    const fresh = fakeHost((_pid, emit) => {
+      emit({ t: "link.result", ok: true });
+    });
+    const fork = vi
+      .fn<() => VenmicHostLike>()
+      .mockReturnValueOnce(crashing.host)
+      .mockReturnValueOnce(fresh.host);
+    const deps = { platform: "linux" as const, metrics: () => [AUDIO_SERVICE], fork };
+
+    const attempt = prepareVenmic(deps);
+    crashing.emitExit(); // SIGABRT stand-in
+    expect(await attempt).toBe(false);
+
+    expect(await prepareVenmic(deps)).toBe(true);
+    expect(fork).toHaveBeenCalledTimes(2);
+  });
+
+  it("a hung host is killed at the timeout and reports false", async () => {
+    const fake = fakeHost(); // never answers
+    const ok = await prepareVenmic({
+      platform: "linux",
+      metrics: () => [AUDIO_SERVICE],
+      fork: () => fake.host,
+      timeoutMs: 10,
+    });
+    expect(ok).toBe(false);
+    expect(fake.wasKilled()).toBe(true);
   });
 });
 
-describe("Task-3 releaseVenmic", () => {
+describe("Task-3 releaseVenmic / shutdownVenmic", () => {
+  function linkedHost() {
+    const fake = fakeHost((_pid, emit) => {
+      emit({ t: "link.result", ok: true });
+    });
+    const deps = { platform: "linux" as const, metrics: () => [AUDIO_SERVICE], fork: () => fake.host };
+    return { fake, deps };
+  }
+
   it("unlinks once after a successful link; a re-link re-arms it", async () => {
-    const venmic = fakeVenmic({});
-    const deps = {
-      platform: "linux" as const,
-      loadCtor: () => venmic.PatchBay,
-      metrics: () => [AUDIO_SERVICE],
-    };
+    const { fake, deps } = linkedHost();
     await prepareVenmic(deps);
     releaseVenmic();
-    releaseVenmic(); // idempotent — venmic throws on double-unlink, so the guard matters
-    expect(venmic.unlinkCount()).toBe(1);
+    releaseVenmic(); // idempotent — the linked flag guards the double-send
+    expect(fake.posted.filter((m) => (m as { t: string }).t === "unlink")).toHaveLength(1);
 
     await prepareVenmic(deps);
     releaseVenmic();
-    expect(venmic.unlinkCount()).toBe(2);
+    expect(fake.posted.filter((m) => (m as { t: string }).t === "unlink")).toHaveLength(2);
   });
 
   it("is a no-op when nothing ever linked", () => {
     expect(() => releaseVenmic()).not.toThrow();
+  });
+
+  it("a crashed host is never messaged (its mic died with it)", async () => {
+    const { fake, deps } = linkedHost();
+    await prepareVenmic(deps);
+    fake.emitExit();
+    releaseVenmic();
+    expect(fake.posted.filter((m) => (m as { t: string }).t === "unlink")).toHaveLength(0);
+  });
+
+  it("shutdown kills the host for app quit", async () => {
+    const { fake, deps } = linkedHost();
+    await prepareVenmic(deps);
+    shutdownVenmic();
+    expect(fake.wasKilled()).toBe(true);
   });
 });

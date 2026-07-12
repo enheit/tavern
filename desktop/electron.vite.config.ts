@@ -16,7 +16,10 @@ export default defineConfig({
       outDir: "out/main",
       target: "node24",
       externalizeDeps: false,
-      lib: { entry: "src/main/index.ts" },
+      // venmicHost is the utilityProcess entry (FR-28): venmic's native PipeWire client must not
+      // share the browser process (a libpipewire assert would SIGABRT the whole app), so it gets
+      // its own bundle the main process forks.
+      lib: { entry: { index: "src/main/index.ts", venmicHost: "src/main/venmicHost.ts" } },
       rollupOptions: { external: ["electron"] },
     },
   },

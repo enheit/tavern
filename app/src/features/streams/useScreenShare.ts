@@ -43,6 +43,13 @@ export interface ScreenShareDeps {
 const CAVEAT_FLAG = "tavern.selfAudioCaveatShown.v1";
 const MONITOR_NOTE_FLAG = "tavern.systemAudioNoteShown.v1";
 
+// jsdom (unit tests) has no MediaStream constructor; degrade to a null self-preview there rather than
+// throwing. In the browser this wraps the local screen video track (video only — the tile is muted, so
+// the share's system audio never needs to flow through the preview) for the sharer's own tile.
+function wrapPreview(video: MediaStreamTrack): MediaStream | null {
+  return typeof MediaStream === "undefined" ? null : new MediaStream([video]);
+}
+
 function toastOnce(flag: string, message: string): void {
   const store = typeof localStorage === "undefined" ? null : localStorage;
   if (store?.getItem(flag) === "1") return;
@@ -136,6 +143,9 @@ export class ScreenShareController {
       sharePreset: sel.preset,
       shareTrackName: names.videoTrackName,
     });
+    // FR-29: mirror the LOCAL video track so the sharer's own tile renders a live preview (Canvas
+    // matches it by shareTrackName) instead of a black tile — the webcam self-preview pattern.
+    useMediaStore.getState().setShareStream(wrapPreview(video));
     this.deps.wsFor(serverId).send(
       names.audioTrackName === undefined
         ? { t: "stream.start", kind: "screen", trackName: names.videoTrackName, preset: sel.preset }
@@ -175,6 +185,7 @@ export class ScreenShareController {
       useMediaStore
         .getState()
         .setShareState({ sharing: false, sharePreset: null, shareTrackName: null });
+      useMediaStore.getState().setShareStream(null);
     }
   }
 

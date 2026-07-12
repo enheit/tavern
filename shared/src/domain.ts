@@ -84,15 +84,31 @@ export const GifAttachment = z.object({
 });
 export type GifAttachment = z.infer<typeof GifAttachment>;
 
+// An image attachment on a chat message (§ chat image paste). Unlike a GIF (a trusted provider URL),
+// this image lives in OUR R2 and is referenced by an opaque `id` only — never a client-supplied URL,
+// so a client can never inject an off-origin `src`. The bytes are served by the public capability
+// route `/api/chat-images/{serverId}/{id}.webp`; the RENDERER builds that URL from the active server
+// + this id, so the id is meaningful only within the server it was uploaded to (no cross-server leak).
+// `width`/`height` are the stored (post-downscale) pixel dimensions, driving a fixed aspect-ratio box
+// so the row does not reflow once the image loads.
+export const ImageAttachment = z.object({
+  id: z.uuid(),
+  width: z.number().int().positive().max(8192),
+  height: z.number().int().positive().max(8192),
+});
+export type ImageAttachment = z.infer<typeof ImageAttachment>;
+
 export const ChatMessage = z.object({
   id: z.number().int(),
   userId: z.uuid(),
-  // Empty allowed only alongside a `gif` (a pure-GIF message carries no text); the DO re-checks the
-  // "body non-empty OR gif present" invariant on send. `.min(1)` is intentionally dropped here.
+  // Empty allowed only alongside a `gif` or `image` (a pure-attachment message carries no text); the
+  // DO re-checks the "body non-empty OR gif OR image present" invariant on send. `.min(1)` is
+  // intentionally dropped here.
   body: z.string().max(LIMITS.messageMaxChars),
   mentions: z.array(z.uuid()),
   at: z.number(),
   gif: GifAttachment.optional(),
+  image: ImageAttachment.optional(),
 });
 export type ChatMessage = z.infer<typeof ChatMessage>;
 

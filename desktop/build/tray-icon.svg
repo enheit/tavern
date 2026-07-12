@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Source of truth for the system-tray icon: a flat 2D pig nose (snout), matching the app
+       favicon (app/public/favicon.png). Rasterised to a base64 PNG embedded in src/main/trayIcon.ts
+       (nativeImage can't load SVG at runtime). Regenerate with:
+       magick -background none build/tray-icon.svg -resize 64x64 -depth 8 -strip png:- | base64 -->
+  <defs>
+    <linearGradient id="snout" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fe925b"/>
+      <stop offset="0.45" stop-color="#f4592b"/>
+      <stop offset="1" stop-color="#d5431e"/>
+    </linearGradient>
+  </defs>
+  <!-- snout body -->
+  <path d="M32 11 C49 11 58 20 58 33 C58 47 47 55 32 55 C17 55 6 47 6 33 C6 20 15 11 32 11 Z"
+        fill="url(#snout)" stroke="#a8331a" stroke-width="2.5"/>
+  <!-- nostrils, tilted outward like the favicon -->
+  <ellipse cx="23.5" cy="33" rx="4.2" ry="8.4" fill="#3a0a04" transform="rotate(-13 23.5 33)"/>
+  <ellipse cx="40.5" cy="33" rx="4.2" ry="8.4" fill="#3a0a04" transform="rotate(13 40.5 33)"/>
+</svg>

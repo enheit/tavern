@@ -87,6 +87,7 @@ export function MessageList({ serverId }: { serverId: string }) {
               member={memberById.get(message.userId)}
               selfUserId={self?.userId}
               selfUsername={self?.username}
+              serverId={serverId}
             />
           ))}
         </ul>

@@ -21,6 +21,10 @@ export const LIMITS = {
   recordingPartBytes: 5_242_880,
   screenshotMaxBytes: 15_000_000,
   rateScreenshotsPerMin: 30,
+  // Pasted chat image (§ chat image paste): re-encoded to webp client-side and capped to
+  // `chatImageMaxDimPx` on the longest edge before upload, so the stored object stays modest.
+  chatImageMaxBytes: 10_000_000,
+  chatImageMaxDimPx: 2560,
   maxConcurrentScreenShares: 4,
   maxServersPerUser: 20,
   maxMembersPerServer: 25,

@@ -2,10 +2,14 @@ import type { VoiceMember } from "@tavern/shared";
 import { EyeIcon, HeadphoneOffIcon, MicOffIcon, MonitorUpIcon, VideoIcon } from "lucide-react";
 import { useState } from "react";
 import { useStore } from "zustand";
+import { useVolumeScroll } from "@/features/volume/useVolumeScroll";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
+import { useSessionStore } from "@/stores/session";
+import { useSettingsStore } from "@/stores/settings";
+import { getVoiceController } from "./voiceController";
 
 // FR-18/23/26 live voice member chip: avatar + nickname color + green speaking ring + activity
 // badges (streaming screen / camera on / watching a stream) + self mute/deafen badges. The profile
@@ -30,11 +34,26 @@ export function VoiceMemberChip({ serverId, member }: { serverId: string; member
   const [avatarFailed, setAvatarFailed] = useState(false);
   const displayName = profile?.displayName ?? "";
   const color = profile?.color ?? "#71717a";
+  // FR-20: scroll on this member's line to boost/cut THEIR voice locally (0–200%), middle-click to
+  // silence. Never on your own chip — you don't hear yourself. The gain lives in settings.volumes.users
+  // (read fresh in the handler); the inline percent is a transient echo of the last scroll notch.
+  const selfId = useSessionStore((s) => s.profile?.userId ?? null);
+  const isSelf = member.userId === selfId;
+  const { ref, percent } = useVolumeScroll<HTMLSpanElement>({
+    enabled: !isSelf,
+    read: () => useSettingsStore.getState().volumes.users[member.userId] ?? 1,
+    write: (gain) => getVoiceController().setUserVolume(member.userId, gain),
+    meta: () => ({ key: member.userId, label: displayName, color }),
+  });
   return (
     <span
+      ref={ref}
       data-testid={`voice-chip-${member.userId}`}
       data-speaking={speaking ? "true" : "false"}
-      className="flex items-center gap-1.5 rounded-md px-2 py-0.5 text-sm"
+      className={cn(
+        "flex items-center gap-1.5 rounded-md px-2 py-0.5 text-sm",
+        !isSelf && "cursor-ns-resize",
+      )}
     >
       <span className="relative shrink-0">
         {avatarFailed ? (
@@ -59,9 +78,22 @@ export function VoiceMemberChip({ serverId, member }: { serverId: string; member
           />
         )}
       </span>
-      <span className="min-w-0 flex-1 truncate" style={{ color }}>
-        {displayName}
+      {/* Name + its transient volume echo share the flexible column so the name still truncates and
+          the percent sits immediately to its right (shown only just after a scroll notch, then fades). */}
+      <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
+        <span className="min-w-0 truncate" style={{ color }}>
+          {displayName}
+        </span>
+        {percent !== null && (
+          <span
+            data-testid={`voice-volume-pct-${member.userId}`}
+            className="shrink-0 text-xs text-muted-foreground tabular-nums"
+          >
+            {percent}%
+          </span>
+        )}
       </span>
+
       {/* Right-edge badge cluster. Activity first (streaming screen / camera / watching), then
           mute/deafen. Deafened implies muted: show BOTH "can't talk" (mic) + "can't hear"
           (headphones); muted alone shows just the mic. */}

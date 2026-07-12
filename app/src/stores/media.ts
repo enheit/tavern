@@ -29,6 +29,11 @@ interface MediaState {
   sharing: boolean;
   sharePreset: PresetId | null;
   shareTrackName: string | null;
+  // FR-29 self screen-preview: the LOCAL screen-share MediaStream (video only), mirrored so the
+  // sharer's own tile can render it directly (never a PullSession to self) — the exact webcam pattern
+  // in useWebcamStore. Null whenever not sharing. Kept separate from setShareState so the preset/stop
+  // paths don't have to thread it.
+  shareStream: MediaStream | null;
   // FR-21/22 selected device prefs (runtime mirror of the persisted settings row).
   deviceSelection: DeviceSettingsV1;
   setDevices: (devices: MediaDeviceInfo[]) => void;
@@ -47,6 +52,7 @@ interface MediaState {
     sharePreset: PresetId | null;
     shareTrackName: string | null;
   }) => void;
+  setShareStream: (shareStream: MediaStream | null) => void;
 }
 
 export const useMediaStore = create<MediaState>((set) => ({
@@ -62,6 +68,7 @@ export const useMediaStore = create<MediaState>((set) => ({
   sharing: false,
   sharePreset: null,
   shareTrackName: null,
+  shareStream: null,
   deviceSelection: loadDeviceSettings(),
   setDevices: (devices) => set({ devices }),
   setSelectedMic: (selectedMicId) => set({ selectedMicId }),
@@ -84,4 +91,5 @@ export const useMediaStore = create<MediaState>((set) => ({
   setDeviceSelection: (deviceSelection) => set({ deviceSelection }),
   setShareState: ({ sharing, sharePreset, shareTrackName }) =>
     set({ sharing, sharePreset, shareTrackName }),
+  setShareStream: (shareStream) => set({ shareStream }),
 }));

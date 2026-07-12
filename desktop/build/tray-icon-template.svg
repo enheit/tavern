@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- macOS template variant of the tray pig nose: a solid black silhouette with the two nostrils
+       punched out as transparent holes. macOS ignores the colour and uses only the alpha channel,
+       tinting the shape to match the menu bar (dark on light, white on dark). Rasterise with sharp
+       (see src/main/trayIcon.ts) — ImageMagick's SVG engine mishandles masks. -->
+  <defs>
+    <mask id="nostrils">
+      <rect width="64" height="64" fill="white"/>
+      <ellipse cx="23.5" cy="33" rx="4.2" ry="8.4" fill="black" transform="rotate(-13 23.5 33)"/>
+      <ellipse cx="40.5" cy="33" rx="4.2" ry="8.4" fill="black" transform="rotate(13 40.5 33)"/>
+    </mask>
+  </defs>
+  <path d="M32 11 C49 11 58 20 58 33 C58 47 47 55 32 55 C17 55 6 47 6 33 C6 20 15 11 32 11 Z"
+        fill="#000000" mask="url(#nostrils)"/>
+</svg>

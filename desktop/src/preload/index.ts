@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import { z } from "zod";
 import {
   ScreenSourceSchema,
+  captureSourceMode,
   loopbackAudioDevice,
   platformSchema,
   screenAccessStatusSchema,
@@ -27,6 +28,9 @@ const api: TavernIpc = {
   loopbackSelfAudioExcluded:
     loopbackAudioDevice(process.platform, process.getSystemVersion?.() ?? "") ===
     "loopbackWithoutChrome",
+  // Static per-boot fact: Wayland's portal dialog replaces the source grid (FR-28 Wayland fix).
+  // Sandboxed preloads still expose process.env (same seam isE2E uses).
+  captureSourceMode: captureSourceMode(process.platform, process.env),
   secrets: {
     async getToken() {
       const value: unknown = await ipcRenderer.invoke("secrets:getToken");

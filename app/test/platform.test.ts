@@ -15,6 +15,7 @@ describe("platform/web", () => {
     expect(await p.capture.getScreenSources()).toEqual([]);
     expect(await p.capture.loopbackAudioSupported()).toBe(false);
     expect(p.capture.loopbackSelfAudioExcluded).toBe(false);
+    expect(p.capture.sourceMode).toBe("grid");
     expect(await p.capture.screenAccessStatus()).toBe("granted");
     expect(await p.secrets.getToken()).toBeNull();
     await p.secrets.setToken("ignored"); // no throw
@@ -67,6 +68,7 @@ function makeIpc(): TavernIpc {
     isE2E: false,
     // true to prove the bridge passes the value through rather than defaulting it.
     loopbackSelfAudioExcluded: true,
+    captureSourceMode: "portal",
     secrets: {
       getToken: vi.fn(async () => "tok"),
       setToken: vi.fn(async () => undefined),
@@ -101,6 +103,8 @@ describe("platform/electron", () => {
     const p = createElectronPlatform(ipc);
     expect(p.kind).toBe("desktop");
     expect(p.capture.loopbackSelfAudioExcluded).toBe(true);
+    // "portal" in the fake proves pass-through rather than a defaulted "grid".
+    expect(p.capture.sourceMode).toBe("portal");
 
     await p.secrets.setToken("abc");
     expect(ipc.secrets.setToken).toHaveBeenCalledWith("abc");

@@ -29,9 +29,17 @@ const gif: GifAttachment = {
   height: 240,
 };
 
+const SRV = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+
 function renderRow(message: ChatMessage) {
   render(
-    <MessageRow message={message} member={member()} selfUserId={SELF} selfUsername="alice_u" />,
+    <MessageRow
+      message={message}
+      member={member()}
+      selfUserId={SELF}
+      selfUsername="alice_u"
+      serverId={SRV}
+    />,
   );
 }
 

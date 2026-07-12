@@ -17,9 +17,12 @@ import { setupNotifications, showNotification } from "./notifications";
 import { registerPermissions } from "./permissions";
 import { registerAppProtocolHandler, registerAppScheme } from "./protocol";
 import { getToken, setToken } from "./secrets";
+import { markQuitting } from "./lifecycle";
 import { acquireSingleInstanceLock } from "./singleInstance";
+import { createTray, destroyTray } from "./tray";
 import { initUpdates, restartToUpdate } from "./updates";
-import { createWindow, focusMainWindow, setAppBadge } from "./window";
+import { shutdownVenmic } from "./venmic";
+import { createWindow, focusMainWindow, setAppBadge, showMainWindow } from "./window";
 
 function buildServices(): IpcServices {
   return {
@@ -55,9 +58,25 @@ if (!acquireSingleInstanceLock()) {
 } else {
   registerAppScheme();
 
-  // FR-28: never leave the share's pulse remap-source behind on quit (idempotent off-linux no-op).
+  // Close-to-tray gate: the window's close handler swallows normal closes into a hide-to-tray, so
+  // every genuine quit (tray "Exit", Cmd+Q, auto-update quitAndInstall) must announce itself here
+  // first — `before-quit` fires ahead of window close on all of those paths.
+  app.on("before-quit", () => {
+    markQuitting();
+  });
+
+  // macOS keeps the process alive after the window is hidden/closed; re-activating from the dock (or
+  // clicking the tray) should bring the hidden window back rather than doing nothing.
+  app.on("activate", () => {
+    showMainWindow();
+  });
+
+  // FR-28: never leave the share's pulse remap-source behind on quit (idempotent off-linux no-op),
+  // and take the venmic utilityProcess down with the app.
   app.on("will-quit", () => {
+    destroyTray();
     void releaseStreamAudio();
+    shutdownVenmic();
   });
 
   void app.whenReady().then(() => {
@@ -73,6 +92,7 @@ if (!acquireSingleInstanceLock()) {
     setupNotifications();
     registerIpc(buildServices());
     const win = createWindow();
+    createTray();
     initUpdates(win);
   });
 }

@@ -7,6 +7,7 @@ import { PeoplePanel } from "@/features/servers/PeoplePanel";
 import { SoundboardPanel } from "@/features/soundboard/SoundboardPanel";
 import { StatsTab } from "@/features/stats/StatsTab";
 import { m } from "@/paraglide/messages.js";
+import { ChatDropZone } from "./ChatDropZone";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 
@@ -53,8 +54,10 @@ export function ChatTabs({ serverId }: { serverId: string }) {
         </TabsTrigger>
       </TabsList>
       <TabsContent value="chat" className="flex min-h-0 flex-1 flex-col">
-        <MessageList serverId={serverId} />
-        <Composer serverId={serverId} />
+        <ChatDropZone serverId={serverId}>
+          <MessageList serverId={serverId} />
+          <Composer serverId={serverId} />
+        </ChatDropZone>
       </TabsContent>
       {/* People temporarily lives as a tab (moved out from under the channels list); will be
           restructured. Reuses the existing `people_title` message for the label. */}

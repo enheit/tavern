@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import { ChatTabs } from "@/features/chat/ChatTabs";
 import { ChannelsPanel } from "@/features/servers/ChannelsPanel";
 import { Canvas } from "@/features/streams/Canvas";
+import { VolumeHud } from "@/features/volume/VolumeHud";
 import { VoicePanel } from "@/features/voice/VoicePanel";
 import { ControlsBar } from "./ControlsBar";
 import { CostBanner } from "./CostBanner";
@@ -34,6 +35,8 @@ export function AppShell({ serverId }: { serverId: string }) {
     >
       {/* §8 G5 warn banner (S12.3) — absolute overlay across the header; grid rows stay pinned. */}
       <CostBanner serverId={serverId} />
+      {/* Center-screen per-target volume feedback (scroll on a nickname / stream tile). */}
+      <VolumeHud />
       <Header />
       <div style={{ gridArea: "left" }} className="flex min-h-0 flex-col border-r bg-card">
         <ChannelsPanel serverId={serverId} />

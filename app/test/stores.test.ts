@@ -268,7 +268,7 @@ describe("FR-22 noise-suppression setting migration", () => {
   });
 
   it("every stored enum value is kept verbatim", () => {
-    for (const mode of ["off", "standard", "rnnoise", "deepfilter"]) {
+    for (const mode of ["off", "standard", "deepfilter"]) {
       seedNoiseSetting(mode);
       expect(loadDeviceSettings().noiseSuppression).toBe(mode);
     }
@@ -279,6 +279,11 @@ describe("FR-22 noise-suppression setting migration", () => {
     expect(loadDeviceSettings().noiseSuppression).toBe("deepfilter");
     seedNoiseSetting(false);
     expect(loadDeviceSettings().noiseSuppression).toBe("off");
+  });
+
+  it("retired 'rnnoise' value → deepfilter", () => {
+    seedNoiseSetting("rnnoise");
+    expect(loadDeviceSettings().noiseSuppression).toBe("deepfilter");
   });
 
   it("invalid values → deepfilter; sibling keys survive", () => {

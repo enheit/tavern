@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { BrowserWindow, app, shell } from "electron";
 import type { WebContents } from "electron";
+import { isQuittingApp } from "./lifecycle";
 
 const APP_ORIGIN = "app://tavern";
 
@@ -10,11 +11,18 @@ export function getMainWindow(): BrowserWindow | null {
   return mainWindow;
 }
 
-export function focusMainWindow(): void {
+// Brings the window back from either the tray (hidden) or a minimize, then focuses it. Used by the
+// tray "Open" item, tray-icon click, macOS dock re-activation, and notification clicks.
+export function showMainWindow(): void {
   const win = mainWindow;
   if (win === null) return;
+  if (!win.isVisible()) win.show();
   if (win.isMinimized()) win.restore();
   win.focus();
+}
+
+export function focusMainWindow(): void {
+  showMainWindow();
 }
 
 // RESERVED for post-v1 unread badges (§1.9) — implemented, never called in v1.
@@ -76,6 +84,15 @@ export function createWindow(): BrowserWindow {
 
   win.once("ready-to-show", () => {
     win.show();
+  });
+  // Close-to-tray: a user closing the window (title-bar X, Cmd+W) hides it so the renderer keeps
+  // running in the background — voice stays connected and OS notifications still arrive. Only a real
+  // quit (tray "Exit", Cmd+Q, auto-update restart — all set the quitting flag via `before-quit`)
+  // lets the close through and destroys the window.
+  win.on("close", (event) => {
+    if (isQuittingApp()) return;
+    event.preventDefault();
+    win.hide();
   });
   win.on("closed", () => {
     mainWindow = null;

@@ -474,6 +474,8 @@ export class VoiceController {
     return {
       ...(prefs.micId ? { deviceId: prefs.micId } : {}),
       noiseSuppression: prefs.noiseSuppression,
+      ...(prefs.deepfilterAtten !== undefined ? { deepfilterAtten: prefs.deepfilterAtten } : {}),
+      ...(prefs.autoGainControl !== undefined ? { autoGainControl: prefs.autoGainControl } : {}),
       ...(ctx ? { audioContext: ctx } : {}),
     };
   }

@@ -17,6 +17,7 @@ import { m } from "@/paraglide/messages.js";
 import { PullSession } from "@/media/rtc/pullSession";
 import { createSfuSignal } from "@/media/sfuSignal";
 import { useServersStore } from "@/stores/servers";
+import { useSettingsStore } from "@/stores/settings";
 
 // FR-30 watch lifecycle. `connecting` = watch.start sent + the dedicated PullSession is being
 // created; `watching` = the pull is live (a video frame may still be in flight).
@@ -198,7 +199,17 @@ export class WatchController {
       this.notify();
     } else if (trackName === this.audioTrackName()) {
       // The muted <audio> flow-starter (crbug 40094084) is the graph's job, not ours.
-      this.deps.sink()?.attachStreamAudio(this.streamKey(), new MediaStream([track]));
+      const sink = this.deps.sink();
+      if (sink) {
+        const key = this.streamKey();
+        sink.attachStreamAudio(key, new MediaStream([track]));
+        // FR-31: re-hydrate the viewer's persisted per-stream volume onto the fresh GainNode. The graph
+        // seeds new nodes at unity; without this, a scroll/middle-click set in a prior session (or before
+        // a voice-leave teardown) would silently revert to 100% on re-watch — mirrors voice's
+        // applyUserVolume on mic attach.
+        const gain = useSettingsStore.getState().volumes.streams[key];
+        if (gain !== undefined) sink.setStreamGain(key, gain);
+      }
     }
   }
 

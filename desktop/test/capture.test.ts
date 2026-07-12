@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PORTAL_SOURCE_ID } from "@tavern/shared";
 import {
   getScreenSources,
   handleDisplayMediaRequest,
@@ -10,7 +11,13 @@ import {
   setupDisplayMediaHandler,
 } from "../src/main/capture";
 import type { FakeSource } from "./electron-mock";
-import { resetElectronMock, shell, state, systemPreferences } from "./electron-mock";
+import {
+  desktopCapturer,
+  resetElectronMock,
+  shell,
+  state,
+  systemPreferences,
+} from "./electron-mock";
 
 vi.mock("electron", () => import("./electron-mock"));
 
@@ -117,10 +124,11 @@ describe("FR-28 capture plumbing", () => {
       audio: "loopbackWithoutChrome",
     });
 
-    // Armed source is consumed: a second request without re-arming is denied.
+    // Armed source is consumed: a second request without re-arming is denied (callback(null) is
+    // the only rejection Electron accepts without throwing — electron_browser_context.cc).
     const second = vi.fn();
     await handleDisplayMediaRequest(second);
-    expect(second).toHaveBeenCalledWith({});
+    expect(second).toHaveBeenCalledWith(null);
   });
 
   it("falls back to endpoint loopback on Windows builds without process loopback (<20348)", async () => {
@@ -154,11 +162,13 @@ describe("FR-28 capture plumbing", () => {
     });
   });
 
-  it("denies an unarmed display-media request", async () => {
+  it("denies an unarmed display-media request without consulting the capturer", async () => {
     await selectSource(null);
     const cb = vi.fn();
     await handleDisplayMediaRequest(cb);
-    expect(cb).toHaveBeenCalledWith({});
+    expect(cb).toHaveBeenCalledWith(null);
+    // Also matters on Wayland: an unarmed request must not open a portal dialog.
+    expect(desktopCapturer.getSources).not.toHaveBeenCalled();
   });
 
   it("denies when the armed id no longer matches any source", async () => {
@@ -166,12 +176,65 @@ describe("FR-28 capture plumbing", () => {
     await selectSource("screen:gone");
     const cb = vi.fn();
     await handleDisplayMediaRequest(cb);
-    expect(cb).toHaveBeenCalledWith({});
+    expect(cb).toHaveBeenCalledWith(null);
+  });
+
+  it("denies (never throws) when getSources itself rejects", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    state.sources = [source("screen:1")];
+    await selectSource("screen:1");
+    desktopCapturer.getSources.mockRejectedValueOnce(new Error("enumeration failed"));
+    const cb = vi.fn();
+    await handleDisplayMediaRequest(cb);
+    expect(cb).toHaveBeenCalledWith(null);
   });
 
   it("registers a display-media handler on the session", () => {
     setupDisplayMediaHandler();
     expect(state.displayMediaHandler).not.toBeNull();
+  });
+
+  // Wayland portal mode (0.5.0 regression): every getSources opens a NEW portal session whose ids
+  // invalidate the previous ones, so the handler must take the portal's pick, not re-match by id.
+  describe("Wayland portal mode", () => {
+    const WAYLAND = { XDG_SESSION_TYPE: "wayland", WAYLAND_DISPLAY: "wayland-0" };
+
+    it("hands Chromium the portal-picked source regardless of the armed sentinel id", async () => {
+      setPlatform("linux");
+      state.sources = [source("screen:portal-99")];
+      await selectSource(PORTAL_SOURCE_ID);
+      const cb = vi.fn();
+      await handleDisplayMediaRequest(cb, "linux", WAYLAND);
+      expect(cb).toHaveBeenCalledWith({ video: state.sources[0] });
+    });
+
+    it("a cancelled/broken portal (getSources rejects) denies instead of throwing", async () => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      setPlatform("linux");
+      await selectSource(PORTAL_SOURCE_ID);
+      desktopCapturer.getSources.mockRejectedValueOnce(new Error("ScreenCastPortal failed: 3"));
+      const cb = vi.fn();
+      await handleDisplayMediaRequest(cb, "linux", WAYLAND);
+      expect(cb).toHaveBeenCalledWith(null);
+    });
+
+    it("a portal session that yields no source denies cleanly", async () => {
+      setPlatform("linux");
+      state.sources = [];
+      await selectSource(PORTAL_SOURCE_ID);
+      const cb = vi.fn();
+      await handleDisplayMediaRequest(cb, "linux", WAYLAND);
+      expect(cb).toHaveBeenCalledWith(null);
+    });
+
+    it("linux WITHOUT a Wayland session keeps the grid id-match", async () => {
+      setPlatform("linux");
+      state.sources = [source("screen:1"), source("screen:2")];
+      await selectSource("screen:2");
+      const cb = vi.fn();
+      await handleDisplayMediaRequest(cb, "linux", {});
+      expect(cb).toHaveBeenCalledWith({ video: state.sources[1] });
+    });
   });
 
   it("reports the TCC screen-recording status on darwin", async () => {

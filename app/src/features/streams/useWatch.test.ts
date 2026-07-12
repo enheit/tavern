@@ -6,6 +6,7 @@ import { ApiError } from "@/lib/apiClient";
 import { resetWatchRegistry, useWatch, WatchController } from "@/features/streams/useWatch";
 import type { WatchDeps } from "@/features/streams/useWatch";
 import { useServersStore } from "@/stores/servers";
+import { useSettingsStore } from "@/stores/settings";
 import { fakeTrack } from "../../../test/fakes/media";
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
@@ -156,6 +157,10 @@ beforeEach(() => {
   // The per-stream WatchController registry (used by the useWatch hook) is module-level — clear it so a
   // controller from one test never leaks into the next (the deferred teardown is timer-based).
   resetWatchRegistry();
+  // Reset persisted volumes so the FR-31 hydration tests don't bleed a stream gain into other cases.
+  useSettingsStore.setState({
+    volumes: { v: 1, users: {}, streams: {}, soundboard: 1, mutedUsers: [] },
+  });
 });
 
 describe("FR-30 opt-in watching", () => {
@@ -208,6 +213,33 @@ describe("FR-30 opt-in watching", () => {
     // The video path never routes to the audio sink.
     h.pull.emit(stream.trackName, fakeTrack("video"));
     expect(h.sink.attachStreamAudio).toHaveBeenCalledTimes(1);
+  });
+
+  it("FR-31 re-applies the viewer's persisted per-stream volume on attach", async () => {
+    const key = `${UID}:screen`;
+    useSettingsStore.setState({
+      volumes: { v: 1, users: {}, streams: { [key]: 0.5 }, soundboard: 1, mutedUsers: [] },
+    });
+    const h = harness();
+    const controller = new WatchController(makeStream({ hasAudio: true }), h.deps);
+    controller.watch();
+    await flush();
+
+    h.pull.emit(`screenAudio:${UID}:1`, fakeTrack("audio"));
+    expect(h.sink.setStreamGain).toHaveBeenCalledWith(key, 0.5);
+  });
+
+  it("FR-31 leaves the graph at unity when no persisted volume exists", async () => {
+    useSettingsStore.setState({
+      volumes: { v: 1, users: {}, streams: {}, soundboard: 1, mutedUsers: [] },
+    });
+    const h = harness();
+    const controller = new WatchController(makeStream({ hasAudio: true }), h.deps);
+    controller.watch();
+    await flush();
+
+    h.pull.emit(`screenAudio:${UID}:1`, fakeTrack("audio"));
+    expect(h.sink.setStreamGain).not.toHaveBeenCalled();
   });
 
   it("unwatch() closes session and sends watch.stop", async () => {

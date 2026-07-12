@@ -2,6 +2,7 @@ import type { StreamInfo } from "@tavern/shared";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StreamTile } from "@/features/streams/StreamTile";
+import { focusStore } from "@/lib/focusState";
 import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
 import { fakeStream, fakeTrack } from "../../../test/fakes/media";
@@ -52,14 +53,9 @@ function makeStream(over: Partial<StreamInfo> = {}): StreamInfo {
   };
 }
 
-// Base UI Slider drives value changes through a hidden native range input inside the thumb; a
-// `change` event on it is what the component listens to (jsdom has no pointer geometry).
-function setSlider(streamKey: string, percent: number): void {
-  const input = screen
-    .getByTestId(`stream-volume-${streamKey}`)
-    .querySelector('input[type="range"]');
-  if (input === null) throw new Error("no slider input");
-  fireEvent.change(input, { target: { value: String(percent) } });
+// FR-31 volume is now a scroll gesture on the tile (no slider). Middle-click = reset to 0.
+function middleClick(el: Element): void {
+  el.dispatchEvent(new MouseEvent("auxclick", { button: 1, bubbles: true, cancelable: true }));
 }
 
 beforeEach(() => {
@@ -94,47 +90,35 @@ describe("FR-30 opt-in placeholder", () => {
 });
 
 describe("FR-31 per-stream volume", () => {
-  it("slider maps 0–200% to setStreamGain 0–2 keyed by userId:kind", () => {
+  it("scroll adjusts setStreamGain in 5% steps keyed by userId:kind and persists", () => {
     const key = `${UID}:screen`;
-    render(
-      <StreamTile
-        stream={makeStream({ hasAudio: true })}
-        onToggleFocus={vi.fn()}
-        onToggleFullscreen={vi.fn()}
-      />,
-    );
+    const stream = makeStream({ hasAudio: true });
+    render(<StreamTile stream={stream} onToggleFocus={vi.fn()} onToggleFullscreen={vi.fn()} />);
+    const tile = screen.getByTestId(`stream-tile-${stream.trackName}`);
 
-    setSlider(key, 200);
-    expect(sinkMock.setStreamGain).toHaveBeenCalledWith(key, 2);
+    fireEvent.wheel(tile, { deltaY: -100 }); // up = louder
+    expect(sinkMock.setStreamGain).toHaveBeenLastCalledWith(key, 1.05);
+    expect(useSettingsStore.getState().volumes.streams[key]).toBe(1.05);
 
-    setSlider(key, 0);
-    expect(sinkMock.setStreamGain).toHaveBeenCalledWith(key, 0);
+    fireEvent.wheel(tile, { deltaY: 100 }); // down = quieter, reads the persisted 1.05
+    expect(sinkMock.setStreamGain).toHaveBeenLastCalledWith(key, 1);
   });
 
-  it("volume persists to settings.volumes.v1", () => {
+  it("middle-click resets the stream to 0%", () => {
     const key = `${UID}:screen`;
-    render(
-      <StreamTile
-        stream={makeStream({ hasAudio: true })}
-        onToggleFocus={vi.fn()}
-        onToggleFullscreen={vi.fn()}
-      />,
-    );
+    const stream = makeStream({ hasAudio: true });
+    render(<StreamTile stream={stream} onToggleFocus={vi.fn()} onToggleFullscreen={vi.fn()} />);
 
-    setSlider(key, 200);
-
-    expect(useSettingsStore.getState().volumes.streams[key]).toBe(2);
+    middleClick(screen.getByTestId(`stream-tile-${stream.trackName}`));
+    expect(sinkMock.setStreamGain).toHaveBeenLastCalledWith(key, 0);
+    expect(useSettingsStore.getState().volumes.streams[key]).toBe(0);
   });
 
-  it("slider absent when hasAudio=false", () => {
-    render(
-      <StreamTile
-        stream={makeStream({ hasAudio: false })}
-        onToggleFocus={vi.fn()}
-        onToggleFullscreen={vi.fn()}
-      />,
-    );
-    expect(screen.queryByTestId(`stream-volume-${UID}:screen`)).toBeNull();
+  it("no volume gesture when hasAudio=false", () => {
+    const stream = makeStream({ hasAudio: false });
+    render(<StreamTile stream={stream} onToggleFocus={vi.fn()} onToggleFullscreen={vi.fn()} />);
+    fireEvent.wheel(screen.getByTestId(`stream-tile-${stream.trackName}`), { deltaY: -100 });
+    expect(sinkMock.setStreamGain).not.toHaveBeenCalled();
   });
 });
 
@@ -219,6 +203,45 @@ describe("FR-29 self preview", () => {
     expect(video.muted).toBe(true);
     // The "You" badge marks the sharer's own tile (m.streams_self → "You").
     expect(screen.getByTestId(`stream-self-badge-${stream.trackName}`).textContent).toBe("You");
+  });
+
+  it("covers the preview with a 'still running' card while the window is unfocused", () => {
+    seedSelf();
+    focusStore.setState({ focused: false });
+    const selfStream = fakeStream({ video: [fakeTrack("video")] });
+    const stream = makeStream({ kind: "webcam", trackName: `cam:${UID}` });
+    render(
+      <StreamTile
+        stream={stream}
+        selfStream={selfStream}
+        onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
+      />,
+    );
+
+    // Cover is shown, but the <video> stays mounted (srcObject intact) so preview snaps back on focus.
+    const cover = screen.getByTestId(`stream-self-paused-${stream.trackName}`);
+    expect(cover.textContent).toContain("Your stream is still running");
+    expect(cover.textContent).toContain("We paused the preview to save resources.");
+    const video = screen.getByTestId(`stream-self-${stream.trackName}`) as HTMLVideoElement;
+    expect(video.srcObject).toBe(selfStream);
+  });
+
+  it("hides the cover and shows the live preview while the window is focused", () => {
+    seedSelf();
+    focusStore.setState({ focused: true });
+    const stream = makeStream({ kind: "webcam", trackName: `cam:${UID}` });
+    render(
+      <StreamTile
+        stream={stream}
+        selfStream={fakeStream({ video: [fakeTrack("video")] })}
+        onToggleFocus={vi.fn()}
+        onToggleFullscreen={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId(`stream-self-paused-${stream.trackName}`)).toBeNull();
+    expect(screen.getByTestId(`stream-self-${stream.trackName}`)).not.toBeNull();
   });
 
   it("own tiles never render a Watch button", () => {

@@ -1,78 +1,72 @@
 import type { DeepFilterNet3Core } from "deepfilternet3-noise-filter";
-// The worklet/wasm files ship as real self-origin assets (?url): CSP script-src has no data:, so
-// they must never be inlined — vite.config's assetsInlineLimit excludes this package.
-import rnnoiseWasmPath from "@sapphi-red/web-noise-suppressor/rnnoise.wasm?url";
-import rnnoiseWasmSimdPath from "@sapphi-red/web-noise-suppressor/rnnoise_simd.wasm?url";
-// ?url is a Vite construct: the import IS the asset URL string (a default export Vite
-// synthesizes); oxlint resolves the raw worklet file and sees no default export there.
-// oxlint-disable-next-line import/default
-import rnnoiseWorkletPath from "@sapphi-red/web-noise-suppressor/rnnoiseWorklet.js?url";
-import type { NoiseSuppressionMode } from "@/stores/settings";
 
-// FR-22 WASM noise-suppression modes (rnnoise = RNNoise ~150 KB, deepfilter = DeepFilterNet3
-// ~24 MB self-hosted assets). The pipeline runs inside the ONE app AudioContext (§7.3) — this
-// module never constructs a context (§7.2 ports gate); capture.getMic passes the graph's context.
-// Both packages are imported DYNAMICALLY: their node classes extend AudioWorkletNode at module
-// scope, which throws in jsdom — a static import would break every unit test that imports
-// capture.ts. Dynamic import also code-splits them out of the main bundle.
+// DeepFilterNet3 (~24 MB self-hosted assets) is the app's single WASM noise-suppression model,
+// applied AFTER capture inside the ONE app AudioContext (§7.3) — this module never constructs a
+// context (§7.2 ports gate); capture.getMic passes the graph's context. All processing runs
+// ON-DEVICE (AudioWorklet + WASM in the browser) before the mic is published; the SFU forwards
+// already-clean audio. The package is imported DYNAMICALLY: its node class extends AudioWorkletNode
+// at module scope, which throws in jsdom — a static import would break every unit test that imports
+// capture.ts. Dynamic import also code-splits the model loader out of the main bundle. (RNNoise was
+// removed: DeepFilterNet3 is the only model, tunable via its attenuation limit — see
+// stores/settings.ts DEEPFILTER_ATTEN_*.)
 
-type WorkletMode = Extract<NoiseSuppressionMode, "rnnoise" | "deepfilter">;
-
-// DeepFilterNet assets are self-hosted under public/deepfilternet (CSP connect-src is 'self' —
-// the package's default cdn.mezon.ai origin is unreachable by policy and untrusted by choice).
+// DeepFilterNet assets are self-hosted under public/deepfilternet (CSP connect-src is 'self' — the
+// package's default cdn.mezon.ai origin is unreachable by policy and untrusted by choice).
 const DEEPFILTER_ASSET_BASE = "/deepfilternet";
 
-// RNNoise wasm bytes: fetched once per app run (loadRnnoise picks the SIMD build itself).
-let rnnoiseWasm: Promise<ArrayBuffer> | null = null;
 // DeepFilterNet core: assets fetched + wasm compiled once per app run, on first use of the mode.
 let dfnCore: Promise<DeepFilterNet3Core> | null = null;
 
-// ONE worklet node per (context, mode), reused across mid-call retoggles. Two reasons:
-// (a) the DFN loader calls addModule with a fresh blob on every createAudioWorkletNode — a second
-//     call on the same context would re-register 'deepfilter-audio-processor' and throw;
-// (b) RnnoiseWorkletNode.destroy() leaks (sapphi-red/web-noise-suppressor#42) — never churn nodes;
-//     they die with the context when the voice session's graph closes.
-const nodeCache = new WeakMap<AudioContext, Map<WorkletMode, Promise<AudioWorkletNode>>>();
-
-async function createRnnoiseNode(ctx: AudioContext): Promise<AudioWorkletNode> {
-  const { loadRnnoise, RnnoiseWorkletNode } = await import("@sapphi-red/web-noise-suppressor");
-  rnnoiseWasm ??= loadRnnoise({ url: rnnoiseWasmPath, simdUrl: rnnoiseWasmSimdPath });
-  const [wasmBinary] = await Promise.all([
-    rnnoiseWasm,
-    ctx.audioWorklet.addModule(rnnoiseWorkletPath),
-  ]);
-  return new RnnoiseWorkletNode(ctx, { wasmBinary, maxChannels: 1 });
-}
-
-async function createDeepfilterNode(ctx: AudioContext): Promise<AudioWorkletNode> {
+function loadCore(): Promise<DeepFilterNet3Core> {
   dfnCore ??= (async () => {
     const { DeepFilterNet3Core: Core } = await import("deepfilternet3-noise-filter");
     const core = new Core({
       sampleRate: 48000, // the app graph rate (§7.3); DFN3 is a 48 kHz model
-      noiseReductionLevel: 50,
       assetConfig: { cdnUrl: DEEPFILTER_ASSET_BASE },
     });
     await core.initialize();
     return core;
   })();
-  const core = await dfnCore.catch((err: unknown) => {
+  return dfnCore.catch((err: unknown) => {
     dfnCore = null; // failed asset fetch/compile must not poison every later attempt
     throw err;
   });
-  return core.createAudioWorkletNode(ctx);
 }
 
-function workletNodeFor(ctx: AudioContext, mode: WorkletMode): Promise<AudioWorkletNode> {
-  let perCtx = nodeCache.get(ctx);
-  if (!perCtx) {
-    perCtx = new Map();
-    nodeCache.set(ctx, perCtx);
+// Live attenuation change from the settings slider — a plain postMessage to the worklet, so the
+// running mic is retuned WITHOUT a re-acquire (gapless). No-op until the core + its worklet node
+// exist (not in voice, or assets still loading); the next acquisition builds the node at the
+// persisted level (createDeepfilterNode re-syncs), so nothing is lost.
+export function setDeepfilterAtten(level: number): void {
+  if (dfnCore === null) return;
+  void dfnCore.then((core) => core.setSuppressionLevel(level)).catch(() => undefined);
+}
+
+// ONE worklet node per context, reused across mid-call retoggles: the DFN loader calls addModule
+// with a fresh blob on every createAudioWorkletNode — a second call on the same context would
+// re-register 'deepfilter-audio-processor' and throw. The node dies with the context when the
+// voice session's graph closes.
+const nodeCache = new WeakMap<AudioContext, Promise<AudioWorkletNode>>();
+
+async function createDeepfilterNode(ctx: AudioContext, atten: number): Promise<AudioWorkletNode> {
+  const core = await loadCore();
+  const node = await core.createAudioWorkletNode(ctx);
+  // The node is built with the core's construction-time level; re-sync to the caller's current
+  // level so a rejoin after the user moved the strength slider reflects their latest choice.
+  core.setSuppressionLevel(atten);
+  return node;
+}
+
+function workletNodeFor(ctx: AudioContext, atten: number): Promise<AudioWorkletNode> {
+  const cached = nodeCache.get(ctx);
+  if (cached) {
+    // Same context already has the node — just re-sync the level (cheap postMessage on resolve).
+    void cached.then(() => setDeepfilterAtten(atten)).catch(() => undefined);
+    return cached;
   }
-  const cached = perCtx.get(mode);
-  if (cached) return cached;
-  const node = mode === "rnnoise" ? createRnnoiseNode(ctx) : createDeepfilterNode(ctx);
-  node.catch(() => perCtx.delete(mode)); // don't cache a failed load
-  perCtx.set(mode, node);
+  const node = createDeepfilterNode(ctx, atten);
+  node.catch(() => nodeCache.delete(ctx)); // don't cache a failed load
+  nodeCache.set(ctx, node);
   return node;
 }
 
@@ -83,12 +77,11 @@ function workletNodeFor(ctx: AudioContext, mode: WorkletMode): Promise<AudioWork
 async function buildPipeline(
   ctx: AudioContext,
   raw: MediaStreamTrack,
-  mode: WorkletMode,
+  atten: number,
 ): Promise<MediaStreamTrack> {
-  const node = await workletNodeFor(ctx, mode);
+  const node = await workletNodeFor(ctx, atten);
   const source = ctx.createMediaStreamSource(new MediaStream([raw]));
-  // Voice is mono end-to-end (Opus mic track): downmix ahead of the model — RNNoise runs
-  // per-channel (maxChannels 1) and DFN3 expects mono frames.
+  // Voice is mono end-to-end (Opus mic track): downmix ahead of the model — DFN3 expects mono frames.
   source.channelCount = 1;
   source.channelCountMode = "explicit";
   const dest = ctx.createMediaStreamDestination();
@@ -115,26 +108,19 @@ async function buildPipeline(
   return processed;
 }
 
-// Task-2 fallback chain: "deepfilter" degrades to RNNoise when the DFN3 assets/wasm fail to load
-// (24 MB fetch — offline or a blocked path must not cost the user ALL suppression), and any mode
-// fails OPEN to the raw track (voice keeps working unprocessed — never a failed join). The chain
-// re-attempts DFN on the next acquisition (join/retoggle): a transient fetch failure heals itself,
-// and the loader's poison-reset keeps a failed core from sticking.
+// DeepFilterNet fails OPEN to the raw track: any load/asset failure (24 MB fetch — offline or a
+// blocked path must not cost the user their voice) keeps the mic working unprocessed rather than
+// failing the join. The next acquisition (join/retoggle) re-attempts DFN — a transient fetch failure
+// heals itself, and loadCore's poison-reset keeps a failed core from sticking.
 export async function applyNoiseWorklet(
   ctx: AudioContext,
   raw: MediaStreamTrack,
-  mode: WorkletMode,
+  atten: number,
 ): Promise<MediaStreamTrack> {
-  const chain: WorkletMode[] = mode === "deepfilter" ? ["deepfilter", "rnnoise"] : [mode];
-  /* oxlint-disable no-await-in-loop -- each attempt exists only because the previous one failed */
-  for (const attempt of chain) {
-    try {
-      return await buildPipeline(ctx, raw, attempt);
-    } catch (err) {
-      const next = attempt === chain.at(-1) ? "using unprocessed mic" : "falling back to rnnoise";
-      console.warn(`[noise] ${attempt} pipeline unavailable — ${next}`, err);
-    }
+  try {
+    return await buildPipeline(ctx, raw, atten);
+  } catch (err) {
+    console.warn("[noise] deepfilter pipeline unavailable — using unprocessed mic", err);
+    return raw;
   }
-  /* oxlint-enable no-await-in-loop */
-  return raw;
 }

@@ -7,6 +7,7 @@ import {
   VideoIcon,
 } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 import type { DataTier, PresetId } from "@tavern/shared";
 import {
   DATA_TIERS,
@@ -17,6 +18,7 @@ import {
 } from "@tavern/shared";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
+import { ApiError } from "@/lib/apiClient";
 import { cn } from "@/lib/utils";
 import { RecordButton } from "@/features/recordings/RecordButton";
 import { SharePickerDialog } from "@/features/streams/SharePickerDialog";
@@ -49,6 +51,16 @@ function toPreset(height: number, fps: number, tier: DataTier): PresetId {
   return isBasePresetId(id) ? withTier(id, tier) : DEFAULT_SCREEN_PRESET;
 }
 
+// A share start that fails must SAY so (0.5.0 shipped a bare `void startShare(sel)` — on Wayland
+// every capture failure vanished and the picker just… closed). Stay silent only where the user
+// declined a picker themselves (NotAllowedError/AbortError from getDisplayMedia / the OS portal)
+// or the controller already toasted a typed publish rejection (ApiError, §9.5).
+function isUserCancel(err: unknown): boolean {
+  return (
+    err instanceof DOMException && (err.name === "NotAllowedError" || err.name === "AbortError")
+  );
+}
+
 export function ControlsBar({ serverId }: { serverId: string }) {
   const { status, inVoiceServerId, muted, setMuted, deafened, setDeafened } = useVoice(serverId);
   const active = inVoiceServerId === serverId && (status === "joined" || status === "joining");
@@ -58,6 +70,13 @@ export function ControlsBar({ serverId }: { serverId: string }) {
   const [height, setHeight] = useState(1080);
   const [fps, setFps] = useState(30);
   const [tier, setTier] = useState<DataTier>(100);
+
+  const launchShare = (sel: Parameters<typeof startShare>[0]): void => {
+    startShare(sel).catch((err: unknown) => {
+      if (isUserCancel(err) || err instanceof ApiError) return;
+      toast.error(m.streams_share_start_failed());
+    });
+  };
 
   // Main share button: stop while sharing; else start now (web) or open the source dialog (desktop).
   // A share ALWAYS starts at 1080p30 (DEFAULT_SCREEN_PRESET); res/fps are tuned live afterwards, so the
@@ -74,7 +93,7 @@ export function ControlsBar({ serverId }: { serverId: string }) {
     setHeight(1080);
     setFps(30);
     setTier(100);
-    void startShare({ sourceId: null, preset: DEFAULT_SCREEN_PRESET, withAudio: true });
+    launchShare({ sourceId: null, preset: DEFAULT_SCREEN_PRESET, withAudio: true });
   };
 
   // Segmented picks: update state, and if a share is live re-apply the new preset on the fly.
@@ -215,7 +234,7 @@ export function ControlsBar({ serverId }: { serverId: string }) {
           setHeight(spec.height);
           setFps(spec.fps);
           setTier(100);
-          void startShare(sel);
+          launchShare(sel);
         }}
       />
     </div>

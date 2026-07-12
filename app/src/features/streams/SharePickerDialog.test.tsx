@@ -7,6 +7,7 @@ const platformMock = vi.hoisted(() => ({
   kind: "desktop" as "desktop" | "web",
   os: "darwin" as "win32" | "darwin" | "linux" | "web",
   capture: {
+    sourceMode: "grid" as "grid" | "portal",
     getScreenSources: vi.fn(
       async () => [] as { id: string; name: string; thumbnailDataUrl: string }[],
     ),
@@ -29,6 +30,7 @@ function renderPicker(): { onStart: ReturnType<typeof vi.fn> } {
 beforeEach(() => {
   platformMock.kind = "desktop";
   platformMock.os = "darwin";
+  platformMock.capture.sourceMode = "grid";
   platformMock.capture.getScreenSources.mockResolvedValue([]);
   platformMock.capture.selectSource.mockResolvedValue(undefined);
   platformMock.capture.loopbackAudioSupported.mockResolvedValue(true);
@@ -114,5 +116,24 @@ describe("FR-28 share picker", () => {
 
     await screen.findByTestId("share-source-screen:0");
     expect(screen.queryByTestId("share-permission-hint")).toBeNull();
+  });
+
+  it("desktop wayland (portal mode): no grid, no enumeration, Start armed with the sentinel", async () => {
+    // Wayland: enumeration ids die with each portal session AND every getSources pops the OS
+    // dialog — the picker must not enumerate at all; the ScreenCast dialog is the picker.
+    platformMock.os = "linux";
+    platformMock.capture.sourceMode = "portal";
+    const { onStart } = renderPicker();
+
+    await screen.findByTestId("share-preset");
+    expect(screen.queryByTestId("share-tab-screens")).toBeNull();
+    expect(platformMock.capture.getScreenSources).not.toHaveBeenCalled();
+    expect(platformMock.capture.screenAccessStatus).not.toHaveBeenCalled();
+    await waitFor(() => expect(platformMock.capture.selectSource).toHaveBeenCalledWith("portal"));
+
+    const start = screen.getByTestId("share-start");
+    await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
+    fireEvent.click(start);
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ sourceId: "portal" }));
   });
 });

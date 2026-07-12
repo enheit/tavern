@@ -5,90 +5,49 @@ All notable changes to Tavern are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.5.0] — 2026-07-12
+## [0.6.0] — 2026-07-12
 
 ### Added
 
-- **Voice quality stack.** Voice defaults now match what a Discord user expects:
-  noise suppression defaults to DeepFilterNet3 (falling back to RNNoise
-  automatically if its assets can't load, and to a raw mic only when both
-  fail), the microphone publishes Opus at 64 kbps (up from the browser's
-  ~32 kbps default), capture is 48 kHz mono in every mode, automatic gain
-  control is off everywhere (no more level pumping between words), and echo
-  cancellation stays always-on. There is no hard noise gate; all processing
-  runs client-side in the audio worklet.
+- Chat images: paste (Ctrl+V) or drag-and-drop an image straight into the chat pane — files, or a
+  URL dragged in from another app/browser. Stored in our own R2 bucket and referenced by id (never a
+  client-supplied URL), so there's no cross-origin fetch or hotlink risk.
+- Scroll a voice member's nickname or a stream tile to set its volume (0–200%, middle-click resets
+  to 0) — replaces the old stream volume slider with an inline HUD showing the live percentage.
+- Desktop tray icon: minimize-to-tray with an Open/Exit menu; closing the window now hides to tray
+  instead of quitting (tray "Exit", Cmd+Q, and auto-update all still quit for real).
 
-- **Stream audio on Linux — web and desktop.** Screen shares on Linux were
-  always silent: Chrome only offers audio for tab shares there, and Chromium
-  never lists PulseAudio monitors as capturable inputs. Shares that resolve
-  without audio now fall back to capturing a system-audio (monitor) source
-  directly — on the desktop app Tavern creates one automatically around each
-  share (a pactl remap of the default output, works on PulseAudio and
-  PipeWire); on the web it picks a monitor-labeled or user-chosen input
-  (Settings → Voice → "Stream audio"). Echo-loopback is filtered: the capture
-  runs through the browser's echo canceller, which removes Tavern's own voices
-  and soundboard from the stream while game/app audio passes through
-  (measured −54 dB self-audio vs untouched external audio on a real Linux
-  audio stack). Tab shares keep their native tab audio; a share that wanted
-  sound but got none now explains where to get it.
+## [0.5.0] — 2026-07-12
 
-- **Lossless stream audio on Linux desktops with PipeWire.** Where PipeWire is
-  running, the desktop app now captures stream audio through a native virtual
-  mic (venmic) that excludes Tavern's own audio at the source — your friends'
-  voices never enter the stream, and unlike the echo-canceller approach the
-  game/music signal is untouched (no ducking while people talk). Systems
-  without PipeWire (or if anything about the native path fails) silently keep
-  the monitor-capture fallback above.
+Voice now defaults to Discord-grade quality, and screen-share audio on Linux
+finally works. Also fixes a big one: chat notifications weren't firing at all.
+
+### Added
+
+- Voice defaults upgraded: DeepFilterNet3 noise suppression (auto-falls back
+  to RNNoise, then raw mic), 64 kbps Opus mic (was ~32 kbps), 48 kHz mono
+  capture, AGC off (no more pumping), echo cancellation always on.
+- Linux screen-share audio (web + desktop): falls back to capturing a
+  system-audio monitor source when the share itself has none, with echo
+  cancellation filtering your own voice/soundboard out of the stream.
+- Linux + PipeWire: desktop app can capture stream audio via a native virtual
+  mic (venmic) that excludes Tavern's own audio at the source — no ducking,
+  no echo-canceller needed.
 
 ### Fixed
 
-- **Chat messages never raised a notification.** Nobody got notified of new
-  messages, on any platform. On the web the notify toggles default to on, but
-  the browser permission was only ever requested when you *flipped* a toggle —
-  so a fresh account never triggered the request and every `show()` silently
-  no-oped. The app now asks for notification permission on its own whenever
-  notifications are enabled and the browser hasn't been asked yet (immediately
-  where the browser allows it, otherwise on your first click/keypress); a denied
-  user is never re-prompted, and a dismissed prompt is re-offered on your next
-  interaction instead of going silent for the session. Notifications also stopped
-  working after logging out and back in without a full reload (the listeners
-  stayed bound to the old, closed connections) — they're now rebuilt on each
-  login. Separately, boot ignored the notification prefs returned by `/api/me`,
-  so a setting you'd turned off elsewhere quietly reverted to on after a reload;
-  those prefs are now hydrated at boot. A direct @mention now notifies whenever
-  *either* "all messages" or "mentions" is on (previously "all messages" on but
-  "mentions" off would notify for ordinary messages yet drop the one that named
-  you). Notifications still fire only for other people's messages and only when
-  the message isn't already on-screen (window unfocused, or a different server
-  open). Desktop notifications also now no-op cleanly on a Linux box with no
-  notification daemon instead of throwing.
-
-- **Voice members could stop hearing each other.** In calls with 3+ people,
-  some pairs would silently lose audio one way (A hears B, C doesn't) —
-  especially after someone joined slowly, reconnected, or their machine slept.
-  Four root causes fixed: per-track SFU pull rejections were silently
-  swallowed (now retried until they succeed), the mic-pull retry gave up after
-  5 seconds while a slow joiner's mic can take longer (now backs off for up to
-  ~2 minutes and the server re-announces every mic registration), a member who
-  re-published their mic after a reconnect was invisible to existing listeners
-  (peers now re-pull via a per-member mic sequence number), and a dead
-  connection kept showing "joined" while transmitting nothing (the client now
-  detects the failure and rejoins automatically, keeping your mute/deafen
-  state). Regression-tested with four concurrent clients asserting every pair
-  hears every pair.
-
-- **Streams now play at full quality everywhere.** Watched streams used to pull
-  the low simulcast layer unless the tile was focused or fullscreen — a stream
-  watched in the grid looked soft until you pressed `f`. Every watch now pins
-  the high layer from the initial pull; focus and fullscreen are pure layout
-  changes.
-- **Linux login no longer fails without an OS keyring.** On systems with no
-  Secret Service / kwallet (bare window managers, minimal distros — common for
-  AppImage users), storing the session token threw "Encryption is not
-  available." and the app showed *Connection failed* at login. Tavern now falls
-  back to Chromium's basic obfuscated storage (the same scheme Chrome uses on
-  such systems), and if even that is unusable (a detected but dead keyring
-  daemon) the session is kept in memory for the run instead of failing login.
+- Chat notifications weren't firing at all — missing permission request on
+  fresh accounts, stale listeners after re-login, boot ignoring saved prefs,
+  and @mentions dropped in one toggle combo. All fixed; desktop notifications
+  also no-op cleanly with no notification daemon.
+- Voice members could silently stop hearing each other in 3+ person calls.
+  Fixed four root causes: swallowed pull failures, too-short mic retry
+  window, invisible re-publish after reconnect, dead connections stuck
+  showing "joined". Regression-tested with 4 concurrent clients.
+- Watched streams rendered soft in the grid until fullscreened — now always
+  pull the high-quality layer.
+- Linux login failed on systems without an OS keyring — now falls back to
+  Chromium's basic storage, then in-memory, instead of failing.
 
 ## [0.4.0] — 2026-07-12
 

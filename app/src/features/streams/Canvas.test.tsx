@@ -4,6 +4,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Canvas } from "@/features/streams/Canvas";
+import { useMediaStore } from "@/stores/media";
 import { resetRoomStores, roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
 
@@ -13,11 +14,21 @@ vi.mock("@tavern/shared", async (importActual) => {
   return { ...actual, computeLayout: vi.fn(actual.computeLayout) };
 });
 
-// Stub the tile — Canvas.test asserts layout (rows/order/focus), not tile internals (useWatch).
+// Stub the tile — Canvas.test asserts layout (rows/order/focus) + which local stream Canvas routes to
+// each tile (selfStreamFor), not tile internals (useWatch). The stub records the `selfStream` prop per
+// trackName so the FR-29 routing test can assert it.
+const selfStreams = vi.hoisted(() => new Map<string, MediaStream | null>());
 vi.mock("@/features/streams/StreamTile", () => ({
-  StreamTile: ({ stream: tile }: { stream: StreamInfo }) => (
-    <div data-testid={`stream-tile-${tile.trackName}`} />
-  ),
+  StreamTile: ({
+    stream: tile,
+    selfStream,
+  }: {
+    stream: StreamInfo;
+    selfStream?: MediaStream | null;
+  }) => {
+    selfStreams.set(tile.trackName, selfStream ?? null);
+    return <div data-testid={`stream-tile-${tile.trackName}`} />;
+  },
 }));
 
 // jsdom has no ResizeObserver; capture the callback so a test can drive a resize.
@@ -51,6 +62,8 @@ beforeEach(() => {
   roCb = null;
   resetRoomStores();
   useServersStore.setState({ activeServerId: null });
+  useMediaStore.setState({ shareTrackName: null, shareStream: null, sharing: false });
+  selfStreams.clear();
   vi.mocked(computeLayout).mockClear();
 });
 
@@ -114,5 +127,23 @@ describe("FR-33 focus mode layout", () => {
     expect(strip.contains(screen.getByTestId("stream-tile-s2"))).toBe(false);
     expect(strip.contains(screen.getByTestId("stream-tile-s1"))).toBe(true);
     expect(strip.contains(screen.getByTestId("stream-tile-s3"))).toBe(true);
+  });
+});
+
+describe("FR-29 self-preview routing", () => {
+  it("routes the local screen-share stream to the tile matching shareTrackName", () => {
+    // A fake stand-in for the local screen MediaStream (jsdom has no MediaStream constructor).
+    const preview = { id: "screen-preview" } as unknown as MediaStream;
+    useMediaStore.setState({
+      sharing: true,
+      shareTrackName: "screen:me:1",
+      shareStream: preview,
+    });
+    seed([stream("screen:me:1"), stream("screen:other:1")]);
+    render(<Canvas />);
+    // The sharer's own tile gets the live local stream (→ live preview, not black); every other tile
+    // gets null (it pulls from the SFU instead).
+    expect(selfStreams.get("screen:me:1")).toBe(preview);
+    expect(selfStreams.get("screen:other:1")).toBeNull();
   });
 });
