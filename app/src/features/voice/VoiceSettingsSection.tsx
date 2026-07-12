@@ -260,7 +260,7 @@ export function VoiceSettingsSection() {
             <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium">{m.settings_voice_noise_strength()}</span>
-                <span className="text-xs tabular-nums text-muted-foreground">{atten}</span>
+                <span className="text-xs text-muted-foreground tabular-nums">{atten}</span>
               </div>
               <Slider
                 data-testid="settings-voice-strength"

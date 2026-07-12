@@ -72,7 +72,11 @@ export async function getMic(opts: MicOpts): Promise<MediaStreamTrack> {
   // §10: the worklet pipeline never runs under the e2e harness — the sine seam must stay raw.
   if (platformBridge.isE2E || !opts.audioContext) return raw;
   if (opts.noiseSuppression !== "deepfilter") return raw;
-  return applyNoiseWorklet(opts.audioContext, raw, opts.deepfilterAtten ?? DEEPFILTER_ATTEN_DEFAULT);
+  return applyNoiseWorklet(
+    opts.audioContext,
+    raw,
+    opts.deepfilterAtten ?? DEEPFILTER_ATTEN_DEFAULT,
+  );
 }
 
 // FR-22 retoggle: applyConstraints is a Chromium WontFix no-op for these (crbug 327472528), so

@@ -85,7 +85,8 @@ export function loadDeviceSettings(): DeviceSettingsV1 {
     if (typeof rec.sinkId === "string") next.sinkId = rec.sinkId;
     if (typeof rec.cameraDeviceId === "string") next.cameraDeviceId = rec.cameraDeviceId;
     if (typeof rec.streamAudio === "string") next.streamAudio = rec.streamAudio;
-    if (typeof rec.deepfilterAtten === "number") next.deepfilterAtten = clampAtten(rec.deepfilterAtten);
+    if (typeof rec.deepfilterAtten === "number")
+      next.deepfilterAtten = clampAtten(rec.deepfilterAtten);
     if (typeof rec.autoGainControl === "boolean") next.autoGainControl = rec.autoGainControl;
     return next;
   } catch {

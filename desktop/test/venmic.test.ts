@@ -176,7 +176,11 @@ describe("Task-3 releaseVenmic / shutdownVenmic", () => {
     const fake = fakeHost((_pid, emit) => {
       emit({ t: "link.result", ok: true });
     });
-    const deps = { platform: "linux" as const, metrics: () => [AUDIO_SERVICE], fork: () => fake.host };
+    const deps = {
+      platform: "linux" as const,
+      metrics: () => [AUDIO_SERVICE],
+      fork: () => fake.host,
+    };
     return { fake, deps };
   }
 

@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import type { BasePresetId, PresetId, ScreenAccessStatus, ScreenSource } from "@tavern/shared";
-import { BASE_PRESET_IDS, DEFAULT_SCREEN_PRESET, PORTAL_SOURCE_ID, PRESET_IDS } from "@tavern/shared";
+import {
+  BASE_PRESET_IDS,
+  DEFAULT_SCREEN_PRESET,
+  PORTAL_SOURCE_ID,
+  PRESET_IDS,
+} from "@tavern/shared";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
