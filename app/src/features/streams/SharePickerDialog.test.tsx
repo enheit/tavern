@@ -72,12 +72,16 @@ describe("FR-28 share picker", () => {
     await waitFor(() => expect(audio.getAttribute("data-disabled")).not.toBeNull());
   });
 
-  it("audio switch absent on linux", async () => {
+  it("audio switch shown and enabled on linux even without an OS loopback device", async () => {
+    // FR-28: the old S8.1 "hidden on Linux" pin is revised — Linux has no OS
+    // loopback device, but stream audio now rides the pactl remap-source + AEC
+    // fallback (media/capture.ts), so the switch is offered AND stays enabled.
     platformMock.os = "linux";
+    platformMock.capture.loopbackAudioSupported.mockResolvedValue(false);
     renderPicker();
 
-    await screen.findByTestId("share-preset");
-    expect(screen.queryByTestId("share-audio")).toBeNull();
+    const audio = await screen.findByTestId("share-audio");
+    await waitFor(() => expect(audio.getAttribute("data-disabled")).toBeNull());
   });
 
   it("web: no source grid rendered", async () => {
