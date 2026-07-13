@@ -34,7 +34,12 @@ function makeServices(): IpcServices {
     },
     notifications: { show: vi.fn() },
     updates: { restartToUpdate: vi.fn() },
-    shell: { setBadge: vi.fn(), focusWindow: vi.fn() },
+    shell: {
+      setBadge: vi.fn(),
+      focusWindow: vi.fn(),
+      getCloseToTray: vi.fn(() => true),
+      setCloseToTray: vi.fn(),
+    },
   };
 }
 
@@ -53,7 +58,7 @@ describe("A10/§6.3 IPC bridge", () => {
     registerIpc(services);
   });
 
-  it("registers exactly the thirteen §6.3 invoke channels", () => {
+  it("registers exactly the fifteen trusted invoke channels", () => {
     expect([...ipcMainHandlers.keys()].toSorted()).toEqual(
       [
         "capture:getScreenSources",
@@ -67,7 +72,9 @@ describe("A10/§6.3 IPC bridge", () => {
         "secrets:getToken",
         "secrets:setToken",
         "shell:focusWindow",
+        "shell:getCloseToTray",
         "shell:setBadge",
+        "shell:setCloseToTray",
         "updates:restartToUpdate",
       ].toSorted(),
     );
@@ -91,6 +98,9 @@ describe("A10/§6.3 IPC bridge", () => {
 
     await expect(handler("shell:setBadge")(TRUSTED, "nope")).rejects.toThrow();
     expect(services.shell.setBadge).not.toHaveBeenCalled();
+
+    await expect(handler("shell:setCloseToTray")(TRUSTED, "nope")).rejects.toThrow();
+    expect(services.shell.setCloseToTray).not.toHaveBeenCalled();
   });
 
   it("happy path — secrets:getToken returns the token", async () => {
@@ -139,6 +149,9 @@ describe("A10/§6.3 IPC bridge", () => {
     expect(services.shell.setBadge).toHaveBeenCalledWith(5);
     await handler("shell:focusWindow")(TRUSTED);
     expect(services.shell.focusWindow).toHaveBeenCalledTimes(1);
+    expect(await handler("shell:getCloseToTray")(TRUSTED)).toBe(true);
+    await handler("shell:setCloseToTray")(TRUSTED, false);
+    expect(services.shell.setCloseToTray).toHaveBeenCalledWith(false);
   });
 
   it("accepts a sender frame served from TAVERN_RENDERER_URL", async () => {

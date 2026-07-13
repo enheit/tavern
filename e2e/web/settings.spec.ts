@@ -3,13 +3,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Browser, Page } from "@playwright/test";
-import { expect, expectMemberVisible, test, withPeopleTab } from "../harness/fixtures";
+import { expect, expectMemberVisible, test, withDashboardMembers } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
 // FR-03/04/05/06/07 settings persistence against the real local stack: live profile propagation via
 // `member.update`, theme+language surviving a reload (localStorage mechanisms), and avatar upload
-// (client resize → POST → R2) rendering in the People panel.
+// (client resize → POST → R2) rendering on Dashboard.
 
 const hex = (bytes: number): string => randomBytes(bytes).toString("hex");
 const AVATAR_PNG = readFileSync(
@@ -47,7 +47,7 @@ async function openSettings(page: Page): Promise<void> {
 }
 
 test.describe("FR-03 FR-04 FR-05 FR-06 FR-07 settings persistence", () => {
-  test("displayName + color changes propagate live to the other client's People/chat", async ({
+  test("displayName + color changes propagate live to the other client's Dashboard/chat", async ({
     browser,
     baseURL,
     api,
@@ -68,11 +68,10 @@ test.describe("FR-03 FR-04 FR-05 FR-06 FR-07 settings persistence", () => {
       await openedA.page.getByTestId("swatch-#f87171").click();
       await openedA.page.getByTestId("settings-account-save").click();
 
-      // The other client sees the new display name AND the new name color live (member.update) — in
-      // the People tab (restored to Chat afterward).
-      await withPeopleTab(openedB.page, async () => {
-        await expect(openedB.page.getByTestId(`member-name-${a.userId}`)).toHaveText(newName);
-        await expect(openedB.page.getByTestId(`member-name-${a.userId}`)).toHaveCSS(
+      // The other client sees the new display name AND color live on Dashboard (member.update).
+      await withDashboardMembers(openedB.page, async () => {
+        await expect(openedB.page.getByTestId(`home-member-name-${a.userId}`)).toHaveText(newName);
+        await expect(openedB.page.getByTestId(`home-member-name-${a.userId}`)).toHaveCSS(
           "color",
           "rgb(248, 113, 113)",
         );
@@ -110,7 +109,11 @@ test.describe("FR-03 FR-04 FR-05 FR-06 FR-07 settings persistence", () => {
     }
   });
 
-  test("uploaded avatar renders in People for both clients", async ({ browser, baseURL, api }) => {
+  test("uploaded avatar renders on Dashboard for both clients", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
     const a = await api.createUser("a");
     const server = await api.createServer(a);
     const b = await api.createUser("b");
@@ -131,13 +134,13 @@ test.describe("FR-03 FR-04 FR-05 FR-06 FR-07 settings persistence", () => {
       });
       await upload;
 
-      // The People avatar <img> only re-attempts its src on a fresh load, so both clients reload; the
+      // The Dashboard avatar <img> only re-attempts its src on a fresh load, so both clients reload;
       // now-stored webp then decodes (naturalWidth > 0) instead of falling back to the initial.
       await Promise.all([bootOnto(openedA, server.id), bootOnto(openedB, server.id)]);
       const assertAvatarLoaded = async (opened: Opened): Promise<void> => {
-        // The avatar <img> lives in the People tab now — assert while it is active.
-        await withPeopleTab(opened.page, async () => {
-          const img = opened.page.getByTestId(`avatar-img-${a.userId}`);
+        // Assert the uploaded image while the Dashboard member list is active.
+        await withDashboardMembers(opened.page, async () => {
+          const img = opened.page.getByTestId(`home-member-avatar-${a.userId}`);
           await expect(img).toBeVisible();
           await expect
             .poll(() =>

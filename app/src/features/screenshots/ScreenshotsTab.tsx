@@ -4,6 +4,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import type { ErrorCode, Member, Screenshot } from "@tavern/shared";
 import { ApiErrorBody, ScreenshotsResponse } from "@tavern/shared";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { authTransport } from "@/lib/authTransport";
@@ -155,21 +166,37 @@ function ScreenshotCard({
           />
         </a>
         {canManage && (
-          <Button
-            size="icon-xs"
-            variant="secondary"
-            data-testid={`screenshot-delete-${shot.id}`}
-            aria-label={m.screenshots_delete()}
-            title={m.screenshots_delete()}
-            className="absolute top-1 right-1 opacity-0 transition-opacity group-hover:opacity-100"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onDelete();
-            }}
-          >
-            <XIcon />
-          </Button>
+          <AlertDialog>
+            <AlertDialogTrigger
+              render={
+                <Button
+                  size="icon-xs"
+                  variant="secondary"
+                  data-testid={`screenshot-delete-${shot.id}`}
+                  aria-label={m.screenshots_delete()}
+                  title={m.screenshots_delete()}
+                  className="absolute top-1 right-1 opacity-0 transition-opacity group-hover:opacity-100"
+                />
+              }
+            >
+              <XIcon />
+            </AlertDialogTrigger>
+            <AlertDialogContent data-testid={`screenshot-delete-confirm-${shot.id}`}>
+              <AlertDialogHeader>
+                <AlertDialogTitle>{m.screenshots_delete()}</AlertDialogTitle>
+                <AlertDialogDescription>{m.screenshots_delete_confirm()}</AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{m.common_cancel()}</AlertDialogCancel>
+                <AlertDialogAction
+                  data-testid={`screenshot-delete-do-${shot.id}`}
+                  onClick={onDelete}
+                >
+                  {m.screenshots_delete()}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         )}
       </div>
       <div className="min-w-0 truncate text-xs text-muted-foreground">

@@ -1,13 +1,13 @@
 import { randomBytes } from "node:crypto";
 import type { Browser } from "@playwright/test";
-import { expect, expectMemberVisible, test, withPeopleTab } from "../harness/fixtures";
+import { expect, expectMemberVisible, test, withDashboardMembers } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
 // FR-08 / FR-09 / FR-41 / FR-45 server create / join / switch UI against the real local stack
 // (wrangler dev + Vite; the SFU is not exercised here). Users are seeded through the `api` fixture
 // and their session cookie is transferred into a browser context, exactly like the shared
-// `twoContexts` fixture — every assertion drives the real /join page, header switcher and People panel.
+// `twoContexts` fixture — every assertion drives the real /join page, header switcher and Dashboard.
 
 const hex = (bytes: number): string => randomBytes(bytes).toString("hex");
 const serverNickname = (): string => `srv-${hex(4)}`; // [a-z0-9-]{3,32}
@@ -24,7 +24,7 @@ async function pageFor(browser: Browser, baseURL: string | undefined, user: Seed
 }
 
 test.describe("FR-08 FR-09 FR-41 FR-45 servers", () => {
-  test("A creates a server, lands on /s/:id, sees self in People", async ({
+  test("A creates a server, lands on /s/:id, sees self on Dashboard", async ({
     browser,
     baseURL,
     api,
@@ -47,17 +47,17 @@ test.describe("FR-08 FR-09 FR-41 FR-45 servers", () => {
 
       await expect(page).toHaveURL(/\/s\/[0-9a-f-]+$/);
       await expect(page.getByTestId("app-shell")).toBeVisible();
-      // The creator is a member (admin) — the People tab shows them with their displayName (= username).
-      await withPeopleTab(page, async () => {
-        await expect(page.getByTestId(`member-${a.userId}`)).toBeVisible();
-        await expect(page.getByTestId(`member-name-${a.userId}`)).toHaveText(a.username);
+      // The creator is a member (admin) — Dashboard shows their displayName (= username).
+      await withDashboardMembers(page, async () => {
+        await expect(page.getByTestId(`home-member-${a.userId}`)).toBeVisible();
+        await expect(page.getByTestId(`home-member-name-${a.userId}`)).toHaveText(a.username);
       });
     } finally {
       await context.close();
     }
   });
 
-  test("B joins by nickname+password and appears in A's People live", async ({
+  test("B joins by nickname+password and appears on A's Dashboard live", async ({
     browser,
     baseURL,
     api,
@@ -73,9 +73,9 @@ test.describe("FR-08 FR-09 FR-41 FR-45 servers", () => {
       // A boots into the freshly-created server and sees themselves; B is not a member yet.
       await openedByA.page.goto("/");
       await expect(openedByA.page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await withPeopleTab(openedByA.page, async () => {
-        await expect(openedByA.page.getByTestId(`member-${a.userId}`)).toBeVisible();
-        await expect(openedByA.page.getByTestId(`member-${b.userId}`)).toHaveCount(0);
+      await withDashboardMembers(openedByA.page, async () => {
+        await expect(openedByA.page.getByTestId(`home-member-${a.userId}`)).toBeVisible();
+        await expect(openedByA.page.getByTestId(`home-member-${b.userId}`)).toHaveCount(0);
       });
 
       // B joins via the /join card with the exact nickname + password.
@@ -86,7 +86,7 @@ test.describe("FR-08 FR-09 FR-41 FR-45 servers", () => {
       await expect(openedByB.page).toHaveURL(new RegExp(`/s/${server.id}$`));
       await expectMemberVisible(openedByB.page, b.userId);
 
-      // Live (member.joined broadcast, no reload): A's People tab gains B.
+      // Live (member.joined broadcast, no reload): A's Dashboard gains B.
       await expectMemberVisible(openedByA.page, b.userId);
     } finally {
       await openedByA.context.close();
@@ -136,9 +136,9 @@ test.describe("FR-08 FR-09 FR-41 FR-45 servers", () => {
       await page.getByTestId(`server-item-${alpha.id}`).click();
       await expect(page).toHaveURL(new RegExp(`/s/${alpha.id}$`));
       await expect(page.getByTestId("active-server-name")).toHaveText(alpha.nickname);
-      await withPeopleTab(page, async () => {
-        await expect(page.getByTestId(`member-${a.userId}`)).toBeVisible();
-        await expect(page.getByTestId(`member-${b.userId}`)).toHaveCount(0);
+      await withDashboardMembers(page, async () => {
+        await expect(page.getByTestId(`home-member-${a.userId}`)).toBeVisible();
+        await expect(page.getByTestId(`home-member-${b.userId}`)).toHaveCount(0);
       });
 
       // Switch to bravo: header shows bravo's name; both A and B are members (state preserved per server).
@@ -146,9 +146,9 @@ test.describe("FR-08 FR-09 FR-41 FR-45 servers", () => {
       await page.getByTestId(`server-item-${bravo.id}`).click();
       await expect(page).toHaveURL(new RegExp(`/s/${bravo.id}$`));
       await expect(page.getByTestId("active-server-name")).toHaveText(bravo.nickname);
-      await withPeopleTab(page, async () => {
-        await expect(page.getByTestId(`member-${a.userId}`)).toBeVisible();
-        await expect(page.getByTestId(`member-${b.userId}`)).toBeVisible();
+      await withDashboardMembers(page, async () => {
+        await expect(page.getByTestId(`home-member-${a.userId}`)).toBeVisible();
+        await expect(page.getByTestId(`home-member-${b.userId}`)).toBeVisible();
       });
     } finally {
       await context.close();

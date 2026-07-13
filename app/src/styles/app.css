@@ -2,6 +2,38 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+@keyframes message-highlight {
+  0%, 100% { background-color: transparent; }
+  20%, 70% { background-color: color-mix(in oklab, var(--color-red-500) 18%, transparent); }
+}
+
+@utility animate-message-highlight {
+  animation: message-highlight 1.2s ease-out 1;
+}
+
+@keyframes poll-result {
+  0% { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  35% { opacity: 1; transform: translateY(0) scale(1.015); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@utility animate-poll-result {
+  animation: poll-result 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes poll-exit {
+  from { opacity: 1; transform: translateY(0); max-height: 220px; }
+  to { opacity: 0; transform: translateY(-10px); max-height: 0; }
+}
+
+@utility animate-poll-exit {
+  animation: poll-exit 600ms ease-in both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-poll-result, .animate-poll-exit { animation: none; }
+}
+
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {

@@ -1,6 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { MeResponse, ServerSummary } from "@tavern/shared";
+import { MeResponse, PointConfig, ServerSummary } from "@tavern/shared";
 
 const BASE = "https://tavern.test";
 
@@ -65,6 +65,14 @@ function joinServer(token: string, body: unknown): Promise<Response> {
 function patchServer(token: string, serverId: string, body: unknown): Promise<Response> {
   return authed(token, `/api/servers/${serverId}`, {
     method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+function putPointConfig(token: string, serverId: string, body: unknown): Promise<Response> {
+  return authed(token, `/api/servers/${serverId}/points/config`, {
+    method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -142,6 +150,46 @@ describe("FR-12 rename", () => {
     const res = await patchServer(admin, created.id, {});
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "bad_request" });
+  });
+});
+
+describe("server point configuration", () => {
+  const config = {
+    enabled: true,
+    basePointsPerMinute: 7,
+    streamerBonusPerMinute: 9,
+    watcherBonusPerMinute: 11,
+    dailyCap: 500,
+  };
+
+  it("lets the server admin update rates without a deployment", async () => {
+    const admin = await session("pointadmin");
+    const created = await createdSummary(admin, { nickname: "pointserver" });
+
+    const response = await putPointConfig(admin, created.id, config);
+
+    expect(response.status).toBe(200);
+    expect(PointConfig.parse(await response.json())).toEqual(config);
+  });
+
+  it("rejects a regular member and invalid rate values", async () => {
+    const admin = await session("pointguardadmin");
+    const created = await createdSummary(admin, { nickname: "pointguardserver" });
+    const member = await session("pointguardmember");
+    expect(
+      (await joinServer(member, { nickname: "pointguardserver", password: "hunter2" })).status,
+    ).toBe(200);
+
+    const forbidden = await putPointConfig(member, created.id, config);
+    expect(forbidden.status).toBe(403);
+    expect(await forbidden.json()).toEqual({ error: "not_admin" });
+
+    const invalid = await putPointConfig(admin, created.id, {
+      ...config,
+      basePointsPerMinute: -1,
+    });
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toEqual({ error: "bad_request" });
   });
 });
 

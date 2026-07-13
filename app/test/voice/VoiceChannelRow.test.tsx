@@ -1,9 +1,12 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Member, UserProfile, VoiceMember } from "@tavern/shared";
+import type { VoiceStatus } from "@/stores/media";
 
 vi.mock("@/features/voice/useVoice", () => ({ useVoice: vi.fn() }));
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
+import { toast } from "sonner";
 import { VoiceChannelRow } from "@/features/voice/VoiceChannelRow";
 import { useVoice } from "@/features/voice/useVoice";
 import { useMediaStore } from "@/stores/media";
@@ -52,15 +55,35 @@ function seed(voiceMembers: VoiceMember[], members: Member[]): void {
       streams: [],
       recording: { active: false },
       lastMessageId: null,
+      lastReadMessageId: 0,
+      firstUnreadMessageId: null,
+      unreadCount: 0,
       costStatus: { usedGB: 0, capGB: 900, blocked: false },
+      polls: [],
+      points: zeroPoints(),
     });
+}
+
+function zeroPoints() {
+  return {
+    balance: 0,
+    pendingPollWinnings: 0,
+    currentRatePerMinute: 0,
+    activeSources: [],
+    today: { day: "2026-07-13", conversation: 0, streaming: 0, watching: 0, total: 0 },
+    config: {
+      enabled: true,
+      basePointsPerMinute: 5,
+      streamerBonusPerMinute: 5,
+      watcherBonusPerMinute: 5,
+      dailyCap: null,
+    },
+  };
 }
 
 const join = vi.fn(async () => undefined);
 
-function mockVoice(
-  over: { status?: "idle" | "joined"; inVoiceServerId?: string | null } = {},
-): void {
+function mockVoice(over: { status?: VoiceStatus; inVoiceServerId?: string | null } = {}): void {
   vi.mocked(useVoice).mockReturnValue({
     join,
     leave: vi.fn(async () => undefined),
@@ -77,6 +100,7 @@ beforeEach(() => {
   resetRoomStores();
   useMediaStore.setState({ speakingUserIds: new Set<string>() });
   join.mockClear();
+  vi.mocked(toast.error).mockClear();
   mockVoice();
 });
 
@@ -117,6 +141,32 @@ describe("FR-18 row click", () => {
     render(<VoiceChannelRow serverId={SID} />);
 
     expect(screen.getByTestId(`voice-chip-${REMOTE}`)).toBeTruthy();
+  });
+
+  it("joining state shows a busy indicator and prevents a duplicate join", () => {
+    mockVoice({ status: "joining", inVoiceServerId: SID });
+    seed([], []);
+    render(<VoiceChannelRow serverId={SID} />);
+
+    const row = screen.getByTestId("channel-voice");
+    expect(row.getAttribute("aria-busy")).toBe("true");
+    expect(row.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Connecting…")).toBeTruthy();
+    expect(row.querySelector('[data-slot="spinner"]')).not.toBeNull();
+
+    fireEvent.click(row);
+    expect(join).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed join instead of silently returning to idle", async () => {
+    join.mockRejectedValueOnce(new Error("rtc failed"));
+    seed([], []);
+    render(<VoiceChannelRow serverId={SID} />);
+
+    fireEvent.click(screen.getByTestId("channel-voice"));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(toast.error).mock.calls[0]?.[0]).toContain("Couldn't connect to voice");
   });
 });
 

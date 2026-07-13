@@ -179,7 +179,7 @@ export const Menu = {
 
 export class Tray {
   static instances: Tray[] = [];
-  readonly image: unknown;
+  image: unknown;
   toolTip: string | null = null;
   contextMenu: { template: MenuItemTemplate[] } | null = null;
   readonly handlers = new Map<string, () => void>();
@@ -188,6 +188,9 @@ export class Tray {
   });
   setContextMenu = vi.fn((menu: { template: MenuItemTemplate[] }) => {
     this.contextMenu = menu;
+  });
+  setImage = vi.fn((image: unknown) => {
+    this.image = image;
   });
   destroy = vi.fn();
 
@@ -278,6 +281,7 @@ export class BrowserWindow {
   });
   isMinimized = vi.fn(() => this.minimized);
   loadURL = vi.fn(() => Promise.resolve());
+  setOverlayIcon = vi.fn();
 
   constructor(options: unknown) {
     this.options = options;

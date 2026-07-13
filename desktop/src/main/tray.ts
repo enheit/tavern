@@ -2,6 +2,7 @@ import { Menu, Tray, app, nativeImage } from "electron";
 import { markQuitting } from "./lifecycle";
 import { showMainWindow } from "./window";
 import { TRAY_ICON_PNG_DATA_URL, TRAY_ICON_TEMPLATE_PNG_DATA_URL } from "./trayIcon";
+import { UNREAD_DOT_PNG_DATA_URL } from "./unreadIcon";
 
 let tray: Tray | null = null;
 
@@ -46,4 +47,14 @@ export function createTray(): Tray {
 export function destroyTray(): void {
   tray?.destroy();
   tray = null;
+}
+
+export function setTrayUnread(count: number): void {
+  if (tray === null) return;
+  tray.setImage(
+    count > 0
+      ? nativeImage.createFromDataURL(UNREAD_DOT_PNG_DATA_URL).resize({ width: 18, height: 18 })
+      : trayImage(),
+  );
+  tray.setToolTip(count > 0 ? `Tavern - ${count} unread` : "Tavern");
 }

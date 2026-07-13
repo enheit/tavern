@@ -1,6 +1,8 @@
 import type { ChatMessage } from "@tavern/shared";
 import { platform } from "@/platform/types";
 import { roomStore } from "@/stores/room";
+import { initUnreadBadges } from "./unreadBadges";
+import { playUiSound } from "./uiSounds";
 import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
@@ -63,6 +65,7 @@ function handleChatNew(serverId: string, message: ChatMessage): void {
   const serverNickname = room.serverMeta?.nickname ?? "";
   const mentionsMe = message.mentions.includes(ctx.myUserId);
   const body = truncateBody(message.body);
+  if (!ctx.windowFocused) playUiSound("notification");
   void platform.notifications.show({
     title: `${displayName} — ${serverNickname}`,
     // A mention notification prefixes the body with '@ ' (pinned).
@@ -145,6 +148,7 @@ function bootstrapWebPermission(): () => void {
 // Subscribes to `chat.new` on every joined server's socket (and any joined later) and shows a
 // notification for messages that pass `shouldNotify`. Returns a teardown that removes every listener.
 export function initNotifications(): () => void {
+  const stopBadges = initUnreadBadges();
   const stopFocus = initFocusTracking();
   const stopPermission = bootstrapWebPermission();
   const listeners = new Map<string, () => void>();
@@ -168,6 +172,7 @@ export function initNotifications(): () => void {
   const stopClick = platform.notifications.onClick(focusAndNavigate);
 
   return () => {
+    stopBadges();
     stopFocus();
     stopPermission();
     stopServers();

@@ -21,7 +21,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
@@ -57,22 +56,16 @@ interface SharePickerDialogProps {
   onStart(sel: ShareSelection): void;
 }
 
-// FR-28 source/quality/audio picker. Desktop: Screens/Windows tabs of enumerated sources + preset +
-// a Share-audio switch — enabled where the OS loopback device exists (win/mac) AND on Linux, where
-// audio rides venmic / the pactl remap-source + AEC fallback instead (media/capture.ts) — the S8.1
-// "hidden on Linux" pin is revised by that fallback. Desktop Wayland ("portal" sourceMode): no
-// grid — enumeration ids die with each portal session, so the OS ScreenCast dialog (opened by the
-// display-media handler at capture time) is the picker; this dialog only sets quality + audio.
-// Web: preset + an audio hint only — the browser's native picker chooses the source and audio.
+// FR-28 source/quality picker. Every share requests audio: desktop uses OS loopback or the Linux
+// venmic / pactl fallback (media/capture.ts), while web capture delegates the actual audio grant to
+// the browser's native picker. Desktop Wayland ("portal" sourceMode) has no grid because enumerated
+// ids die with each portal session; its OS ScreenCast dialog chooses the source at capture time.
 export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDialogProps) {
   const isDesktop = platform.kind === "desktop";
   const portalPicker = isDesktop && platform.capture.sourceMode === "portal";
-  const audioSwitchVisible = isDesktop;
   const [sources, setSources] = useState<ScreenSource[]>([]);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [preset, setPreset] = useState<PresetId>(DEFAULT_SCREEN_PRESET);
-  const [loopbackSupported, setLoopbackSupported] = useState(false);
-  const [withAudio, setWithAudio] = useState(false);
   // Defaults to "granted" so the permission hint never flashes while the real status loads.
   const [accessStatus, setAccessStatus] = useState<ScreenAccessStatus>("granted");
 
@@ -92,9 +85,6 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
         if (!cancelled) setAccessStatus(status);
       });
     }
-    void platform.capture.loopbackAudioSupported().then((ok) => {
-      if (!cancelled) setLoopbackSupported(ok);
-    });
     return () => {
       cancelled = true;
     };
@@ -116,7 +106,7 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
 
   const start = (): void => {
     if (isDesktop && sourceId === null) return;
-    onStart({ sourceId, preset, withAudio: isDesktop ? audioSwitchVisible && withAudio : true });
+    onStart({ sourceId, preset, withAudio: true });
   };
 
   const screens = sources.filter((s) => s.id.startsWith("screen:"));
@@ -190,17 +180,6 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
               </SelectContent>
             </Select>
           </div>
-          {audioSwitchVisible && (
-            <label className="flex items-center justify-between gap-4 text-sm">
-              <span>{m.streams_share_audio()}</span>
-              <Switch
-                checked={withAudio}
-                disabled={!loopbackSupported && platform.os !== "linux"}
-                data-testid="share-audio"
-                onCheckedChange={setWithAudio}
-              />
-            </label>
-          )}
           <Button
             data-testid="share-start"
             disabled={isDesktop && sourceId === null}

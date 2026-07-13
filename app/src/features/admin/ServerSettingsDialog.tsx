@@ -1,5 +1,10 @@
-import type { PatchServerRequest } from "@tavern/shared";
-import { LIMITS, PatchServerRequest as PatchServerSchema, ServerSummary } from "@tavern/shared";
+import type { PatchServerRequest, PointConfig } from "@tavern/shared";
+import {
+  LIMITS,
+  PatchServerRequest as PatchServerSchema,
+  PointConfig as PointConfigSchema,
+  ServerSummary,
+} from "@tavern/shared";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Settings2Icon } from "lucide-react";
 import { useState } from "react";
@@ -17,6 +22,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { errorMessage } from "@/lib/errorMessage";
 import { cn } from "@/lib/utils";
@@ -42,17 +48,125 @@ export function ServerSettingsDialog({ serverId }: { serverId: string }) {
       >
         <Settings2Icon />
       </DialogTrigger>
-      <DialogContent data-testid="admin-dialog" className="sm:max-w-md">
+      <DialogContent
+        data-testid="admin-dialog"
+        className="max-h-[85vh] overflow-y-auto sm:max-w-md"
+      >
         <DialogHeader>
           <DialogTitle>{m.admin_title()}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-6 py-1">
           <RenameSection serverId={serverId} />
           <PasswordSection serverId={serverId} />
+          <PointsSection serverId={serverId} />
           <MembersSection serverId={serverId} selfId={selfId} />
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function PointsSection({ serverId }: { serverId: string }) {
+  const current = useStore(roomStore(serverId), (state) => state.points.config);
+  const [draft, setDraft] = useState<PointConfig>(current);
+  const [dailyCap, setDailyCap] = useState(current.dailyCap?.toString() ?? "");
+
+  const save = async (): Promise<void> => {
+    const parsed = PointConfigSchema.safeParse({
+      ...draft,
+      dailyCap: dailyCap.trim() === "" ? null : Number(dailyCap),
+    });
+    if (!parsed.success) return;
+    try {
+      const saved = await apiClient.put(
+        `/api/servers/${serverId}/points/config`,
+        PointConfigSchema,
+        parsed.data,
+      );
+      setDraft(saved);
+      setDailyCap(saved.dailyCap?.toString() ?? "");
+      toast(m.admin_points_saved());
+    } catch (err) {
+      if (err instanceof ApiError) toast(errorMessage(err.code));
+    }
+  };
+
+  const rateField = (id: string, label: string, value: number, update: (value: number) => void) => (
+    <Label htmlFor={id} className="grid grid-cols-[1fr_7rem] items-center gap-3 text-xs">
+      <span>{label}</span>
+      <Input
+        id={id}
+        data-testid={id}
+        type="number"
+        min={0}
+        max={LIMITS.pointRateMaxPerMinute}
+        value={value}
+        onChange={(event) => update(Number(event.target.value))}
+      />
+    </Label>
+  );
+
+  return (
+    <section data-testid="admin-points" className="flex flex-col gap-3 border-t pt-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium">{m.admin_points_title()}</h3>
+          <p className="text-xs text-muted-foreground">{m.admin_points_hint()}</p>
+        </div>
+        <Switch
+          data-testid="admin-points-enabled"
+          checked={draft.enabled}
+          onCheckedChange={(enabled) => setDraft((value) => ({ ...value, enabled }))}
+        />
+      </div>
+      {rateField(
+        "admin-points-base",
+        m.admin_points_base(),
+        draft.basePointsPerMinute,
+        (basePointsPerMinute) => setDraft((value) => ({ ...value, basePointsPerMinute })),
+      )}
+      {rateField(
+        "admin-points-stream",
+        m.admin_points_stream(),
+        draft.streamerBonusPerMinute,
+        (streamerBonusPerMinute) => setDraft((value) => ({ ...value, streamerBonusPerMinute })),
+      )}
+      {rateField(
+        "admin-points-watch",
+        m.admin_points_watch(),
+        draft.watcherBonusPerMinute,
+        (watcherBonusPerMinute) => setDraft((value) => ({ ...value, watcherBonusPerMinute })),
+      )}
+      <Label
+        htmlFor="admin-points-cap"
+        className="grid grid-cols-[1fr_7rem] items-center gap-3 text-xs"
+      >
+        <span>{m.admin_points_cap()}</span>
+        <Input
+          id="admin-points-cap"
+          data-testid="admin-points-cap"
+          type="number"
+          min={1}
+          max={LIMITS.pointDailyCapMax}
+          placeholder={m.admin_points_no_cap()}
+          value={dailyCap}
+          onChange={(event) => setDailyCap(event.target.value)}
+        />
+      </Label>
+      <Button
+        type="button"
+        data-testid="admin-points-save"
+        onClick={() => void save()}
+        disabled={
+          !PointConfigSchema.safeParse({
+            ...draft,
+            dailyCap: dailyCap.trim() === "" ? null : Number(dailyCap),
+          }).success
+        }
+      >
+        {m.common_save()}
+      </Button>
+    </section>
   );
 }
 

@@ -19,7 +19,7 @@ function member(over: Partial<Member> = {}): Member {
 }
 
 function chatMessage(over: Partial<ChatMessage>): ChatMessage {
-  return { id: 1, userId: SELF, body: "x", mentions: [], at: 0, ...over };
+  return { id: 1, userId: SELF, body: "x", mentions: [], reactions: [], at: 0, ...over };
 }
 
 const gif: GifAttachment = {
@@ -36,9 +36,18 @@ function renderRow(message: ChatMessage) {
     <MessageRow
       message={message}
       member={member()}
+      replyMember={undefined}
+      members={[member()]}
       selfUserId={SELF}
       selfUsername="alice_u"
       serverId={SRV}
+      showUnreadDivider={false}
+      canEdit={false}
+      onReply={() => undefined}
+      onEdit={() => undefined}
+      onDelete={() => undefined}
+      onJumpToReply={() => undefined}
+      onSetReaction={() => undefined}
     />,
   );
 }

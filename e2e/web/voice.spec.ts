@@ -85,7 +85,7 @@ async function dumpVoiceDiagnostics(clients: Client[]): Promise<void> {
 }
 
 // Seeds a fresh server with `count` members (the first is the admin/creator) and opens one browser
-// context per member, each booted onto /s/:id?e2e=1 with the People panel live. Members after the
+// context per member, each booted onto /s/:id?e2e=1 with Dashboard membership live. Members after the
 // first join in parallel (independent); contexts open in parallel too (no await-in-loop).
 async function seedRoom(
   browser: Browser,
@@ -128,18 +128,16 @@ async function seedRoom(
       return { user, context, page, consoleTail };
     }),
   );
-  // Every socket is live once each client sees the others in People (so voice.state broadcasts land).
+  // Every socket is live once each client sees the others on Dashboard.
   await Promise.all(
     clients.map(async (client) => {
-      await client.page.getByTestId("tab-people").click();
       await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
-            expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
+            expect(client.page.getByTestId(`home-member-${other.user.userId}`)).toBeVisible(),
           ),
       );
-      await client.page.getByTestId("tab-chat").click();
     }),
   );
   return { serverId: server.id, clients };
@@ -317,29 +315,17 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
     const [a, b] = clients;
     if (!a || !b) throw new Error("expected two clients");
     try {
-      // Right-click B's People row → the per-user volume menu; drive the slider to 150% by keyboard
-      // (Home → 0, then 30 × +5% steps) for a deterministic value. Base UI's thumb moves focus to
-      // its hidden range input a tick after pointerdown — under the minified worker-served build
-      // that tick lands late enough for a blind Home press to miss the input entirely (S11.1 found
-      // this: the gain ended at the 200% clamp). So assert focus before pressing, and assert the
-      // input value after every stage instead of pressing keys blind.
-      // People now lives in a tab — open it before right-clicking B's row.
-      await a.page.getByTestId("tab-people").click();
-      await a.page.getByTestId(`member-${b.user.userId}`).click({ button: "right" });
-      await expect(a.page.getByTestId(`volume-menu-${b.user.userId}`)).toBeVisible();
-      const thumb = a.page
-        .getByTestId(`volume-slider-${b.user.userId}`)
-        .locator('[data-slot="slider-thumb"]');
-      const sliderInput = thumb.locator("input");
-      await thumb.click();
-      await expect(sliderInput).toBeFocused();
-      await sliderInput.press("Home");
-      await expect(sliderInput).toHaveJSProperty("valueAsNumber", 0);
-      await Array.from({ length: 30 }).reduce<Promise<void>>(
-        (p) => p.then(() => sliderInput.press("ArrowRight")),
+      await joinVoice(a);
+      await joinVoice(b);
+      // Dashboard intentionally has no audio controls. Adjust B from their live voice chip instead:
+      // ten upward wheel notches at 5% each moves the default 100% gain to 150%.
+      const chip = a.page.getByTestId(`voice-chip-${b.user.userId}`);
+      await chip.hover();
+      await Array.from({ length: 10 }).reduce<Promise<void>>(
+        (previous) => previous.then(() => a.page.mouse.wheel(0, -100)),
         Promise.resolve(),
       );
-      await expect(sliderInput).toHaveJSProperty("valueAsNumber", 150);
+      await expect(a.page.getByTestId(`voice-volume-pct-${b.user.userId}`)).toHaveText("150%");
 
       await expect
         .poll(() => a.page.evaluate((id) => window.__tavernTestAudio?.userGains[id], b.user.userId))
@@ -415,7 +401,7 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
     }
   });
 
-  test("both leave → within 5s (fast alarm) activity shows session closed and timer disappears (FR-24)", async ({
+  test("both leave → live Home returns to quiet and timer disappears (FR-24)", async ({
     browser,
     baseURL,
     api,
@@ -425,8 +411,8 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
     const [a, b, c] = clients;
     if (!a || !b || !c) throw new Error("expected three clients");
     try {
-      // C observes the whole session without joining. Open its Activity tab up front.
-      await c.page.getByTestId("tab-activity").click();
+      // C observes the whole session without joining from the idle-center Home.
+      await expect(c.page.getByTestId("tavern-home")).toBeVisible();
       await joinVoice(a);
       await joinVoice(b);
       await expect(c.page.getByTestId("voice-timer")).toBeVisible();
@@ -436,12 +422,9 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
       await a.context.close();
       await b.context.close();
 
-      // The timer disappears for C (sessionStartedAt → null) and the leave activity rows land live.
+      // The timer disappears for C (sessionStartedAt → null) and Home returns to quiet.
       await expect(c.page.getByTestId("voice-timer")).toHaveCount(0, { timeout: 8_000 });
-      await expect(c.page.getByText(`${a.user.username} left voice`, { exact: true })).toBeVisible({
-        timeout: 8_000,
-      });
-      await expect(c.page.getByText(`${b.user.username} left voice`, { exact: true })).toBeVisible({
+      await expect(c.page.getByText("The voice room is quiet", { exact: true })).toBeVisible({
         timeout: 8_000,
       });
     } finally {

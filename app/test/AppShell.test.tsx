@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AppShell } from "@/features/shell/AppShell";
@@ -37,16 +37,17 @@ describe("shell layout", () => {
     expect(shell.style.gridTemplateRows).toBe("40px 1fr 64px");
     expect(shell.style.gridTemplateColumns).toBe("240px 1fr 320px");
 
-    // Every §7.6 region is present as a named slot/panel, ready for later steps to fill. People moved
-    // into the ChatTabs (a non-default tab), so it is not asserted here.
+    // Every shell region is present, with workspace navigation in the center and persistent chat on
+    // the right.
     for (const id of [
       "app-header",
       "channels-panel",
       "slot-canvas",
       "slot-controls",
-      "slot-tabs",
+      "slot-chat",
     ]) {
       expect(screen.getByTestId(id)).toBeDefined();
     }
+    expect(within(screen.getByTestId("slot-chat")).queryByRole("tablist")).toBeNull();
   });
 });

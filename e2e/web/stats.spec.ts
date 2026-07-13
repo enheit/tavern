@@ -5,11 +5,8 @@ import { expect, expectMemberVisible, test } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
-// FR-40 Stats tab e2e against the real local stack (wrangler dev + Vite). The PR spec runs with
-// TAVERN_SFU_MOCK=1 and asserts server-authoritative MESSAGE counts (A sends 3 → B's Stats tab shows
-// A's row ≥3) plus the presence of the "you watch most" section (mock mode moves no media, so no
-// watch seconds accrue). The @realtime spec (nightly, real SFU per §10) asserts watch seconds
-// actually accruing: B watches A's stream ~10s and A then appears in B's watch-most ranking.
+// Per-user profile statistics against the real local stack. Member names open the profile dialog;
+// the old aggregate Stats tab no longer exists.
 
 const hex = (bytes: number): string => randomBytes(bytes).toString("hex");
 
@@ -62,8 +59,8 @@ async function sendPaced(page: Page, text: string): Promise<void> {
   await page.waitForTimeout(220); // under the 5/s chat rate limit (LIMITS.rateChatPerSec)
 }
 
-test.describe("FR-40 stats e2e", () => {
-  test("message counts appear: A sends 3 messages, B stats tab shows A row with ≥3", async ({
+test.describe("user profile stats e2e", () => {
+  test("nickname opens A's profile with message stats and App Settings owns traffic usage", async ({
     browser,
     baseURL,
     api,
@@ -79,7 +76,7 @@ test.describe("FR-40 stats e2e", () => {
     try {
       await bootOnto(openedA, server.id);
       await bootOnto(openedB, server.id);
-      // Both sockets live before A sends — B sees A in People, so B will hold a fresh member map.
+      // Both sockets live before A sends — B sees A on Dashboard, so B has a fresh member map.
       await expectMemberVisible(openedB.page, a.userId);
 
       // A sends 3 messages (paced under the rate limit). These are A's server-authoritative
@@ -91,23 +88,31 @@ test.describe("FR-40 stats e2e", () => {
       }
       await chain;
 
-      // B opens the Stats tab — its query fetches the snapshot on activation and renders A's row.
-      await openedB.page.getByTestId("tab-stats").click();
-      const cell = openedB.page.getByTestId(`stats-messages-${a.userId}`);
+      const nickname = openedB.page.getByTestId(`home-member-name-${a.userId}`);
+      await nickname.hover();
+      await expect(nickname).toHaveCSS("text-decoration-line", "underline");
+      await nickname.click();
+      const cell = openedB.page.getByTestId("user-profile-messages");
       await expect(cell).toBeVisible({ timeout: 10_000 });
       await expect
         .poll(async () => Number((await cell.textContent()) ?? "0"), { timeout: 10_000 })
         .toBeGreaterThanOrEqual(3);
 
-      // Watch-most section is present (presence only — mock mode accrues no watch seconds for B).
-      await expect(openedB.page.getByTestId("stats-watch-most")).toBeVisible();
+      await expect(openedB.page.getByTestId("user-profile-dialog")).toBeVisible();
+      await openedB.page.keyboard.press("Escape");
+      await expect(openedB.page.getByTestId("tab-stats")).toHaveCount(0);
+
+      await openedB.page.getByTestId("user-menu").click();
+      await openedB.page.getByTestId("user-menu-settings").click();
+      await openedB.page.getByTestId("settings-tab-app").click();
+      await expect(openedB.page.getByTestId("settings-egress-used")).toBeVisible();
     } finally {
       await openedA.context.close();
       await openedB.context.close();
     }
   });
 
-  test("@realtime watch seconds accrue: B watches A stream 10s, B watch-most shows A with >0", async ({
+  test("@realtime watch seconds accrue: B sees the watched duration in A's profile", async ({
     browser,
     baseURL,
     api,
@@ -163,12 +168,11 @@ test.describe("FR-40 stats e2e", () => {
       await openedB.page.waitForTimeout(11_000);
       await openedB.page.locator('[data-testid^="stream-unwatch-"]').first().click();
 
-      // B opens Stats — B's "you watch most" now lists A (viewer=B → streamer=A pair, seconds > 0,
-      // so the row is rendered even though 10s displays as "0:00" in h:mm).
-      await openedB.page.getByTestId("tab-stats").click();
-      await expect(
-        openedB.page.locator(`[data-testid="stats-watch-row"][data-streamer-id="${a.userId}"]`),
-      ).toBeVisible({ timeout: 10_000 });
+      await openedB.page.getByTestId("workspace-tab-dashboard").click();
+      await openedB.page.getByTestId(`home-member-name-${a.userId}`).click();
+      await expect(openedB.page.getByTestId("user-profile-watched")).toBeVisible({
+        timeout: 10_000,
+      });
     } finally {
       await openedA.context.close();
       await openedB.context.close();

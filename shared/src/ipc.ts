@@ -95,6 +95,7 @@ export const notificationArgSchema = z.object({
 });
 export const updateInfoSchema = z.object({ version: z.string() });
 export const setBadgeArgSchema = z.union([z.number(), z.null()]);
+export const setCloseToTrayArgSchema = z.boolean();
 
 export interface TavernIpc {
   platform: "win32" | "darwin" | "linux";
@@ -132,5 +133,10 @@ export interface TavernIpc {
     onUpdateReady(cb: (info: { version: string }) => void): void;
     restartToUpdate(): Promise<void>;
   };
-  shell: { setBadge(count: number | null): Promise<void>; focusWindow(): Promise<void> };
+  shell: {
+    setBadge(count: number | null): Promise<void>;
+    focusWindow(): Promise<void>;
+    getCloseToTray(): Promise<boolean>;
+    setCloseToTray(value: boolean): Promise<void>;
+  };
 }

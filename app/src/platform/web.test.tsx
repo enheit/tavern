@@ -90,6 +90,18 @@ describe("FR-42 web platform bridge", () => {
     expect(await p.secrets.getToken()).toBeNull();
   });
 
+  it("uses the Web Badging API when the browser provides it", () => {
+    const setAppBadge = vi.fn();
+    const clearAppBadge = vi.fn();
+    vi.stubGlobal("navigator", { setAppBadge, clearAppBadge });
+    const p = createWebPlatform();
+
+    p.shell.setBadge(4);
+    p.shell.setBadge(null);
+    expect(setAppBadge).toHaveBeenCalledWith(4);
+    expect(clearAppBadge).toHaveBeenCalledTimes(1);
+  });
+
   it("loopbackAudioSupported false", async () => {
     const p = createWebPlatform();
     expect(await p.capture.loopbackAudioSupported()).toBe(false);

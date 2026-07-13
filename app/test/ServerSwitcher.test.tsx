@@ -8,6 +8,7 @@ const navigateSpy = vi.fn();
 vi.mock("react-router", () => ({ useNavigate: () => navigateSpy }));
 
 import { ServerSwitcher } from "@/features/servers/ServerSwitcher";
+import { resetRoomStores, roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
 
 // Base UI's menu positioner uses ResizeObserver / scrollIntoView, which jsdom lacks (test doubles).
@@ -33,6 +34,7 @@ function summary(id: string, nickname: string): ServerSummary {
 }
 
 beforeEach(() => {
+  resetRoomStores();
   useServersStore.setState({
     servers: [summary("s-a", "alpha"), summary("s-b", "bravo")],
     activeServerId: "s-a",
@@ -70,5 +72,12 @@ describe("FR-41 server switcher", () => {
 
     await waitFor(() => expect(screen.getByTestId("server-item-s-a")).toBeDefined());
     expect(screen.queryByTestId("server-switcher-add")).toBeNull();
+  });
+
+  it("shows unread counts for each server", async () => {
+    roomStore("s-b").setState({ unreadCount: 12 });
+    render(<ServerSwitcher />);
+    fireEvent.click(screen.getByTestId("server-switcher"));
+    expect((await screen.findByTestId("server-unread-s-b")).textContent).toBe("12");
   });
 });

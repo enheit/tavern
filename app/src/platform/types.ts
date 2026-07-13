@@ -58,7 +58,14 @@ export interface PlatformBridge {
     onUpdateReady(cb: (info: { version: string }) => void): () => void;
     restartToUpdate(): void;
   };
-  shell: { setBadge(count: number | null): void; focusWindow(): void };
+  shell: {
+    setBadge(count: number | null): void;
+    focusWindow(): void;
+    closeBehavior: {
+      getCloseToTray(): Promise<boolean>;
+      setCloseToTray(value: boolean): Promise<void>;
+    } | null;
+  };
 }
 
 // Selected once at module load by `window.tavern` presence (via desktopIpc()); frozen thereafter.

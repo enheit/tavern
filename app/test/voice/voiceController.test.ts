@@ -2,14 +2,38 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientMessage, ServerMessage, UserProfile, VoiceMember } from "@tavern/shared";
 import { VoiceController, VoiceElsewhereError } from "@/features/voice/voiceController";
 import type { VoiceDeps } from "@/features/voice/voiceController";
+import { playUiSound } from "@/lib/uiSounds";
 import { useMediaStore } from "@/stores/media";
 import { resetRoomStores, roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
 import { fakeStream, fakeTrack } from "../fakes/media";
 
+vi.mock("@/lib/uiSounds", () => ({
+  playUiSound: vi.fn(),
+  primeUiSounds: vi.fn(() => () => undefined),
+}));
+
 const SELF = "11111111-1111-1111-1111-111111111111";
 const REMOTE = "22222222-2222-2222-2222-222222222222";
+const REMOTE2 = "33333333-3333-3333-3333-333333333333";
+
+function zeroPoints() {
+  return {
+    balance: 0,
+    pendingPollWinnings: 0,
+    currentRatePerMinute: 0,
+    activeSources: [],
+    today: { day: "2026-07-13", conversation: 0, streaming: 0, watching: 0, total: 0 },
+    config: {
+      enabled: true,
+      basePointsPerMinute: 5,
+      streamerBonusPerMinute: 5,
+      watcherBonusPerMinute: 5,
+      dailyCap: null,
+    },
+  };
+}
 
 const analyser = {} as unknown as AnalyserNode;
 
@@ -32,11 +56,11 @@ class FakePublish {
     this.log.push("publish.publishMic");
     return { trackName: `mic:${this.userId}` };
   }
-  connFailed: (() => void) | null = null;
-  onConnectionFailed(cb: () => void): () => void {
-    this.connFailed = cb;
+  recoveryNeeded: (() => void) | null = null;
+  onConnectionRecoveryNeeded(cb: () => void): () => void {
+    this.recoveryNeeded = cb;
     return () => {
-      this.connFailed = null;
+      this.recoveryNeeded = null;
     };
   }
   // Screen share (S8.1) publishes on this shared session; unused by the voice-only tests here.
@@ -77,8 +101,8 @@ class FakePull {
   closed = false;
   readonly added: Array<Array<{ trackName: string; preferredRid?: "h" | "l" }>> = [];
   readonly removed: string[][] = [];
-  // Captured transport-failure listener (TASK-1 auto-recover) — tests fire it directly.
-  connFailed: (() => void) | null = null;
+  // Captured media-recovery listener — tests fire it directly.
+  recoveryNeeded: (() => void) | null = null;
   private trackCb:
     | ((trackName: string, track: MediaStreamTrack, stream: MediaStream) => void)
     | null = null;
@@ -98,10 +122,10 @@ class FakePull {
   emitTrack(trackName: string): void {
     this.trackCb?.(trackName, fakeTrack("audio"), fakeStream());
   }
-  onConnectionFailed(cb: () => void): () => void {
-    this.connFailed = cb;
+  onConnectionRecoveryNeeded(cb: () => void): () => void {
+    this.recoveryNeeded = cb;
     return () => {
-      this.connFailed = null;
+      this.recoveryNeeded = null;
     };
   }
   async addRemoteTracks(
@@ -145,6 +169,7 @@ class FakeGraph {
     this.localAttachCount += 1;
   }
   attachRemoteMic(userId: string): void {
+    this.log.push(`graph.attachRemote:${userId}`);
     this.attached.add(userId);
   }
   detachRemoteMic(userId: string): void {
@@ -192,6 +217,7 @@ class FakeWs {
   readonly sent: ClientMessage[] = [];
   readonly log: string[];
   ackMembers: VoiceMember[] = [];
+  autoAck = true;
   private readonly listeners = new Map<string, Set<(m: ServerMessage) => void>>();
   constructor(log: string[]) {
     this.log = log;
@@ -199,13 +225,14 @@ class FakeWs {
   send(msg: ClientMessage): void {
     this.sent.push(msg);
     this.log.push(`ws.${msg.t}`);
-    if (msg.t === "voice.join") {
-      const members: VoiceMember[] = [
-        { userId: SELF, muted: false, deafened: false },
-        ...this.ackMembers,
-      ];
-      this.emit({ t: "voice.state", voice: { members, sessionStartedAt: 1000 }, at: 2000 });
-    }
+    if (msg.t === "voice.join" && this.autoAck) this.ack();
+  }
+  ack(): void {
+    const members: VoiceMember[] = [
+      { userId: SELF, muted: false, deafened: false },
+      ...this.ackMembers,
+    ];
+    this.emit({ t: "voice.state", voice: { members, sessionStartedAt: 1000 }, at: 2000 });
   }
   on<T extends ServerMessage["t"]>(
     t: T,
@@ -280,7 +307,12 @@ function seedVoice(serverId: string, members: VoiceMember[]): void {
       streams: [],
       recording: { active: false },
       lastMessageId: null,
+      lastReadMessageId: 0,
+      firstUnreadMessageId: null,
+      unreadCount: 0,
       costStatus: { usedGB: 0, capGB: 900, blocked: false },
+      polls: [],
+      points: zeroPoints(),
     });
 }
 
@@ -293,9 +325,24 @@ async function flush(): Promise<void> {
   );
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolver: ((value: T | PromiseLike<T>) => void) | null = null;
+  const promise = new Promise<T>((resolve) => {
+    resolver = resolve;
+  });
+  return {
+    promise,
+    resolve(value) {
+      if (resolver === null) throw new Error("deferred resolver was not initialized");
+      resolver(value);
+    },
+  };
+}
+
 beforeEach(() => {
   localStorage.clear();
   resetRoomStores();
+  vi.mocked(playUiSound).mockClear();
   useSessionStore.setState({
     status: "authed",
     profile: { userId: SELF, username: "self", displayName: "Self", color: "#123456" },
@@ -314,36 +361,78 @@ beforeEach(() => {
 });
 
 describe("FR-18 join/leave", () => {
-  it("join sends voice.join before any rtc call (order)", async () => {
+  it("join sends voice.join and waits for its ack before either rtc session", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);
     seedVoice("A", []);
+    h.ws.autoAck = false;
 
-    await controller.join("A");
+    const joined = controller.join("A");
+    await flush();
 
-    expect(h.log).toEqual([
-      "ws.voice.join",
-      "graph.init",
-      "graph.resume",
-      "getMic",
-      "publish.connect",
-      "publish.publishMic",
-      "graph.attachLocalMic",
-      "pull.connect",
-    ]);
+    expect(h.log[0]).toBe("ws.voice.join");
+    expect(h.log).toContain("graph.init");
+    expect(h.log).not.toContain("getMic");
+    expect(h.log).not.toContain("publish.connect");
+    expect(h.log).not.toContain("pull.connect");
+
+    h.ws.ack();
+    await joined;
+
+    expect(h.log).toContain("publish.connect");
+    expect(h.log).toContain("pull.connect");
     expect(useMediaStore.getState().voiceStatus).toBe("joined");
     expect(useMediaStore.getState().inVoiceServerId).toBe("A");
   });
 
-  it("join wires mic publish then pulls every existing remote mic", async () => {
+  it("a slow microphone does not block receiving and attaching existing remote audio", async () => {
     const h = makeHarness();
+    const mic = deferred<MediaStreamTrack>();
+    h.deps.getMic = vi.fn(() => mic.promise);
     const controller = new VoiceController(h.deps);
     seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false }]);
 
-    await controller.join("A");
+    const joined = controller.join("A");
+    await flush();
 
-    expect(h.log.indexOf("publish.publishMic")).toBeLessThan(h.log.indexOf("pull.addRemoteTracks"));
     expect(h.pulls[0]?.added).toEqual([[{ trackName: `mic:${REMOTE}` }]]);
+    expect(h.log).not.toContain("publish.publishMic");
+    expect(useMediaStore.getState().voiceStatus).toBe("joining");
+
+    h.pulls[0]?.emitTrack(`mic:${REMOTE}`);
+    expect(h.log).toContain(`graph.attachRemote:${REMOTE}`);
+
+    mic.resolve(h.localMic);
+    await joined;
+    expect(h.log).toContain("publish.publishMic");
+    expect(useMediaStore.getState().voiceStatus).toBe("joined");
+  });
+
+  it("a slow receive connection does not block publishing the local microphone", async () => {
+    const h = makeHarness();
+    const pullConnected = deferred<void>();
+    h.deps.createPull = () => {
+      const pull = new FakePull(h.log);
+      pull.connect = async () => {
+        h.log.push("pull.connect");
+        await pullConnected.promise;
+        pull.connected = true;
+      };
+      h.pulls.push(pull);
+      return pull;
+    };
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", []);
+
+    const joined = controller.join("A");
+    await flush();
+
+    expect(h.log).toContain("publish.publishMic");
+    expect(useMediaStore.getState().voiceStatus).toBe("joining");
+
+    pullConnected.resolve();
+    await joined;
+    expect(useMediaStore.getState().voiceStatus).toBe("joined");
   });
 
   it("mic pull retries until the joiner's publish registers the mic (S12.3 race)", async () => {
@@ -418,6 +507,64 @@ describe("FR-18 join/leave", () => {
     expect(h.ws.sent.some((m) => m.t === "voice.leave")).toBe(true);
     expect(useMediaStore.getState().voiceStatus).toBe("idle");
     expect(useMediaStore.getState().inVoiceServerId).toBeNull();
+    expect(vi.mocked(playUiSound).mock.calls.some(([kind]) => kind === "voice.leave")).toBe(true);
+  });
+
+  it("plays sounds for join/leave and stream changes, but not reconnect joins", async () => {
+    const h = makeHarness();
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false }]);
+
+    await controller.join("A");
+    expect(vi.mocked(playUiSound)).toHaveBeenCalledWith("voice.join");
+    vi.mocked(playUiSound).mockClear();
+
+    h.ws.emit({
+      t: "voice.state",
+      voice: {
+        members: [
+          { userId: SELF, muted: false, deafened: false },
+          { userId: REMOTE, muted: false, deafened: false },
+          { userId: REMOTE2, muted: false, deafened: false },
+        ],
+        sessionStartedAt: 1000,
+      },
+      at: 2000,
+    });
+    expect(vi.mocked(playUiSound)).toHaveBeenCalledWith("voice.join");
+    vi.mocked(playUiSound).mockClear();
+
+    h.ws.emit({
+      t: "voice.state",
+      voice: {
+        members: [
+          { userId: SELF, muted: false, deafened: false },
+          { userId: REMOTE2, muted: false, deafened: false },
+        ],
+        sessionStartedAt: 1000,
+      },
+      at: 3000,
+    });
+    expect(vi.mocked(playUiSound)).toHaveBeenCalledWith("voice.leave");
+    vi.mocked(playUiSound).mockClear();
+
+    h.ws.emit({
+      t: "stream.added",
+      stream: {
+        trackName: "screen:22222222-2222-2222-2222-222222222222:1",
+        kind: "screen",
+        userId: REMOTE,
+        hasAudio: false,
+        preset: "1080p30",
+      },
+      at: 4000,
+    });
+    expect(vi.mocked(playUiSound)).toHaveBeenCalledWith("stream.start");
+    vi.mocked(playUiSound).mockClear();
+
+    h.ws.emit({ t: "stream.removed", trackName: "screen:22222222-2222-2222-2222-222222222222:1", at: 5000 });
+    expect(vi.mocked(playUiSound)).toHaveBeenCalledWith("stream.stop");
+    vi.mocked(playUiSound).mockClear();
   });
 
   it("failed join (rtc step throws after the ack) sends voice.leave — no ghost roster member", async () => {
@@ -445,6 +592,23 @@ describe("FR-18 join/leave", () => {
     expect(h.graph.closed).toBe(true);
   });
 
+  it("microphone failure after receive startup tears down both sessions and leaves voice", async () => {
+    const h = makeHarness();
+    h.deps.getMic = vi.fn(async () => {
+      throw new DOMException("denied", "NotAllowedError");
+    });
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false }]);
+
+    await expect(controller.join("A")).rejects.toMatchObject({ name: "NotAllowedError" });
+
+    expect(h.pulls[0]?.added).toEqual([[{ trackName: `mic:${REMOTE}` }]]);
+    expect(h.pulls[0]?.closed).toBe(true);
+    expect(h.publishes[0]?.closed).toBe(true);
+    expect(h.ws.sent.some((m) => m.t === "voice.leave")).toBe(true);
+    expect(useMediaStore.getState().voiceStatus).toBe("error");
+  });
+
   it("ws reconnect while joined → teardown + rejoin", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);
@@ -461,7 +625,12 @@ describe("FR-18 join/leave", () => {
       streams: [],
       recording: { active: false },
       lastMessageId: null,
+      lastReadMessageId: 0,
+      firstUnreadMessageId: null,
+      unreadCount: 0,
       costStatus: { usedGB: 0, capGB: 900, blocked: false },
+      polls: [],
+      points: zeroPoints(),
     });
     await flush();
 
@@ -470,6 +639,7 @@ describe("FR-18 join/leave", () => {
     expect(h.pulls).toHaveLength(2);
     expect(h.ws.sent.filter((m) => m.t === "voice.join")).toHaveLength(2);
     expect(useMediaStore.getState().voiceStatus).toBe("joined");
+    expect(vi.mocked(playUiSound).mock.calls.filter(([kind]) => kind === "voice.join")).toHaveLength(1);
   });
 });
 
@@ -746,31 +916,25 @@ describe("TASK-1 audibility", () => {
     }
   });
 
-  it("transport failure (ICE 'failed') → automatic teardown + rejoin preserving mute", async () => {
-    vi.useFakeTimers();
-    try {
-      const h = makeHarness();
-      const controller = new VoiceController(h.deps);
-      seedVoice("A", []);
-      await controller.join("A");
-      controller.setMuted(true);
-      expect(h.publishes).toHaveLength(1);
+  it("media reconnect → immediate teardown + rejoin preserving mute", async () => {
+    const h = makeHarness();
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", []);
+    await controller.join("A");
+    controller.setMuted(true);
+    expect(h.publishes).toHaveLength(1);
 
-      h.pulls[0]?.connFailed?.();
-      h.publishes[0]?.connFailed?.(); // double fire (both PCs die together) → single rejoin
-      await vi.advanceTimersByTimeAsync(1_100);
-      await vi.advanceTimersByTimeAsync(0);
+    h.pulls[0]?.recoveryNeeded?.();
+    h.publishes[0]?.recoveryNeeded?.(); // both transports recover together → one rejoin
+    await flush();
 
-      expect(h.publishes).toHaveLength(2);
-      expect(h.publishes[0]?.closed).toBe(true);
-      expect(h.pulls).toHaveLength(2);
-      expect(useMediaStore.getState().voiceStatus).toBe("joined");
-      expect(useMediaStore.getState().muted).toBe(true);
-      // the restored mute re-disabled the fresh mic track
-      expect(h.publishes[1]?.enabled).toContainEqual([`mic:${SELF}`, false]);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(h.publishes).toHaveLength(2);
+    expect(h.publishes[0]?.closed).toBe(true);
+    expect(h.pulls).toHaveLength(2);
+    expect(useMediaStore.getState().voiceStatus).toBe("joined");
+    expect(useMediaStore.getState().muted).toBe(true);
+    // the restored mute re-disabled the fresh mic track
+    expect(h.publishes[1]?.enabled).toContainEqual([`mic:${SELF}`, false]);
   });
 });
 

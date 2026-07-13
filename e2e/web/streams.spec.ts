@@ -56,18 +56,16 @@ async function seedRoom(
       return { user, context, page };
     }),
   );
-  // Every socket is live once each client sees the others in People (so stream broadcasts land).
+  // Every socket is live once each client sees the others on Dashboard (so broadcasts land).
   await Promise.all(
     clients.map(async (client) => {
-      await client.page.getByTestId("tab-people").click();
       await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
-            expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
+            expect(client.page.getByTestId(`home-member-${other.user.userId}`)).toBeVisible(),
           ),
       );
-      await client.page.getByTestId("tab-chat").click();
     }),
   );
   return { serverId: server.id, nickname: server.nickname, clients };
@@ -379,7 +377,11 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
     }
   });
 
-  test("FR-39 activity records stream lifecycle", async ({ browser, baseURL, api }) => {
+  test("Dashboard stays available during a stream and the center view follows stream lifecycle", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
     test.setTimeout(90_000);
     const { clients } = await seedRoom(browser, baseURL, api, ["a", "b"]);
     const [a] = clients;
@@ -387,17 +389,28 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
     try {
       await joinVoice(a);
       const track = await startScreenShare(a);
+
+      await expect(a.page.getByTestId("workspace-tab-stream")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      await a.page.getByTestId("workspace-tab-dashboard").click();
+      await expect(a.page.getByTestId("tavern-home")).toBeVisible();
+      await expect(a.page.getByTestId("workspace-tab-dashboard")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      await a.page.getByTestId("workspace-tab-stream").click();
+      await expect(a.page.getByTestId(`stream-tile-${track}`)).toBeVisible();
+
       await a.page.getByTestId("controls-screen").click();
       await expect(a.page.getByTestId(`stream-tile-${track}`)).toHaveCount(0, { timeout: 15_000 });
-
-      // The Activity tab surfaces the FR-39 stream.start + stream.stop entries for A.
-      await a.page.getByTestId("tab-activity").click();
-      await expect(a.page.locator('[data-activity-type="stream.start"]')).toHaveCount(1, {
-        timeout: 10_000,
-      });
-      await expect(a.page.locator('[data-activity-type="stream.stop"]')).toHaveCount(1, {
-        timeout: 10_000,
-      });
+      await expect(a.page.getByTestId("tavern-home")).toBeVisible({ timeout: 10_000 });
+      await expect(a.page.getByTestId("workspace-tab-dashboard")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
+      await expect(a.page.getByTestId("workspace-tab-stream")).toHaveCount(0);
     } finally {
       await closeClients(clients);
     }

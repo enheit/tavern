@@ -65,35 +65,49 @@ describe("FR-28 share picker", () => {
     expect(document.querySelectorAll('[data-testid^="preset-option-"]')).toHaveLength(12);
   });
 
-  it("audio switch disabled when loopbackAudioSupported=false", async () => {
+  it("desktop always requests audio and does not expose an audio switch", async () => {
+    platformMock.capture.getScreenSources.mockResolvedValue([
+      { id: "screen:0", name: "Screen 1", thumbnailDataUrl: "data:image/png;base64," },
+    ]);
     platformMock.capture.loopbackAudioSupported.mockResolvedValue(false);
-    renderPicker();
+    const { onStart } = renderPicker();
 
-    // Base UI expresses the disabled state via data-disabled (not a native `disabled` property).
-    const audio = await screen.findByTestId("share-audio");
-    await waitFor(() => expect(audio.getAttribute("data-disabled")).not.toBeNull());
+    fireEvent.click(await screen.findByTestId("share-source-screen:0"));
+    expect(screen.queryByTestId("share-audio")).toBeNull();
+    fireEvent.click(screen.getByTestId("share-start"));
+
+    expect(onStart).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceId: "screen:0", withAudio: true }),
+    );
+    expect(platformMock.capture.loopbackAudioSupported).not.toHaveBeenCalled();
   });
 
-  it("audio switch shown and enabled on linux even without an OS loopback device", async () => {
-    // FR-28: the old S8.1 "hidden on Linux" pin is revised — Linux has no OS
-    // loopback device, but stream audio now rides the pactl remap-source + AEC
-    // fallback (media/capture.ts), so the switch is offered AND stays enabled.
+  it("linux also always requests audio without an audio switch", async () => {
     platformMock.os = "linux";
+    platformMock.capture.getScreenSources.mockResolvedValue([
+      { id: "screen:0", name: "Screen 1", thumbnailDataUrl: "data:image/png;base64," },
+    ]);
     platformMock.capture.loopbackAudioSupported.mockResolvedValue(false);
-    renderPicker();
+    const { onStart } = renderPicker();
 
-    const audio = await screen.findByTestId("share-audio");
-    await waitFor(() => expect(audio.getAttribute("data-disabled")).toBeNull());
+    fireEvent.click(await screen.findByTestId("share-source-screen:0"));
+    expect(screen.queryByTestId("share-audio")).toBeNull();
+    fireEvent.click(screen.getByTestId("share-start"));
+
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ withAudio: true }));
   });
 
   it("web: no source grid rendered", async () => {
     platformMock.kind = "web";
     platformMock.os = "web";
-    renderPicker();
+    const { onStart } = renderPicker();
 
     await screen.findByTestId("share-preset");
     expect(screen.queryByTestId("share-tab-screens")).toBeNull();
     expect(document.querySelector('[data-testid^="share-source-"]')).toBeNull();
+    expect(screen.queryByTestId("share-audio")).toBeNull();
+    fireEvent.click(screen.getByTestId("share-start"));
+    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ withAudio: true }));
   });
 
   it("desktop darwin: screen access denied replaces the tabs with the permission hint", async () => {
@@ -134,6 +148,8 @@ describe("FR-28 share picker", () => {
     const start = screen.getByTestId("share-start");
     await waitFor(() => expect(start.hasAttribute("disabled")).toBe(false));
     fireEvent.click(start);
-    expect(onStart).toHaveBeenCalledWith(expect.objectContaining({ sourceId: "portal" }));
+    expect(onStart).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceId: "portal", withAudio: true }),
+    );
   });
 });

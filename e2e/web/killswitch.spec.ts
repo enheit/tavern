@@ -54,15 +54,13 @@ async function seedRoom(
   );
   await Promise.all(
     clients.map(async (client) => {
-      await client.page.getByTestId("tab-people").click();
       await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
-            expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
+            expect(client.page.getByTestId(`home-member-${other.user.userId}`)).toBeVisible(),
           ),
       );
-      await client.page.getByTestId("tab-chat").click();
     }),
   );
   return { serverId: server.id, clients };

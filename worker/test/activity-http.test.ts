@@ -1,7 +1,8 @@
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { ActivityPage } from "@tavern/shared";
+import { ActivityPage, LIMITS, TavernHomeResponse } from "@tavern/shared";
 import { ActivityModule } from "../src/do/activity";
+import { HangoutsModule } from "../src/do/hangouts";
 
 const BASE = "https://tavern.test";
 
@@ -64,23 +65,29 @@ async function seedActivity(serverId: string, count: number): Promise<void> {
 }
 
 describe("FR-39 activity read", () => {
-  it("paginates newest-first: page 1 = 50 hasMore, page 2 via before = 5 no more", async () => {
+  it("paginates newest-first using the shared page size", async () => {
     const token = await register("activityreader");
     const serverId = await createServer(token, "activityroom");
     await seedActivity(serverId, 55);
 
-    const res1 = await authed(token, `/api/servers/${serverId}/activity?limit=50`);
+    const res1 = await authed(
+      token,
+      `/api/servers/${serverId}/activity?limit=${LIMITS.historyPageSize}`,
+    );
     expect(res1.status).toBe(200);
     const page1 = ActivityPage.parse(await res1.json());
-    expect(page1.entries).toHaveLength(50);
+    expect(page1.entries).toHaveLength(LIMITS.historyPageSize);
     expect(page1.hasMore).toBe(true);
     // Entries are oldest→newest within the page, so entries[0] is the oldest of the newest 50.
     const before = must(page1.entries[0], "first entry").id;
 
-    const res2 = await authed(token, `/api/servers/${serverId}/activity?before=${before}&limit=50`);
+    const res2 = await authed(
+      token,
+      `/api/servers/${serverId}/activity?before=${before}&limit=${LIMITS.historyPageSize}`,
+    );
     expect(res2.status).toBe(200);
     const page2 = ActivityPage.parse(await res2.json());
-    expect(page2.entries).toHaveLength(5);
+    expect(page2.entries).toHaveLength(55 - LIMITS.historyPageSize);
     expect(page2.hasMore).toBe(false);
     // The two pages together are the full, non-overlapping 55-row log (ids strictly ascending).
     const ids = [...page2.entries, ...page1.entries].map((e) => e.id);
@@ -97,7 +104,7 @@ describe("FR-39 activity read", () => {
     const res = await authed(token, `/api/servers/${serverId}/activity`);
     expect(res.status).toBe(200);
     const page = ActivityPage.parse(await res.json());
-    expect(page.entries).toHaveLength(50);
+    expect(page.entries).toHaveLength(LIMITS.historyPageSize);
     expect(page.hasMore).toBe(true);
   });
 
@@ -117,6 +124,74 @@ describe("FR-39 activity read", () => {
 
     const outsider = await register("activityoutsider");
     const res = await authed(outsider, `/api/servers/${serverId}/activity`);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: "not_member" });
+  });
+});
+
+describe("Tavern Home read", () => {
+  it("returns a bounded recap projected from hangouts and existing media", async () => {
+    const token = await register("homereader");
+    const serverId = await createServer(token, "homereaderroom");
+    const a = crypto.randomUUID();
+    const b = crypto.randomUUID();
+    const screenshotId = crypto.randomUUID();
+    const recordingId = crypto.randomUUID();
+    const soundId = crypto.randomUUID();
+    const base = Date.now() - 1_000_000;
+    const stub: RoomStub = env.SERVER_ROOM.get(env.SERVER_ROOM.idFromName(serverId));
+
+    await runInDurableObject(stub, (_instance, state) => {
+      const sql = state.storage.sql;
+      const hangouts = new HangoutsModule(sql);
+      hangouts.noteVoiceChange([a], [a, b], base);
+      hangouts.noteVoiceChange([a, b], [], base + 120_000);
+      hangouts.finalizeDue(base + 200_000);
+      sql.exec(
+        `INSERT INTO screenshots(id, captured_by, r2_key, created_at) VALUES (?, ?, ?, ?)`,
+        screenshotId,
+        a,
+        `screenshots/${screenshotId}.webp`,
+        base + 300_000,
+      );
+      sql.exec(
+        `INSERT INTO recordings(id, started_by, r2_key, duration_ms, started_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        recordingId,
+        b,
+        `recordings/${recordingId}.webm`,
+        60_000,
+        base + 400_000,
+        base + 460_000,
+      );
+      sql.exec(
+        `INSERT INTO sounds(id, name, uploader_id, r2_key, duration_ms, trim_start_ms, trim_end_ms, created_at)
+         VALUES (?, 'cheers', ?, ?, 1000, 0, 1000, ?)`,
+        soundId,
+        a,
+        `sounds/${soundId}.mp3`,
+        base + 500_000,
+      );
+    });
+
+    const res = await authed(token, `/api/servers/${serverId}/home`);
+    expect(res.status).toBe(200);
+    const home = TavernHomeResponse.parse(await res.json());
+    expect(home.recentHangouts).toHaveLength(1);
+    expect(home.recentHangouts[0]?.participantIds).toEqual([a, b].toSorted());
+    expect(home.pointLeaderboard).toHaveLength(1);
+    expect(home.pointLeaderboard[0]?.balance).toBe(0);
+    expect(home.latestScreenshot?.id).toBe(screenshotId);
+    expect(home.latestRecording?.id).toBe(recordingId);
+    expect(home.latestSound?.id).toBe(soundId);
+  });
+
+  it("denies a non-member", async () => {
+    const owner = await register("homeowner");
+    const serverId = await createServer(owner, "homeownerroom");
+    const outsider = await register("homeoutsider");
+
+    const res = await authed(outsider, `/api/servers/${serverId}/home`);
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: "not_member" });
   });

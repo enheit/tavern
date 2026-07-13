@@ -4,24 +4,23 @@ import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
 import { ServerSummary } from "@tavern/shared";
 import { WEB_URL } from "../playwright.config";
 
-// People moved into the right-column ChatTabs (temporary): the member list is now the "People" tab,
-// mutually exclusive with "Chat". These helpers flip to People for a presence assertion, then restore
-// the default Chat tab so downstream composer/message flows keep working.
-export async function withPeopleTab<T>(page: Page, fn: () => Promise<T>): Promise<T> {
-  await page.getByTestId("tab-people").click();
-  try {
-    return await fn();
-  } finally {
-    await page.getByTestId("tab-chat").click();
-  }
+// Members live on Dashboard while chat remains persistent. Navigate to Dashboard before assertions
+// so callers are deterministic even when an earlier step selected another workspace view.
+export async function withDashboardMembers<T>(page: Page, fn: () => Promise<T>): Promise<T> {
+  await page.getByTestId("workspace-tab-dashboard").click();
+  return fn();
 }
 
 export async function expectMemberVisible(page: Page, userId: string): Promise<void> {
-  await withPeopleTab(page, () => expect(page.getByTestId(`member-${userId}`)).toBeVisible());
+  await withDashboardMembers(page, () =>
+    expect(page.getByTestId(`home-member-${userId}`)).toBeVisible(),
+  );
 }
 
 export async function expectMemberAbsent(page: Page, userId: string): Promise<void> {
-  await withPeopleTab(page, () => expect(page.getByTestId(`member-${userId}`)).toHaveCount(0));
+  await withDashboardMembers(page, () =>
+    expect(page.getByTestId(`home-member-${userId}`)).toHaveCount(0),
+  );
 }
 
 // The frozen harness surface every later e2e step reuses (PLAN §10). Fixtures `api` and
@@ -47,6 +46,7 @@ export interface Api {
   createServer(admin: SeededUser, opts?: { password?: string }): Promise<ServerSummary>;
   join(user: SeededUser, nickname: string, password?: string): Promise<ServerSummary>;
   seedCreationCode(user: SeededUser): Promise<string>;
+  seedPoints(user: SeededUser, serverId: string, balance: number): Promise<void>;
 }
 
 // Every server now has a password (CreateServerRequest requires one). Fixture-created servers use
@@ -87,6 +87,15 @@ async function seedCreationCode(user: SeededUser): Promise<string> {
     return body.code;
   }
   throw new Error("seedCreationCode: unexpected response shape");
+}
+
+async function seedPoints(user: SeededUser, serverId: string, balance: number): Promise<void> {
+  const res = await user.request.post("/api/__test/seed-points", {
+    data: { serverId, userId: user.userId, balance },
+  });
+  if (!res.ok()) {
+    throw new Error(`seedPoints failed: ${res.status()} ${await res.text()}`);
+  }
 }
 
 async function createServer(
@@ -160,7 +169,7 @@ export const test = base.extend<HarnessFixtures>({
       return { userId: readUserId(body), username, password, token, request: ctx };
     };
 
-    await use({ createUser, createServer, join: joinServer, seedCreationCode });
+    await use({ createUser, createServer, join: joinServer, seedCreationCode, seedPoints });
     await Promise.all(track.map((ctx) => ctx.dispose()));
   },
 

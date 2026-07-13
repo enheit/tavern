@@ -82,4 +82,18 @@ describe("FR-06 theme", () => {
     await import("@/theme-boot");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
+
+  it("the boot module follows system changes live when system was already stored", async () => {
+    const emit = stubMatchMedia(false);
+    localStorage.setItem("tavern.theme", "system");
+
+    await import("@/theme-boot");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+
+    emit(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+
+    emit(false);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
 });

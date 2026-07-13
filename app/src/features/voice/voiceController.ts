@@ -14,6 +14,7 @@ import type { PullState } from "@/media/rtc/pullSession";
 import { createSfuSignal } from "@/media/sfuSignal";
 import { createSoundFetcher, SoundboardPlayer } from "@/media/soundboardPlayer";
 import { micTrackName } from "@/media/trackName";
+import { playUiSound } from "@/lib/uiSounds";
 import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
@@ -70,8 +71,8 @@ interface PublishLike {
   // it on the shared publishPC exposed via screenPublisher().
   setPreset(trackName: string, preset: PresetId): Promise<void>;
   close(): Promise<void>;
-  // Optional — real PublishSession only. Terminal transport failure (ICE 'failed'); see PullLike.
-  onConnectionFailed?(cb: () => void): () => void;
+  // Optional — real PublishSession only. Rebuilds failed or reconnected-but-stale media sessions.
+  onConnectionRecoveryNeeded?(cb: () => void): () => void;
   // Optional so unit-test fakes need not implement it; the real PublishSession exposes it. Surfaced
   // via the §10 e2e publish-state hook only.
   readonly state?: PublishState;
@@ -87,9 +88,8 @@ interface PullLike {
   addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>): Promise<void>;
   removeRemoteTracks(trackNames: string[]): Promise<void>;
   close(): Promise<void>;
-  // Optional — real PullSession only. Terminal transport failure (ICE 'failed'): the controller
-  // auto-recovers the whole voice session (teardown + rejoin). Test fakes may omit it.
-  onConnectionFailed?(cb: () => void): () => void;
+  // Optional — real PullSession only. See PublishLike.onConnectionRecoveryNeeded.
+  onConnectionRecoveryNeeded?(cb: () => void): () => void;
   // Optional — real PullSession only. Feed the §10 e2e pull-state and voice-stats hooks.
   readonly state?: PullState;
   inboundAudioStats?(): Promise<VoiceStats>;
@@ -153,6 +153,18 @@ export interface VoiceDeps {
 
 const MIC_PREFIX = "mic:";
 
+type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+// Observe a startup promise immediately and turn it into data. Join starts independent graph,
+// capture, publish, and pull work; keeping every rejection observed lets the controller wait for
+// sibling work to settle before teardown, so a late session cannot come alive after an error.
+function outcome<T>(promise: Promise<T>): Promise<Outcome<T>> {
+  return promise.then(
+    (value) => ({ ok: true, value }),
+    (error: unknown) => ({ ok: false, error }),
+  );
+}
+
 // Non-React orchestrator that owns the voice engine and writes to stores/media.ts. One instance for
 // the whole app (single-voice at a time). The JOIN order is load-bearing (§7.1): the DO authorizes
 // rtc ops only for in-voice users, so voice.join + its ack precede every rtc call.
@@ -181,12 +193,17 @@ export class VoiceController {
   // the publish and pull PCs at once — one rejoin covers both).
   private recovering = false;
   private readonly speakingSubs = new Map<string, () => void>();
+  private readonly voiceMemberIds = new Set<string>();
+  private readonly streamTrackNames = new Set<string>();
+  private soundEffectsReady = false;
   // FR-36 soundboard player for the CURRENT voice server (single-voice-at-a-time); rebuilt lazily when
   // the voice server changes, torn down on leave.
   private soundboard: { serverId: string; player: SoundboardLike } | null = null;
   private unsubVoiceState: (() => void) | null = null;
   private unsubReconnect: (() => void) | null = null;
   private unsubTrack: (() => void) | null = null;
+  private unsubStreamAdded: (() => void) | null = null;
+  private unsubStreamRemoved: (() => void) | null = null;
   private unsubSoundPlayed: (() => void) | null = null;
   private unsubPublishFailed: (() => void) | null = null;
   private unsubPullFailed: (() => void) | null = null;
@@ -209,67 +226,99 @@ export class VoiceController {
     await this.doJoin(serverId);
   }
 
-  private async doJoin(serverId: string): Promise<void> {
+  private async doJoin(serverId: string, opts: { announceSelf?: boolean } = {}): Promise<void> {
     const selfId = this.selfId();
     const ws = this.deps.wsFor(serverId);
     this.ws = ws;
     this.serverId = serverId;
+    this.soundEffectsReady = false;
+    this.voiceMemberIds.clear();
+    for (const member of roomStore(serverId).getState().voice.members) {
+      this.voiceMemberIds.add(member.userId);
+    }
+    this.streamTrackNames.clear();
+    for (const stream of roomStore(serverId).getState().streams) {
+      this.streamTrackNames.add(stream.trackName);
+    }
+    this.unsubVoiceState = ws.on("voice.state", (m) => this.onVoiceState(m.voice.members));
+    this.unsubStreamAdded = ws.on("stream.added", (m) => this.onStreamAdded(m.stream.trackName));
+    this.unsubStreamRemoved = ws.on("stream.removed", (m) => this.onStreamRemoved(m.trackName));
     const media = useMediaStore.getState();
     media.setVoiceStatus("joining");
     media.setInVoiceServerId(serverId);
     try {
-      // ① voice.join, then await the voice.state ack that lists self.
+      // ① Register presence. The DO authorizes every RTC call from this ack onward; local audio
+      // preparation is safe to overlap with it because it does not touch the SFU.
       const ack = this.waitForSelfInVoice(ws, selfId);
       ws.send({ t: "voice.join" });
-      await ack;
-
-      // ② graph init + resume (same user gesture). Apply the persisted soundboard gain (FR-38) now so
-      // the freshly-created sbGain node starts at the user's saved level.
       const prefs = useMediaStore.getState().deviceSelection;
-      await this.deps.graph.init(prefs.sinkId);
-      await this.resumeGraph();
-      this.graphReady = true;
-      this.deps.graph.setSoundboardGain(useSettingsStore.getState().volumes.soundboard);
+      const graphReady = (async () => {
+        await this.deps.graph.init(prefs.sinkId);
+        await this.resumeGraph();
+        this.graphReady = true;
+        this.deps.graph.setSoundboardGain(useSettingsStore.getState().volumes.soundboard);
+      })();
+      const graphResult = outcome(graphReady);
 
-      // ③ acquire mic.
-      const mic = await this.deps.getMic(this.micOpts());
-      this.localMic = mic;
+      await ack;
+      const preparedGraph = await graphResult;
+      if (!preparedGraph.ok) throw preparedGraph.error;
+      // Capture starts only after authorization (so a lost ack cannot strand a live mic), but it is
+      // deliberately NOT a prerequisite for the independent receive branch below.
+      const micResult = outcome(this.deps.getMic(this.micOpts()));
 
-      // ④ publish connect + publishMic; local analyser feeds the self speaking ring.
+      // ② After authorization, start the independent SFU sessions together. Cloudflare maps each
+      // session to its own PeerConnection, so only operations WITHIN one session stay serialized.
       const publish = this.deps.createPublish(serverId, selfId);
       this.publish = publish;
-      await publish.connect();
-      const { trackName } = await publish.publishMic(mic);
-      this.micTrackName = trackName;
-      this.deps.graph.attachLocalMic(mic);
-      this.startSpeaking(selfId, this.deps.graph.getLocalAnalyser());
-
-      // ⑤ pull connect + pull every existing remote mic in the room store. Each mic goes through
-      // the per-mic retry, NEVER awaited into the join: a member who joined during OUR wiring
-      // window may not have registered their mic yet (§7.1 voice.state races the REST publish) and
-      // an awaited batch turned that pull_denied into a FULL join teardown — the joiner silently
-      // dropped out of voice (found via the nightly @realtime suite; reproduced locally). Remote
-      // mics are additive to a join, not a precondition of it.
       const pull = this.deps.createPull(serverId);
       this.pull = pull;
       this.unsubTrack = pull.onTrack((tn, _t, stream) => this.onPulledTrack(tn, stream));
-      await pull.connect();
-      // Terminal ICE failure on either PC → auto-recover the session (a dead transport keeps the
-      // UI 'joined' while the user goes one-way deaf/mute; the WS reconnect path never notices).
-      this.unsubPublishFailed =
-        publish.onConnectionFailed?.(() => this.recoverFromTransportFailure()) ?? null;
-      this.unsubPullFailed =
-        pull.onConnectionFailed?.(() => this.recoverFromTransportFailure()) ?? null;
-      const remoteMembers = roomStore(serverId)
-        .getState()
-        .voice.members.filter((m) => m.userId !== selfId);
-      for (const m of remoteMembers) {
-        this.pulledMics.add(m.userId);
-        this.micSeqs.set(m.userId, m.micSeq ?? 0);
-        this.pullMicWithRetry(m.userId, 0);
-      }
 
-      this.unsubVoiceState = ws.on("voice.state", (m) => this.onVoiceState(m.voice.members));
+      const receiveReady = outcome(
+        (async () => {
+          await pull.connect();
+          this.unsubPullFailed =
+            pull.onConnectionRecoveryNeeded?.(() => this.recoverMediaSessions()) ?? null;
+          const remoteMembers = roomStore(serverId)
+            .getState()
+            .voice.members.filter((m) => m.userId !== selfId);
+          for (const m of remoteMembers) {
+            this.pulledMics.add(m.userId);
+            this.micSeqs.set(m.userId, m.micSeq ?? 0);
+            // Remote mics are additive: registration may still be racing, so the existing
+            // event-driven micSeq path + bounded retry owns eventual attachment.
+            this.pullMicWithRetry(m.userId, 0);
+          }
+        })(),
+      );
+
+      const sendReady = outcome(
+        (async () => {
+          const publishConnected = outcome(publish.connect());
+          const [connected, captured] = await Promise.all([publishConnected, micResult]);
+          if (!connected.ok) {
+            if (captured.ok) captured.value.stop();
+            throw connected.error;
+          }
+          if (!captured.ok) throw captured.error;
+          const mic = captured.value;
+          this.localMic = mic;
+          const { trackName } = await publish.publishMic(mic);
+          this.micTrackName = trackName;
+          this.deps.graph.attachLocalMic(mic);
+          this.startSpeaking(selfId, this.deps.graph.getLocalAnalyser());
+          this.unsubPublishFailed =
+            publish.onConnectionRecoveryNeeded?.(() => this.recoverMediaSessions()) ?? null;
+        })(),
+      );
+
+      // Both branches must settle before failure teardown. On the normal path, receiveReady can
+      // attach and play remote tracks while sendReady is still waiting on permission/model loading.
+      const [received, sent] = await Promise.all([receiveReady, sendReady]);
+      if (!received.ok) throw received.error;
+      if (!sent.ok) throw sent.error;
+
       this.unsubReconnect = ws.on("hello.ok", () => void this.onReconnect());
       // FR-36: play soundboard broadcasts for EVERY in-voice member, not only those who opened the
       // soundboard panel. The frame is self-contained (trims included) so playback needs no query cache;
@@ -282,6 +331,16 @@ export class VoiceController {
         });
       });
       useMediaStore.getState().setVoiceStatus("joined");
+      this.soundEffectsReady = true;
+      this.voiceMemberIds.clear();
+      for (const member of roomStore(serverId).getState().voice.members) {
+        this.voiceMemberIds.add(member.userId);
+      }
+      this.streamTrackNames.clear();
+      for (const stream of roomStore(serverId).getState().streams) {
+        this.streamTrackNames.add(stream.trackName);
+      }
+      if (opts.announceSelf !== false && !this.deafened) playUiSound("voice.join");
       // Refresh auto-resume snapshot (per-tab, voiceSession.ts): a rejoin on the SAME server keeps
       // camOn (the WebcamController re-asserts it right after its own restart); any other join
       // starts with it off. Written only on join SUCCESS so a failed join never leaves a blob.
@@ -312,6 +371,7 @@ export class VoiceController {
   async leave(): Promise<void> {
     if (this.serverId === null) return;
     const ws = this.ws;
+    if (!this.deafened) playUiSound("voice.leave");
     useMediaStore.getState().setVoiceStatus("leaving");
     // Reverse teardown FIRST (close sessions/graph while still authorized in voice), THEN voice.leave.
     await this.teardown();
@@ -335,7 +395,7 @@ export class VoiceController {
     const wasMuted = this.userMuted;
     const wasDeafened = this.deafened;
     await this.teardown();
-    await this.doJoin(serverId);
+    await this.doJoin(serverId, { announceSelf: false });
     if (wasDeafened) this.setDeafened(true);
     if (wasMuted) this.setMuted(true);
   }
@@ -507,9 +567,30 @@ export class VoiceController {
     this.startSpeaking(userId, this.deps.graph.getUserAnalyser(userId));
   }
 
+  private onStreamAdded(trackName: string): void {
+    const isNew = !this.streamTrackNames.has(trackName);
+    this.streamTrackNames.add(trackName);
+    if (this.soundEffectsReady && isNew && !this.deafened) playUiSound("stream.start");
+  }
+
+  private onStreamRemoved(trackName: string): void {
+    const wasKnown = this.streamTrackNames.delete(trackName);
+    if (this.soundEffectsReady && wasKnown && !this.deafened) playUiSound("stream.stop");
+  }
+
   private onVoiceState(members: VoiceMember[]): void {
     const selfId = this.selfId();
     const ids = new Set(members.map((m) => m.userId));
+    if (this.soundEffectsReady) {
+      for (const id of ids) {
+        if (!this.voiceMemberIds.has(id) && id !== selfId && !this.deafened) playUiSound("voice.join");
+      }
+      for (const id of this.voiceMemberIds) {
+        if (!ids.has(id) && id !== selfId && !this.deafened) playUiSound("voice.leave");
+      }
+    }
+    this.voiceMemberIds.clear();
+    for (const id of ids) this.voiceMemberIds.add(id);
     for (const m of members) {
       if (m.userId === selfId) continue;
       const seq = m.micSeq ?? 0;
@@ -597,33 +678,28 @@ export class VoiceController {
       .catch(() => undefined);
   }
 
-  // Terminal transport failure (ICE 'failed' on the publish or pull PC): full teardown + rejoin,
-  // preserving the self mute/deafen flags — same shape as the WS-reconnect resnapshot path. The 1 s
-  // delay lets the network settle (a route change flaps both PCs at once); the single-flight guard
-  // collapses the double fire. A rejoin that fails leaves voiceStatus 'error' (doJoin's contract) —
-  // visible, instead of the silent zombie 'joined' this replaces.
-  private recoverFromTransportFailure(): void {
+  // Connectivity is already back when the recovered-transport signal fires, so rebuild immediately.
+  // The single-flight guard collapses publish+pull events from the same interruption.
+  private recoverMediaSessions(): void {
     if (this.recovering || useMediaStore.getState().voiceStatus !== "joined") return;
     const serverId = this.serverId;
     if (serverId === null) return;
     this.recovering = true;
-    setTimeout(() => {
-      void (async () => {
-        try {
-          if (useMediaStore.getState().voiceStatus !== "joined") return;
-          const wasMuted = this.userMuted;
-          const wasDeafened = this.deafened;
-          await this.teardown();
-          await this.doJoin(serverId);
-          if (wasDeafened) this.setDeafened(true);
-          if (wasMuted) this.setMuted(true);
-        } catch {
-          // doJoin already surfaced the failure (voiceStatus 'error', ghost-leave sent).
-        } finally {
-          this.recovering = false;
-        }
-      })();
-    }, 1_000);
+    void (async () => {
+      try {
+        if (useMediaStore.getState().voiceStatus !== "joined") return;
+        const wasMuted = this.userMuted;
+        const wasDeafened = this.deafened;
+        await this.teardown();
+        await this.doJoin(serverId, { announceSelf: false });
+        if (wasDeafened) this.setDeafened(true);
+        if (wasMuted) this.setMuted(true);
+      } catch {
+        // doJoin already surfaced the failure (voiceStatus 'error', ghost-leave sent).
+      } finally {
+        this.recovering = false;
+      }
+    })();
   }
 
   private startSpeaking(userId: string, analyser: AnalyserNode | null): void {
@@ -658,12 +734,16 @@ export class VoiceController {
     this.unsubVoiceState?.();
     this.unsubReconnect?.();
     this.unsubTrack?.();
+    this.unsubStreamAdded?.();
+    this.unsubStreamRemoved?.();
     this.unsubSoundPlayed?.();
     this.unsubPublishFailed?.();
     this.unsubPullFailed?.();
     this.unsubVoiceState = null;
     this.unsubReconnect = null;
     this.unsubTrack = null;
+    this.unsubStreamAdded = null;
+    this.unsubStreamRemoved = null;
     this.unsubSoundPlayed = null;
     this.unsubPublishFailed = null;
     this.unsubPullFailed = null;
@@ -674,6 +754,9 @@ export class VoiceController {
     for (const id of this.pulledMics) this.deps.graph.detachRemoteMic(id);
     this.pulledMics.clear();
     this.micSeqs.clear();
+    this.voiceMemberIds.clear();
+    this.streamTrackNames.clear();
+    this.soundEffectsReady = false;
     await this.pull?.close();
     this.pull = null;
     await this.publish?.close();

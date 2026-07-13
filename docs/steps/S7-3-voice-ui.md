@@ -18,10 +18,12 @@ session timer. After this step two real clients can talk (verified end-to-end in
 
 1. Create `app/src/features/voice/voiceController.ts` — non-React orchestrator owning engine
    instances (one `PublishSession`, one voice `PullSession`, one `AudioGraph`) and writing to
-   `stores/media.ts`. Pinned join sequence (order is load-bearing — the DO authorizes rtc ops
-   only for in-voice users): ① WS `voice.join` (await `voice.state` ack) ② `graph.init` +
-   `graph.resume()` (same user gesture) ③ `getMic` ④ `PublishSession.connect` + `publishMic`
-   ⑤ voice `PullSession.connect` + `addRemoteTracks` for every existing `mic:*` in room store.
+   `stores/media.ts`. Pinned join dependencies (the DO authorizes rtc ops only for in-voice users):
+   ① WS `voice.join` + local graph preparation overlap, but await the `voice.state` self ack before
+   mic capture or ANY RTC call; ② start `getMic`, `PublishSession`, and voice `PullSession`
+   concurrently; ③ the pull branch immediately `addRemoteTracks` for every existing `mic:*` in
+   room store, independent of the publish branch's `getMic` + `publishMic`; ④ mark joined after both
+   branches.
    Reactions: `stream.added mic:*` → pull + `attachRemoteMic`; `stream.removed`/`member.left` →
    remove + detach; WS reconnect while in voice → full teardown + rejoin (§6.2 snapshot
    semantics). Leave = reverse teardown + WS `voice.leave`.

@@ -85,15 +85,13 @@ async function seedRoom(
   );
   await Promise.all(
     clients.map(async (client) => {
-      await client.page.getByTestId("tab-people").click();
       await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
-            expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
+            expect(client.page.getByTestId(`home-member-${other.user.userId}`)).toBeVisible(),
           ),
       );
-      await client.page.getByTestId("tab-chat").click();
     }),
   );
   return { serverId: server.id, nickname: server.nickname, clients };
@@ -130,7 +128,7 @@ async function closeClients(clients: Client[]): Promise<void> {
 }
 
 test.describe("FR-25 recording e2e (mock SFU)", () => {
-  test("A records → B sees the REC chip + activity; stop lists it ≥5s; B plays it back", async ({
+  test("A records → B sees live recording; stop lists it ≥5s; B plays it back", async ({
     browser,
     baseURL,
     api,
@@ -143,20 +141,15 @@ test.describe("FR-25 recording e2e (mock SFU)", () => {
       await joinVoice(a);
       await joinVoice(b);
 
-      // B watches the Activity tab so the rec.start entry lands live.
-      await b.page.getByTestId("tab-activity").click();
-
       // A starts recording.
       await a.page.getByTestId("controls-record").click();
       await expect(a.page.getByTestId("controls-record")).toHaveAttribute("aria-pressed", "true", {
         timeout: 10_000,
       });
 
-      // (1) B sees the red REC chip AND the activity entry (FR-25: visible to ALL voice members).
+      // (1) B sees the red REC chip and Home's live recording state (visible to all members).
       await expect(b.page.getByTestId("rec-indicator")).toBeVisible({ timeout: 10_000 });
-      await expect(
-        b.page.getByText(`${a.user.username} started a voice recording`, { exact: true }),
-      ).toBeVisible({ timeout: 10_000 });
+      await expect(b.page.getByText("Recording", { exact: true })).toBeVisible({ timeout: 10_000 });
 
       // Record ~6s (FR-25 AC ≥ 5s).
       await a.page.waitForTimeout(6000);
@@ -174,19 +167,20 @@ test.describe("FR-25 recording e2e (mock SFU)", () => {
       if (recording === undefined) throw new Error("recording not listed");
 
       // (3) B plays it back: the audio element reaches readyState ≥ 2 and shows a non-zero mm:ss.
-      await b.page.getByTestId("tab-recordings").click();
-      await expect(b.page.getByTestId(`recording-${recording.id}`)).toBeVisible({
+      await b.page.getByTestId("workspace-tab-recordings").click();
+      const recordingRow = b.page.getByTestId(`recording-${recording.id}`);
+      await expect(recordingRow).toBeVisible({
         timeout: 20_000,
       });
       await expect(b.page.getByTestId(`recording-duration-${recording.id}`)).not.toHaveText("0:00");
-      await b.page.getByTestId(`recording-play-${recording.id}`).click();
+      await recordingRow.getByTestId(`recording-play-${recording.id}`).click();
+      const recordingAudio = recordingRow.getByTestId(`recording-audio-${recording.id}`);
       await expect
         .poll(
           () =>
-            b.page.evaluate((id) => {
-              const el = document.querySelector(`[data-testid="recording-audio-${id}"]`);
-              return el instanceof HTMLMediaElement ? el.readyState : 0;
-            }, recording.id),
+            recordingAudio.evaluate((element) =>
+              element instanceof HTMLMediaElement ? element.readyState : 0,
+            ),
           { timeout: 20_000 },
         )
         .toBeGreaterThanOrEqual(2);

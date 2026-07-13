@@ -3,6 +3,7 @@ import {
   notificationArgSchema,
   selectSourceArgSchema,
   setBadgeArgSchema,
+  setCloseToTrayArgSchema,
   setTokenArgSchema,
 } from "@tavern/shared";
 import type { PlatformBridge } from "./types";
@@ -110,6 +111,10 @@ export function createElectronPlatform(ipc: TavernIpc): PlatformBridge {
       },
       focusWindow: () => {
         void ipc.shell.focusWindow();
+      },
+      closeBehavior: {
+        getCloseToTray: () => ipc.shell.getCloseToTray(),
+        setCloseToTray: (value) => ipc.shell.setCloseToTray(setCloseToTrayArgSchema.parse(value)),
       },
     },
   };

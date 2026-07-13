@@ -1,4 +1,5 @@
 import type { PresetId } from "@tavern/shared";
+import { watchConnectionRecovery } from "./connectionRecovery";
 import { LOW_LAYER, SCREEN_PRESETS, WEBCAM_LOW, WEBCAM_PRESET, presetKbps } from "@tavern/shared";
 import type { RtcPort } from "../ports";
 import type { SfuSignal } from "../sfuSignal";
@@ -148,7 +149,7 @@ export class PublishSession {
   // from (capture geometry never changes after acquisition; see screenEncodings).
   private readonly captureHeights = new Map<string, number>();
   private readonly listeners = new Set<(s: PublishState) => void>();
-  private readonly connFailedListeners = new Set<() => void>();
+  private readonly recoveryListeners = new Set<() => void>();
 
   constructor(deps: { rtc: RtcPort; signal: SfuSignal; serverId: string; userId: string }) {
     this.rtc = deps.rtc;
@@ -172,14 +173,12 @@ export class PublishSession {
     };
   }
 
-  // Terminal transport failure only (pc.connectionState 'failed') — the voice controller's
-  // auto-recover signal; mirrors PullSession.onConnectionFailed (see the rationale there). A dead
-  // publish transport keeps sending nothing: the SFU GCs the mic track ~30s later and every peer
-  // goes deaf to this user while their UI still shows 'joined'.
-  onConnectionFailed(cb: () => void): () => void {
-    this.connFailedListeners.add(cb);
+  // Rebuild after a terminal failure OR after connectivity returns from `disconnected`. Browsers can
+  // skip `failed` entirely; keeping that recovered-but-stale SFU session made the user's mic silent.
+  onConnectionRecoveryNeeded(cb: () => void): () => void {
+    this.recoveryListeners.add(cb);
     return () => {
-      this.connFailedListeners.delete(cb);
+      this.recoveryListeners.delete(cb);
     };
   }
 
@@ -212,11 +211,9 @@ export class PublishSession {
     try {
       const iceServers = await this.signal.getIceServers();
       const pc = this.rtc.createPeerConnection({ iceServers, bundlePolicy: "max-bundle" });
-      pc.addEventListener("connectionstatechange", () => {
-        if (pc.connectionState === "failed") {
-          this.setState("failed");
-          for (const cb of this.connFailedListeners) cb();
-        }
+      watchConnectionRecovery(pc, (reason) => {
+        if (reason === "failed") this.setState("failed");
+        for (const cb of this.recoveryListeners) cb();
       });
       this.pc = pc;
       const { sessionId } = await this.signal.newSession(this.serverId);

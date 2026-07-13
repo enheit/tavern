@@ -35,7 +35,7 @@ async function bootOnto(opened: Opened, serverId: string): Promise<void> {
   await expect(opened.page.getByTestId("composer-input")).toBeVisible();
 }
 
-// Two members of one fresh server, each booted onto its Chat tab and seeing the other in People
+// Two members of one fresh server, each with persistent Chat and seeing the other on Dashboard
 // (which proves both WebSocket connections are live before we assert message delivery).
 async function bootPair(browser: Browser, baseURL: string | undefined, api: Api) {
   const a = await api.createUser("a");
@@ -46,7 +46,7 @@ async function bootPair(browser: Browser, baseURL: string | undefined, api: Api)
   const openedA = await pageFor(browser, baseURL, a);
   const openedB = await pageFor(browser, baseURL, b);
   await Promise.all([bootOnto(openedA, server.id), bootOnto(openedB, server.id)]);
-  // Both sockets live: each sees the other in the People tab (restored to Chat afterward).
+  // Both sockets live: each sees the other on Dashboard while Chat remains persistent.
   await expectMemberVisible(openedA.page, b.userId);
   await expectMemberVisible(openedB.page, a.userId);
 
@@ -114,9 +114,6 @@ test.describe("FR-14 FR-15 FR-17 chat", () => {
   });
 
   test("picked emoji appears in the delivered message", async ({ browser, baseURL, api }) => {
-    // The composer's emoji picker is temporarily hidden (SHOW_EMOJI=false in Composer.tsx, per
-    // request) — re-enable this test when the flag flips back.
-    test.skip(true, "emoji picker temporarily hidden (Composer.tsx SHOW_EMOJI=false)");
     const { openedA, openedB } = await bootPair(browser, baseURL, api);
     try {
       await openedA.page.getByTestId("composer-emoji").click();
@@ -141,6 +138,59 @@ test.describe("FR-14 FR-15 FR-17 chat", () => {
     }
   });
 
+  test("two users add, share, persist, and remove a message reaction", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    const { a, b, openedA, openedB } = await bootPair(browser, baseURL, api);
+    try {
+      await sendMessage(openedA.page, "reaction-source");
+      const rowA = openedA.page.locator("[data-message-id]").filter({ hasText: "reaction-source" });
+      const rowB = openedB.page.locator("[data-message-id]").filter({ hasText: "reaction-source" });
+      await expect(rowB).toBeVisible();
+      const messageId = await rowA.getAttribute("data-message-id");
+      if (messageId === null) throw new Error("reaction source id missing");
+
+      await rowA.hover();
+      await openedA.page.getByTestId(`add-reaction-${messageId}`).click();
+      const firstEmoji = openedA.page.locator('[data-slot="emoji-picker-emoji"]:visible').first();
+      await expect(firstEmoji).toBeVisible({ timeout: 15000 });
+      const emoji = ((await firstEmoji.textContent()) ?? "").trim();
+      if (emoji.length === 0) throw new Error("reaction emoji missing");
+      await firstEmoji.click();
+
+      const reactionId = `reaction-${messageId}-${emoji}`;
+      const reactionA = openedA.page.getByTestId(reactionId);
+      const reactionB = openedB.page.getByTestId(reactionId);
+      await expect(reactionA).toContainText("1");
+      await expect(reactionB).toContainText("1");
+      await reactionB.click();
+      await expect(reactionA).toContainText("2");
+      await expect(reactionB).toContainText("2");
+
+      await reactionA.hover();
+      const tooltip = openedA.page.locator('[data-slot="tooltip-content"]');
+      await expect(tooltip).toContainText(a.username);
+      await expect(tooltip).toContainText(b.username);
+
+      await reactionA.click();
+      await expect(reactionA).toContainText("1");
+      await expect(reactionA).toHaveAttribute("aria-pressed", "false");
+      await expect(reactionB).toHaveAttribute("aria-pressed", "true");
+
+      await openedB.page.reload();
+      await expect(openedB.page.getByTestId(reactionId)).toContainText("1");
+      await rowA.hover();
+      await openedA.page.getByTestId(`delete-message-${messageId}`).click();
+      await expect(openedB.page.getByTestId(`message-deleted-${messageId}`)).toBeVisible();
+      await expect(openedB.page.getByTestId(reactionId)).toHaveCount(0);
+    } finally {
+      await openedA.context.close();
+      await openedB.context.close();
+    }
+  });
+
   test("history survives B reload and older page loads on scroll-top", async ({
     browser,
     baseURL,
@@ -149,7 +199,7 @@ test.describe("FR-14 FR-15 FR-17 chat", () => {
     test.setTimeout(60000);
     const { server, openedA, openedB } = await bootPair(browser, baseURL, api);
     try {
-      // 55 messages > one 50-message page, so chat-0..chat-4 land on the older page. Sent as a
+      // 55 messages exceed one 30-message page, so chat-0 is available only after older paging. Sent as a
       // sequential promise chain (no await-in-loop) so the pacing holds under the rate limit.
       let chain = Promise.resolve();
       for (let i = 0; i < 55; i++) {
@@ -175,6 +225,110 @@ test.describe("FR-14 FR-15 FR-17 chat", () => {
       await expect(openedB.page.getByText("chat-0", { exact: true })).toBeVisible({
         timeout: 5000,
       });
+
+      // A foreign message does not yank B away from old history; it exposes the jump capsule.
+      await openedB.page.getByTestId("message-scroll").evaluate((el) => {
+        el.scrollTop = 0;
+        el.dispatchEvent(new Event("scroll"));
+      });
+      await sendMessage(openedA.page, "foreign-while-reading");
+      await expect(openedB.page.getByTestId("new-message-capsule")).toBeVisible();
+
+      // An own send always returns B to the latest message, even from the top of loaded history.
+      await sendMessage(openedB.page, "own-to-bottom");
+      await expect(openedB.page.getByText("own-to-bottom", { exact: true })).toBeVisible();
+      await expect
+        .poll(() =>
+          openedB.page
+            .getByTestId("message-scroll")
+            .evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight),
+        )
+        .toBeLessThan(40);
+    } finally {
+      await openedA.context.close();
+      await openedB.context.close();
+    }
+  });
+
+  test("reply jump, ArrowUp edit, and owner delete work across two users", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    const { openedA, openedB } = await bootPair(browser, baseURL, api);
+    try {
+      await sendMessage(openedA.page, "reply-source");
+      const sourceRow = openedB.page
+        .locator("[data-message-id]")
+        .filter({ hasText: "reply-source" });
+      await expect(sourceRow).toBeVisible();
+      const sourceId = await sourceRow.getAttribute("data-message-id");
+      if (sourceId === null) throw new Error("source message id missing");
+      await sourceRow.hover();
+      await openedB.page.getByTestId(`reply-message-${sourceId}`).click();
+      await expect(openedB.page.getByTestId("composer-reply")).toBeVisible();
+      await expect(
+        openedB.page.getByTestId("composer-input-shell").getByTestId("composer-reply"),
+      ).toBeVisible();
+      await openedB.page.getByTestId("composer-input").press("Escape");
+      await expect(openedB.page.getByTestId("composer-reply")).toBeHidden();
+      await sourceRow.hover();
+      await openedB.page.getByTestId(`reply-message-${sourceId}`).click();
+      await sendMessage(openedB.page, "reply-answer");
+
+      const answerRow = openedA.page
+        .locator("[data-message-id]")
+        .filter({ hasText: "reply-answer" });
+      await expect(answerRow).toBeVisible();
+      const replyPreview = answerRow.getByTestId(/reply-preview-/);
+      const previewLayout = await replyPreview.evaluate((preview) => {
+        const row = preview.closest("[data-message-id]");
+        const author = row?.querySelector<HTMLElement>('[data-testid^="reply-author-"]');
+        if (row === null || author === undefined || author === null) {
+          throw new Error("reply preview layout nodes missing");
+        }
+        const previewStyle = getComputedStyle(preview);
+        return {
+          width: preview.getBoundingClientRect().width,
+          rowWidth: row.getBoundingClientRect().width,
+          borderRadius: previewStyle.borderRadius,
+          borderColor: previewStyle.borderLeftColor,
+          authorColor: getComputedStyle(author).color,
+        };
+      });
+      expect(previewLayout.width).toBeGreaterThanOrEqual(previewLayout.rowWidth - 24);
+      expect(previewLayout.borderRadius).toBe("0px");
+      expect(previewLayout.borderColor).toBe(previewLayout.authorColor);
+      await replyPreview.click();
+      await expect(openedA.page.locator(`[data-message-id="${sourceId}"]`)).toHaveAttribute(
+        "data-highlighted",
+        "true",
+      );
+      await answerRow.scrollIntoViewIfNeeded();
+      await replyPreview.click();
+      await expect(openedA.page.locator(`[data-message-id="${sourceId}"]`)).toBeInViewport();
+
+      const inputA = openedA.page.getByTestId("composer-input");
+      await inputA.press("ArrowUp");
+      await expect(openedA.page.getByTestId("composer-edit")).toBeVisible();
+      await expect(
+        openedA.page.getByTestId("composer-input-shell").getByTestId("composer-edit"),
+      ).toBeVisible();
+      await inputA.press("Escape");
+      await expect(openedA.page.getByTestId("composer-edit")).toBeHidden();
+      await inputA.press("ArrowUp");
+      await inputA.fill("reply-source-edited");
+      await inputA.press("Enter");
+      await expect(openedB.page.getByTestId(`message-body-${sourceId}`)).toContainText(
+        "reply-source-edited",
+      );
+
+      const answerId = await answerRow.getAttribute("data-message-id");
+      if (answerId === null) throw new Error("answer message id missing");
+      const ownAnswer = openedB.page.locator(`[data-message-id="${answerId}"]`);
+      await ownAnswer.hover();
+      await openedB.page.getByTestId(`delete-message-${answerId}`).click();
+      await expect(openedA.page.getByTestId(`message-deleted-${answerId}`)).toBeVisible();
     } finally {
       await openedA.context.close();
       await openedB.context.close();

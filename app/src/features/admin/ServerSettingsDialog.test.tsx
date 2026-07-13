@@ -15,7 +15,7 @@ vi.mock("@/lib/apiClient", () => {
       this.status = status;
     }
   }
-  return { ApiError, apiClient: { patch: vi.fn() } };
+  return { ApiError, apiClient: { patch: vi.fn(), put: vi.fn() } };
 });
 vi.mock("sonner", () => ({ toast: vi.fn() }));
 vi.mock("@/lib/authTransport", () => ({
@@ -59,7 +59,25 @@ function seed(members: Member[], adminUserId = ADMIN, nickname = "old-name"): vo
     streams: [],
     recording: { active: false },
     lastMessageId: null,
+    lastReadMessageId: 0,
+    firstUnreadMessageId: null,
+    unreadCount: 0,
     costStatus: { usedGB: 0, capGB: 900, blocked: false },
+    polls: [],
+    points: {
+      balance: 0,
+      pendingPollWinnings: 0,
+      currentRatePerMinute: 0,
+      activeSources: [],
+      today: { day: "2026-07-13", conversation: 0, streaming: 0, watching: 0, total: 0 },
+      config: {
+        enabled: true,
+        basePointsPerMinute: 5,
+        streamerBonusPerMinute: 5,
+        watcherBonusPerMinute: 5,
+        dailyCap: null,
+      },
+    },
   };
   roomStore(SID).getState().apply(hello);
 }
@@ -99,14 +117,50 @@ describe("FR-10 FR-11 FR-12 admin dialog", () => {
     expect(screen.queryByTestId("admin-settings-button")).toBeNull();
   });
 
-  it("dialog renders three sections for admin", async () => {
+  it("dialog renders the points section for an admin", async () => {
     seed([member(ADMIN, { isAdmin: true })]);
     setSelf(ADMIN);
     render(<ServerSettingsDialog serverId={SID} />);
     await openDialog();
     expect(screen.getByTestId("admin-rename")).not.toBeNull();
     expect(screen.getByTestId("admin-password")).not.toBeNull();
+    expect(screen.getByTestId("admin-points")).not.toBeNull();
     expect(screen.getByTestId("admin-members")).not.toBeNull();
+  });
+
+  it("saves live point rates and an optional daily cap", async () => {
+    seed([member(ADMIN, { isAdmin: true })]);
+    setSelf(ADMIN);
+    vi.mocked(apiClient.put).mockResolvedValue({
+      enabled: true,
+      basePointsPerMinute: 7,
+      streamerBonusPerMinute: 9,
+      watcherBonusPerMinute: 11,
+      dailyCap: 500,
+    });
+    render(<ServerSettingsDialog serverId={SID} />);
+    await openDialog();
+
+    fireEvent.change(screen.getByTestId("admin-points-base"), { target: { value: "7" } });
+    fireEvent.change(screen.getByTestId("admin-points-stream"), { target: { value: "9" } });
+    fireEvent.change(screen.getByTestId("admin-points-watch"), { target: { value: "11" } });
+    fireEvent.change(screen.getByTestId("admin-points-cap"), { target: { value: "500" } });
+    fireEvent.click(screen.getByTestId("admin-points-save"));
+
+    await waitFor(() =>
+      expect(apiClient.put).toHaveBeenCalledWith(
+        `/api/servers/${SID}/points/config`,
+        expect.anything(),
+        {
+          enabled: true,
+          basePointsPerMinute: 7,
+          streamerBonusPerMinute: 9,
+          watcherBonusPerMinute: 11,
+          dailyCap: 500,
+        },
+      ),
+    );
+    expect(toast).toHaveBeenCalledWith(m.admin_points_saved());
   });
 
   it("rename rejects invalid nickname client-side", async () => {

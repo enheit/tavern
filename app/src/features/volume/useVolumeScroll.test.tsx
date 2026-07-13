@@ -4,7 +4,7 @@ import { volumeHudStore } from "./hudStore";
 import { useVolumeScroll, type VolumeScrollOptions } from "./useVolumeScroll";
 
 // Drives the shared FR-20/31 volume-scroll hook against a plain div — the exact gesture the voice
-// nickname rows (VoiceMemberChip / PeoplePanel) and watched stream tiles all delegate to.
+// voice member chips and watched stream tiles both delegate to.
 function Harness({ opts }: { opts: VolumeScrollOptions }) {
   const { ref, percent } = useVolumeScroll<HTMLDivElement>(opts);
   return (

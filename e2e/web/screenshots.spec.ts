@@ -97,7 +97,7 @@ test.describe("§ screenshots (mock SFU)", () => {
     await expect(page.getByText(/screenshot saved/i)).toBeVisible({ timeout: 15_000 });
 
     // The Screenshots tab shows the still and its thumbnail actually loads from the public view URL.
-    await page.getByTestId("tab-screenshots").click();
+    await page.getByTestId("workspace-tab-screenshots").click();
     const card = page.locator('[data-testid^="screenshot-"]').first();
     await expect(card).toBeVisible({ timeout: 15_000 });
     const img = card.locator("img");
@@ -105,15 +105,37 @@ test.describe("§ screenshots (mock SFU)", () => {
       .poll(() => img.evaluate((i) => (i as HTMLImageElement).naturalWidth), { timeout: 15_000 })
       .toBeGreaterThan(0);
 
-    // The open link points at the public capability route (/api/screenshots/<serverId>/<id>.webp).
-    await expect(card.locator("a")).toHaveAttribute(
+    // Clicking the thumbnail opens the public full-resolution image in a real browser tab.
+    const openLink = card.locator("a");
+    await expect(openLink).toHaveAttribute(
       "href",
       /\/api\/screenshots\/[0-9a-f-]+\/[0-9a-f-]+\.webp$/,
     );
+    const popupPromise = page.waitForEvent("popup");
+    await openLink.click();
+    const screenshotPage = await popupPromise;
+    await screenshotPage.waitForLoadState("load");
+    await expect(screenshotPage).toHaveURL(/\/api\/screenshots\/[0-9a-f-]+\/[0-9a-f-]+\.webp$/);
+    const fullImage = screenshotPage.locator("img");
+    await expect(fullImage).toBeVisible();
+    await expect
+      .poll(() =>
+        fullImage.evaluate((image) => (image instanceof HTMLImageElement ? image.naturalWidth : 0)),
+      )
+      .toBeGreaterThan(0);
+    await screenshotPage.close();
 
-    // Top-right ✕ removes it (capturer) → back to the empty state.
+    // Top-right ✕ asks for confirmation. Cancel preserves it; confirm removes it.
     await card.hover();
     await card.locator('[data-testid^="screenshot-delete-"]').click();
+    const confirm = page.getByTestId(/^screenshot-delete-confirm-/);
+    await expect(confirm).toBeVisible();
+    await confirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(card).toBeVisible();
+
+    await card.hover();
+    await card.locator('[data-testid^="screenshot-delete-"]').click();
+    await page.getByTestId(/^screenshot-delete-do-/).click();
     await expect(page.getByTestId("screenshots-empty")).toBeVisible({ timeout: 15_000 });
 
     await client.context.close();

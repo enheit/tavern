@@ -98,6 +98,51 @@ export const ImageAttachment = z.object({
 });
 export type ImageAttachment = z.infer<typeof ImageAttachment>;
 
+// A bounded, non-recursive snapshot of the message being replied to. History reads refresh this
+// snapshot from the target row, so edits/deletes are reflected without nesting an entire message.
+export const ChatReply = z.object({
+  id: z.number().int().positive(),
+  userId: z.uuid(),
+  body: z.string().max(LIMITS.messageMaxChars),
+  deleted: z.boolean(),
+  gif: GifAttachment.optional(),
+  image: ImageAttachment.optional(),
+});
+export type ChatReply = z.infer<typeof ChatReply>;
+
+const emojiSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const extendedPictographic = /\p{Extended_Pictographic}/u;
+const flagEmoji = /^\p{Regional_Indicator}{2}$/u;
+const keycapEmoji = /^[#*0-9]\uFE0F?\u20E3$/u;
+
+function isSingleEmoji(value: string): boolean {
+  const segments = [...emojiSegmenter.segment(value)];
+  if (segments.length !== 1 || segments[0]?.segment !== value) return false;
+  return extendedPictographic.test(value) || flagEmoji.test(value) || keycapEmoji.test(value);
+}
+
+// Reactions are protocol input, not trusted presentation text. Normalize equivalent sequences and
+// accept exactly one emoji grapheme so a forged client cannot create arbitrary reaction labels.
+export const ReactionEmoji = z
+  .string()
+  .min(1)
+  .max(LIMITS.reactionEmojiMaxChars)
+  .transform((value) => value.normalize("NFC"))
+  .refine(isSingleEmoji, "Expected one emoji");
+export type ReactionEmoji = z.infer<typeof ReactionEmoji>;
+
+export const ChatReactor = z.object({
+  userId: z.uuid(),
+  displayName: z.string().min(LIMITS.displayNameMin).max(LIMITS.displayNameMax),
+});
+export type ChatReactor = z.infer<typeof ChatReactor>;
+
+export const ChatReaction = z.object({
+  emoji: ReactionEmoji,
+  reactors: z.array(ChatReactor).min(1),
+});
+export type ChatReaction = z.infer<typeof ChatReaction>;
+
 export const ChatMessage = z.object({
   id: z.number().int(),
   userId: z.uuid(),
@@ -109,6 +154,12 @@ export const ChatMessage = z.object({
   at: z.number(),
   gif: GifAttachment.optional(),
   image: ImageAttachment.optional(),
+  reply: ChatReply.optional(),
+  // `.default([])` lets a newly deployed client read history frames from an older worker while the
+  // inferred ChatMessage output remains honest: renderers always receive an array.
+  reactions: z.array(ChatReaction).default([]),
+  editedAt: z.number().optional(),
+  deletedAt: z.number().optional(),
 });
 export type ChatMessage = z.infer<typeof ChatMessage>;
 
@@ -169,3 +220,91 @@ export const CostStatus = z.object({
   blocked: z.boolean(),
 });
 export type CostStatus = z.infer<typeof CostStatus>;
+
+export const PointSource = z.enum(["conversation", "streaming", "watching"]);
+export type PointSource = z.infer<typeof PointSource>;
+
+export const PointConfig = z.object({
+  enabled: z.boolean(),
+  basePointsPerMinute: z.number().int().min(0).max(LIMITS.pointRateMaxPerMinute),
+  streamerBonusPerMinute: z.number().int().min(0).max(LIMITS.pointRateMaxPerMinute),
+  watcherBonusPerMinute: z.number().int().min(0).max(LIMITS.pointRateMaxPerMinute),
+  dailyCap: z.number().int().min(1).max(LIMITS.pointDailyCapMax).nullable(),
+});
+export type PointConfig = z.infer<typeof PointConfig>;
+
+export const DEFAULT_POINT_CONFIG: PointConfig = {
+  enabled: true,
+  basePointsPerMinute: 5,
+  streamerBonusPerMinute: 5,
+  watcherBonusPerMinute: 5,
+  dailyCap: null,
+};
+
+export const PointSnapshot = z.object({
+  balance: z.number().int().nonnegative(),
+  pendingPollWinnings: z.number().int().nonnegative().default(0),
+  currentRatePerMinute: z.number().int().nonnegative(),
+  activeSources: z.array(PointSource),
+  today: z.object({
+    day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    conversation: z.number().int().nonnegative(),
+    streaming: z.number().int().nonnegative(),
+    watching: z.number().int().nonnegative(),
+    total: z.number().int().nonnegative(),
+  }),
+  config: PointConfig,
+});
+export type PointSnapshot = z.infer<typeof PointSnapshot>;
+
+export const PollStatus = z.enum(["open", "locked", "resolved_pending", "finalized", "voided"]);
+export type PollStatus = z.infer<typeof PollStatus>;
+
+export const PollOutcome = z.object({
+  id: z.uuid(),
+  title: z.string().trim().min(1).max(LIMITS.pollOutcomeMaxChars),
+  totalPoints: z.number().int().nonnegative(),
+  bidderCount: z.number().int().nonnegative(),
+});
+export type PollOutcome = z.infer<typeof PollOutcome>;
+
+export const PollBid = z.object({
+  outcomeId: z.uuid(),
+  stake: z.number().int().positive(),
+  payout: z.number().int().nonnegative(),
+  placedAt: z.number(),
+});
+export type PollBid = z.infer<typeof PollBid>;
+
+export const Poll = z.object({
+  id: z.uuid(),
+  creatorId: z.uuid(),
+  creatorDisplayName: z.string().min(1).max(LIMITS.displayNameMax),
+  question: z.string().trim().min(1).max(LIMITS.pollQuestionMaxChars),
+  outcomes: z.array(PollOutcome).min(LIMITS.pollOutcomeMin).max(LIMITS.pollOutcomeMax),
+  status: PollStatus,
+  createdAt: z.number(),
+  closesAt: z.number(),
+  lockedAt: z.number().nullable(),
+  resolvedAt: z.number().nullable(),
+  finalizesAt: z.number().nullable(),
+  finalizedAt: z.number().nullable(),
+  voidedAt: z.number().nullable(),
+  winningOutcomeId: z.uuid().nullable(),
+  correctionUsed: z.boolean(),
+  resultVisibleUntil: z.number().nullable(),
+  totalPool: z.number().int().nonnegative(),
+  myBid: PollBid.nullable(),
+});
+export type Poll = z.infer<typeof Poll>;
+
+export const PollParticipantResult = z.object({
+  userId: z.uuid(),
+  displayName: z.string().min(1).max(LIMITS.displayNameMax),
+  outcomeId: z.uuid(),
+  stake: z.number().int().positive(),
+  payout: z.number().int().nonnegative(),
+  net: z.number().int(),
+  placedAt: z.number(),
+});
+export type PollParticipantResult = z.infer<typeof PollParticipantResult>;

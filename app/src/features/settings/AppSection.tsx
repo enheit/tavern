@@ -1,5 +1,7 @@
 import type { Locale, Theme } from "@tavern/shared";
+import type { CostStatus } from "@tavern/shared";
 import { UserSettings } from "@tavern/shared";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   Select,
@@ -9,10 +11,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Switch } from "@/components/ui/switch";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { errorMessage } from "@/lib/errorMessage";
 import { m } from "@/paraglide/messages.js";
+import { platform } from "@/platform/types";
 import { useSettingsStore } from "@/stores/settings";
+import { EgressUsage } from "./EgressUsage";
 
 // FR-06/FR-07/FR-16 persistence: any change in the App or Notifications section writes the FULL
 // camelCase settings row (validated against the shared `UserSettings` zod) to PUT /api/me/settings.
@@ -49,7 +54,60 @@ const THEME_OPTIONS: { value: Theme; label: () => string }[] = [
 // translated; kept in a plain const map (never JSX text) so they stay out of the m.*() catalog.
 const LANGUAGE_ENDONYMS: Record<string, string> = { en: "English", uk: "Українська" };
 
-export function AppSection() {
+function DesktopCloseBehavior() {
+  const capability = platform.shell.closeBehavior;
+  const [closeToTray, setCloseToTray] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (capability === null) return;
+    let active = true;
+    void capability
+      .getCloseToTray()
+      .then((value) => {
+        if (active) setCloseToTray(value);
+      })
+      .catch(() => {
+        if (active) toast(m.settings_app_close_behavior_error());
+      });
+    return () => {
+      active = false;
+    };
+  }, [capability]);
+
+  if (capability === null) return null;
+
+  const updateCloseBehavior = async (value: boolean): Promise<void> => {
+    setSaving(true);
+    try {
+      await capability.setCloseToTray(value);
+      setCloseToTray(value);
+    } catch {
+      toast(m.settings_app_close_behavior_error());
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <label className="flex items-center justify-between gap-4 text-sm">
+      <span className="flex flex-col gap-1">
+        <span className="font-medium">{m.settings_app_keep_running_background()}</span>
+        <span className="text-xs text-muted-foreground">
+          {m.settings_app_keep_running_background_hint()}
+        </span>
+      </span>
+      <Switch
+        checked={closeToTray ?? true}
+        disabled={closeToTray === null || saving}
+        data-testid="settings-close-to-tray"
+        onCheckedChange={(value) => void updateCloseBehavior(value)}
+      />
+    </label>
+  );
+}
+
+export function AppSection({ cost }: { cost: CostStatus | null }) {
   const theme = useSettingsStore((s) => s.theme);
   const locale = useSettingsStore((s) => s.locale);
   const setTheme = useSettingsStore((s) => s.setTheme);
@@ -100,6 +158,8 @@ export function AppSection() {
           </SelectContent>
         </Select>
       </div>
+      <DesktopCloseBehavior />
+      <EgressUsage cost={cost} />
     </div>
   );
 }

@@ -98,12 +98,19 @@ export function createWebPlatform(): PlatformBridge {
       },
     },
     shell: {
-      setBadge: () => {
-        // reserved for post-v1 unread badges (§6.3) — implemented, never called in v1.
+      setBadge: (count) => {
+        if (typeof navigator === "undefined") return;
+        const badging = navigator as Navigator & {
+          setAppBadge?: (contents?: number) => Promise<void>;
+          clearAppBadge?: () => Promise<void>;
+        };
+        const operation = count === null ? badging.clearAppBadge?.() : badging.setAppBadge?.(count);
+        operation?.catch((error: unknown) => console.warn("app badge update rejected", error));
       },
       focusWindow: () => {
         window.focus();
       },
+      closeBehavior: null,
     },
   };
 }

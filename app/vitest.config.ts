@@ -5,6 +5,7 @@ export default defineConfig({
   resolve: { alias: { "@": path.resolve(__dirname, "./src") } },
   test: {
     environment: "jsdom",
+    setupFiles: ["./test/setup.ts"],
     // S10.1 pins its unit tests colocated in `src/` (so their `describe('FR-39 …')` strings count in
     // the `grep app/src e2e` traceability gate); earlier steps colocate under `test/`. Scan both.
     include: ["test/**/*.test.{ts,tsx}", "src/**/*.test.{ts,tsx}"],

@@ -63,7 +63,7 @@ function isUserCancel(err: unknown): boolean {
 
 export function ControlsBar({ serverId }: { serverId: string }) {
   const { status, inVoiceServerId, muted, setMuted, deafened, setDeafened } = useVoice(serverId);
-  const active = inVoiceServerId === serverId && (status === "joined" || status === "joining");
+  const active = inVoiceServerId === serverId && status === "joined";
   const { sharing, start: startShare, stop: stopShare, setPreset } = useScreenShare();
   const { active: camming, start: startCam, stop: stopCam } = useWebcam();
   const [pickerOpen, setPickerOpen] = useState(false);

@@ -4,6 +4,9 @@ copyright: Copyright © 2026 Roman Mahotskyi
 directories:
   output: dist-electron
   buildResources: build
+# Linux needs a pre-Electron launcher: Chromium initializes and caches D-Bus before main-process
+# JavaScript, so a stale inherited /tmp/dbus-* address must be repaired at the executable boundary.
+afterPack: scripts/afterPack.cjs
 files:
   - out/**
   - from: ../app/dist
@@ -38,7 +41,8 @@ linux:
   category: Network
   # electron-builder otherwise derives the executable from the package name (`@tavern/desktop` →
   # `@taverndesktop`, rejected: '@' is unsafe in file paths — first surfaced when package-check ran
-  # on ubuntu for the first time). Also pins the S12.1 path table's `linux-unpacked/tavern`.
+  # on ubuntu for the first time). Also pins the S12.1 path table's launcher at
+  # `linux-unpacked/tavern`; the wrapped Electron binary is `tavern-bin`.
   executableName: tavern
 # AppImage static-runtime toolset (no FUSE2 — required for Void/Ubuntu 24.04+, PLAN §3.2/§3.6).
 # `toolsets` is a ROOT-level key in the electron-builder 26.15.6 schema (ToolsetConfig), not a

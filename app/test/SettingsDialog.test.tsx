@@ -31,6 +31,7 @@ import { apiClient } from "@/lib/apiClient";
 import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
+import { resetRoomStores, roomStore } from "@/stores/room";
 
 // Base UI positioners use ResizeObserver / scrollIntoView (absent in jsdom) — test doubles.
 class ResizeObserverStub {
@@ -51,6 +52,10 @@ const PROFILE: UserProfile = {
 };
 
 beforeEach(() => {
+  resetRoomStores();
+  roomStore("settings-server").setState({
+    cost: { usedGB: 123.4, capGB: 900, blocked: false },
+  });
   useSessionStore.setState({ status: "authed", profile: PROFILE });
   useSettingsStore.setState({
     theme: "system",
@@ -74,7 +79,7 @@ afterEach(() => {
 });
 
 function renderDialog() {
-  return render(<SettingsDialog open onOpenChange={() => undefined} />);
+  return render(<SettingsDialog serverId="settings-server" open onOpenChange={() => undefined} />);
 }
 
 describe("FR-03 FR-04 FR-06 FR-07 settings", () => {
@@ -116,6 +121,20 @@ describe("FR-03 FR-04 FR-06 FR-07 settings", () => {
     fireEvent.pointerDown(uk);
     fireEvent.click(uk);
     await waitFor(() => expect(useSettingsStore.getState().locale).toBe("uk"));
+  });
+
+  it("shows server traffic usage in the App tab", async () => {
+    renderDialog();
+    fireEvent.click(await screen.findByTestId("settings-tab-app"));
+    const usage = (await screen.findByTestId("settings-egress-used")).textContent ?? "";
+    expect(usage).toContain("123.4");
+    expect(usage).toContain("900");
+  });
+
+  it("does not show the desktop close behavior in the web app", async () => {
+    renderDialog();
+    fireEvent.click(await screen.findByTestId("settings-tab-app"));
+    expect(screen.queryByTestId("settings-close-to-tray")).toBeNull();
   });
 
   it("notification toggles PUT full settings row", async () => {

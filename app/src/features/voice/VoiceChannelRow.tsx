@@ -1,5 +1,6 @@
 import { Volume2Icon } from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 import { useStore } from "zustand";
 import {
   AlertDialog,
@@ -11,6 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
@@ -29,18 +31,27 @@ export function VoiceChannelRow({ serverId }: { serverId: string }) {
   const { join, leave, status, inVoiceServerId } = useVoice(serverId);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const joinedHere = inVoiceServerId === serverId && status === "joined";
+  const joiningHere = inVoiceServerId === serverId && status === "joining";
+  const transitioningHere =
+    inVoiceServerId === serverId && (status === "joining" || status === "leaving");
+
+  const handleJoinError = (err: unknown): void => {
+    if (err instanceof VoiceElsewhereError) {
+      setConfirmOpen(true);
+      return;
+    }
+    toast.error(m.voice_join_failed());
+  };
 
   const onClick = (): void => {
-    void join().catch((err) => {
-      if (err instanceof VoiceElsewhereError) setConfirmOpen(true);
-    });
+    void join().catch(handleJoinError);
   };
   const onConfirm = (): void => {
     setConfirmOpen(false);
     void (async () => {
       await leave();
       await join();
-    })();
+    })().catch(handleJoinError);
   };
 
   return (
@@ -49,13 +60,19 @@ export function VoiceChannelRow({ serverId }: { serverId: string }) {
         type="button"
         data-testid="channel-voice"
         onClick={onClick}
+        disabled={transitioningHere}
+        aria-busy={joiningHere}
         className={cn(
           "flex items-center gap-2 rounded-md px-2 py-1 text-left text-sm text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-          joinedHere && "bg-accent text-accent-foreground",
+          (joinedHere || joiningHere) && "bg-accent text-accent-foreground",
         )}
       >
-        <Volume2Icon className="size-4 shrink-0" />
-        <span className="truncate">{m.channels_voice()}</span>
+        {joiningHere ? (
+          <Spinner className="size-4 shrink-0" aria-label={m.voice_connecting()} />
+        ) : (
+          <Volume2Icon className="size-4 shrink-0" />
+        )}
+        <span className="truncate">{joiningHere ? m.voice_connecting() : m.channels_voice()}</span>
         <span className="ml-auto flex items-center gap-1.5 pl-1">
           {/* FR-25 REC dot: the channel is being recorded (visible to ALL members, like the timer). */}
           {recordingActive && (

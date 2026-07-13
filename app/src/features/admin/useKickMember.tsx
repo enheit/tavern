@@ -20,8 +20,7 @@ import { errorMessage } from "@/lib/errorMessage";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 
-// FR-11 kick, shared by the admin dialog's Members section and the People-panel context menu so both
-// open the SAME confirm flow (§9.2 — one code path, not two menus). `confirmAndKick(userId)` opens the
+// FR-11 kick from the admin dialog's Members section. `confirmAndKick(userId)` opens the
 // alert-dialog interpolating the member's displayName; the returned `dialog` node is rendered once per
 // consumer. (This hook returns JSX, so the module is .tsx.)
 export interface KickMember {

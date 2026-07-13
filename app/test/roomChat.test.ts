@@ -22,7 +22,7 @@ const fakeConn: WsConnection = {
 };
 
 function chatMessage(over: Partial<ChatMessage>): ChatMessage {
-  return { id: 1, userId: SELF, body: "x", mentions: [], at: 0, ...over };
+  return { id: 1, userId: SELF, body: "x", mentions: [], reactions: [], at: 0, ...over };
 }
 
 beforeEach(() => {
@@ -84,28 +84,108 @@ describe("FR-14 chat slice", () => {
     expect(sent).toHaveLength(0);
   });
 
-  it("loadOlder passes beforeId of oldest message", async () => {
+  it("loadOlder passes the oldest message as an older cursor", async () => {
     const store = createRoomStore("s3");
     store.getState().apply({
       t: "chat.page",
+      requestId: crypto.randomUUID(),
+      mode: "initial",
       messages: [chatMessage({ id: 10, body: "a" }), chatMessage({ id: 11, body: "b" })],
-      hasMore: true,
+      hasOlder: true,
+      hasNewer: false,
     });
 
     await store.getState().loadOlder();
     const frame = sent[0];
     if (frame?.t !== "chat.history") throw new Error("expected a chat.history frame");
-    expect(frame.beforeId).toBe(10); // oldest (messages[0])
+    expect(frame.mode).toBe("older");
+    expect(frame.cursorId).toBe(10);
     expect(frame.limit).toBe(LIMITS.historyPageSize);
   });
 
-  it("loadOlder omits beforeId when only pending rows exist", async () => {
+  it("loadOlder does not request an invalid cursor when only pending rows exist", async () => {
     const store = createRoomStore("s4");
     store.getState().sendMessage("draft");
     await store.getState().loadOlder();
-    const frame = sent.find((f) => f.t === "chat.history");
-    if (frame?.t !== "chat.history") throw new Error("expected a chat.history frame");
-    // A pending row's synthetic negative id is not a valid wire beforeId → undefined.
-    expect(frame.beforeId).toBeUndefined();
+    expect(sent.filter((frame) => frame.t === "chat.history")).toHaveLength(0);
+  });
+
+  it("keeps a gapped unread window intact when a foreign live message arrives", () => {
+    const store = createRoomStore("s5");
+    store.setState({
+      messages: [chatMessage({ id: 10, userId: "22222222-2222-2222-2222-222222222222" })],
+      historyWindow: "around",
+      hasNewerHistory: true,
+      lastReadMessageId: 9,
+      firstUnreadMessageId: 10,
+      unreadCount: 1,
+    });
+
+    store.getState().apply({
+      t: "chat.new",
+      message: chatMessage({ id: 100, userId: "22222222-2222-2222-2222-222222222222" }),
+    });
+
+    expect(store.getState().messages.map((message) => message.id)).toEqual([10]);
+    expect(store.getState().unreadCount).toBe(2);
+  });
+
+  it("sends replies, edits, deletes, and always advances the bottom-scroll token on own send", () => {
+    const store = createRoomStore("s6");
+    const source = chatMessage({
+      id: 4,
+      userId: "22222222-2222-2222-2222-222222222222",
+      body: "source",
+    });
+    store.getState().setReplyingTo({
+      id: source.id,
+      userId: source.userId,
+      body: source.body,
+      deleted: false,
+    });
+    store.getState().sendMessage("answer");
+    const send = sent.find((frame) => frame.t === "chat.send");
+    expect(send).toMatchObject({ t: "chat.send", replyToId: 4, body: "answer" });
+    expect(store.getState().scrollToBottomToken).toBe(1);
+    expect(store.getState().replyingTo).toBeNull();
+
+    store.getState().editMessage(9, "updated");
+    store.getState().deleteMessage(9);
+    expect(sent.some((frame) => frame.t === "chat.edit" && frame.messageId === 9)).toBe(true);
+    expect(sent.some((frame) => frame.t === "chat.delete" && frame.messageId === 9)).toBe(true);
+  });
+
+  it("sends desired reaction state and applies authoritative reaction updates", () => {
+    const store = createRoomStore("s7");
+    store.setState({ messages: [chatMessage({ id: 12 })] });
+
+    store.getState().setReaction(12, "😀", true);
+    expect(sent.at(-1)).toMatchObject({
+      t: "chat.reaction.set",
+      messageId: 12,
+      emoji: "😀",
+      reacted: true,
+    });
+
+    store.getState().apply({
+      t: "chat.reaction.updated",
+      messageId: 12,
+      emoji: "😀",
+      reaction: {
+        emoji: "😀",
+        reactors: [{ userId: SELF, displayName: "Alice" }],
+      },
+    });
+    expect(store.getState().messages[0]?.reactions).toEqual([
+      { emoji: "😀", reactors: [{ userId: SELF, displayName: "Alice" }] },
+    ]);
+
+    store.getState().apply({
+      t: "chat.reaction.updated",
+      messageId: 12,
+      emoji: "😀",
+      reaction: null,
+    });
+    expect(store.getState().messages[0]?.reactions).toEqual([]);
   });
 });

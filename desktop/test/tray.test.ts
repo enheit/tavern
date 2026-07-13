@@ -14,15 +14,23 @@ function setPlatform(platform: NodeJS.Platform): void {
 // which lets the "close hides" and "close is allowed while quitting" cases share no state.
 async function setup() {
   vi.resetModules();
+  let closeToTray = true;
+  vi.doMock("../src/main/preferences", () => ({
+    getCloseToTray: () => closeToTray,
+    setCloseToTray: (value: boolean) => {
+      closeToTray = value;
+    },
+  }));
   // Pull the mock through the mocked "electron" specifier (not "./electron-mock" directly): after
   // resetModules those two resolve to different instances, and the SUT sees the one the mock factory
   // returns — so we must inspect that same one.
   const electron = (await import("electron")) as unknown as typeof import("./electron-mock");
   electron.resetElectronMock();
   const lifecycle = await import("../src/main/lifecycle");
+  const preferences = await import("../src/main/preferences");
   const windowMod = await import("../src/main/window");
   const trayMod = await import("../src/main/tray");
-  return { electron, lifecycle, windowMod, trayMod };
+  return { electron, lifecycle, preferences, windowMod, trayMod };
 }
 
 function itemByLabel(template: MenuItemTemplate[], label: string): MenuItemTemplate {
@@ -122,11 +130,26 @@ describe("system tray", () => {
     trayMod.destroyTray();
     expect(tray.destroy).toHaveBeenCalledTimes(1);
   });
+
+  it("shows and clears unread state on the tray icon and tooltip", async () => {
+    const { electron, trayMod } = await setup();
+    trayMod.createTray();
+    const tray = electron.Tray.instances[0];
+    if (tray === undefined) throw new Error("no tray");
+
+    trayMod.setTrayUnread(3);
+    expect(tray.setImage).toHaveBeenCalledTimes(1);
+    expect(tray.toolTip).toBe("Tavern - 3 unread");
+    trayMod.setTrayUnread(0);
+    expect(tray.setImage).toHaveBeenCalledTimes(2);
+    expect(tray.toolTip).toBe("Tavern");
+  });
 });
 
 describe("close-to-tray", () => {
   it("hides the window instead of destroying it on a normal close", async () => {
-    const { electron, windowMod } = await setup();
+    const { electron, preferences, windowMod } = await setup();
+    preferences.setCloseToTray(true);
     windowMod.createWindow();
     const win = electron.BrowserWindow.instances[0];
     if (win === undefined) throw new Error("no window");
@@ -135,6 +158,21 @@ describe("close-to-tray", () => {
     win.emit("close", event);
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(win.hide).toHaveBeenCalledTimes(1);
+  });
+
+  it("quits the application when close-to-tray is disabled", async () => {
+    const { electron, lifecycle, preferences, windowMod } = await setup();
+    preferences.setCloseToTray(false);
+    windowMod.createWindow();
+    const win = electron.BrowserWindow.instances[0];
+    if (win === undefined) throw new Error("no window");
+
+    const event = { preventDefault: vi.fn() };
+    win.emit("close", event);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(win.hide).not.toHaveBeenCalled();
+    expect(lifecycle.isQuittingApp()).toBe(true);
+    expect(electron.app.quit).toHaveBeenCalledTimes(1);
   });
 
   it("lets the close through once the app is quitting", async () => {

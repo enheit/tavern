@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage, ClientMessage, Member, ServerMessage } from "@tavern/shared";
 
@@ -69,10 +69,18 @@ function member(userId: string, over: Partial<Member> = {}): Member {
 }
 
 function chatMessage(over: Partial<ChatMessage>): ChatMessage {
-  return { id: 1, userId: SELF, body: "x", mentions: [], at: 0, ...over };
+  return { id: 1, userId: SELF, body: "x", mentions: [], reactions: [], at: 0, ...over };
 }
 
-function seedHello(members: Member[], lastMessageId: number): void {
+function seedHello(
+  members: Member[],
+  lastMessageId: number,
+  unread: { first: number | null; count: number; lastRead: number } = {
+    first: null,
+    count: 0,
+    lastRead: 0,
+  },
+): void {
   const hello: Extract<ServerMessage, { t: "hello.ok" }> = {
     t: "hello.ok",
     status: "",
@@ -83,15 +91,38 @@ function seedHello(members: Member[], lastMessageId: number): void {
     streams: [],
     recording: { active: false },
     lastMessageId,
+    lastReadMessageId: unread.lastRead,
+    firstUnreadMessageId: unread.first,
+    unreadCount: unread.count,
     costStatus: { usedGB: 0, capGB: 900, blocked: false },
+    polls: [],
+    points: zeroPoints(),
   };
   roomStore(SID).getState().apply(hello);
+}
+
+function zeroPoints() {
+  return {
+    balance: 0,
+    pendingPollWinnings: 0,
+    currentRatePerMinute: 0,
+    activeSources: [],
+    today: { day: "2026-07-13", conversation: 0, streaming: 0, watching: 0, total: 0 },
+    config: {
+      enabled: true,
+      basePointsPerMinute: 5,
+      streamerBonusPerMinute: 5,
+      watcherBonusPerMinute: 5,
+      dailyCap: null,
+    },
+  };
 }
 
 beforeEach(() => {
   sent.length = 0;
   IOStub.instances = [];
   Reflect.set(globalThis, "IntersectionObserver", IOStub);
+  Reflect.set(Element.prototype, "scrollIntoView", () => undefined);
   vi.mocked(connectRoom).mockReturnValue(fakeConn);
   resetRoomStores();
   useSessionStore.getState().setAuthed({
@@ -134,10 +165,10 @@ describe("FR-15 FR-17 message list", () => {
     expect(other?.className).not.toContain("bg-primary/15");
   });
 
-  it("top sentinel triggers loadOlder while hasMore", () => {
-    seedHello([member(SELF)], 5); // hasMoreHistory = true
+  it("top sentinel triggers loadOlder while older history exists", () => {
+    seedHello([member(SELF)], 5);
     const loadOlder = vi.fn(() => Promise.resolve());
-    roomStore(SID).setState({ loadOlder });
+    roomStore(SID).setState({ loadOlder, hasOlderHistory: true, historyInitialized: true });
     render(<MessageList serverId={SID} />);
 
     act(() => fireAllIntersections(true));
@@ -145,7 +176,7 @@ describe("FR-15 FR-17 message list", () => {
 
     // Once there is no more history the sentinel no longer loads.
     act(() => {
-      roomStore(SID).setState({ hasMoreHistory: false });
+      roomStore(SID).setState({ hasOlderHistory: false });
     });
     act(() => fireAllIntersections(true));
     expect(loadOlder).toHaveBeenCalledTimes(1);
@@ -157,8 +188,11 @@ describe("FR-15 FR-17 message list", () => {
       .getState()
       .apply({
         t: "chat.page",
+        requestId: crypto.randomUUID(),
+        mode: "initial",
         messages: [chatMessage({ id: 20, body: "newest" })],
-        hasMore: true,
+        hasOlder: true,
+        hasNewer: false,
       });
     roomStore(SID).setState({ loadOlder: vi.fn(() => Promise.resolve()) });
     render(<MessageList serverId={SID} />);
@@ -175,6 +209,7 @@ describe("FR-15 FR-17 message list", () => {
         topValue = v;
       },
     });
+    act(() => fireEvent.scroll(el));
 
     // The sentinel intersects → record the pre-prepend height (100) and request older messages.
     act(() => fireAllIntersections(true));
@@ -185,8 +220,11 @@ describe("FR-15 FR-17 message list", () => {
         .getState()
         .apply({
           t: "chat.page",
+          requestId: crypto.randomUUID(),
+          mode: "older",
           messages: [chatMessage({ id: 10, body: "older" })],
-          hasMore: false,
+          hasOlder: false,
+          hasNewer: true,
         });
     });
     expect(topValue).toBe(200);
@@ -216,5 +254,96 @@ describe("FR-15 FR-17 message list", () => {
     });
     expect(screen.queryByTestId("message--1")).toBeNull();
     expect(screen.getByTestId("message-9").className).not.toContain("opacity-60");
+  });
+
+  it("renders the durable unread divider and a new-message capsule while reading above bottom", () => {
+    seedHello([member(SELF), member(BOB)], 12, { first: 11, count: 2, lastRead: 10 });
+    roomStore(SID).setState({
+      historyInitialized: true,
+      messages: [
+        chatMessage({ id: 10, userId: SELF }),
+        chatMessage({ id: 11, userId: BOB }),
+        chatMessage({ id: 12, userId: BOB }),
+      ],
+    });
+    render(<MessageList serverId={SID} active={false} />);
+
+    expect(screen.getByTestId("new-messages-divider")).toBeDefined();
+    const scroll = screen.getByTestId("message-scroll");
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, value: 500 },
+      clientHeight: { configurable: true, value: 100 },
+      scrollTop: { configurable: true, writable: true, value: 100 },
+    });
+    act(() => fireEvent.scroll(scroll));
+    expect(screen.getByTestId("new-message-capsule")).toBeDefined();
+  });
+
+  it("clicking a reply preview requests an around page when the source is not loaded", () => {
+    seedHello([member(SELF), member(BOB)], 50);
+    roomStore(SID).setState({
+      historyInitialized: true,
+      messages: [
+        chatMessage({
+          id: 50,
+          userId: BOB,
+          reply: { id: 7, userId: SELF, body: "old source", deleted: false },
+        }),
+      ],
+    });
+    render(<MessageList serverId={SID} />);
+    act(() => screen.getByTestId("reply-preview-50").click());
+
+    const request = sent.find((frame) => frame.t === "chat.history" && frame.mode === "around");
+    expect(request).toMatchObject({ t: "chat.history", mode: "around", cursorId: 7 });
+  });
+
+  it("scrolls to the same replied message on every preview click", () => {
+    const scrollIntoView = vi.fn();
+    Reflect.set(Element.prototype, "scrollIntoView", scrollIntoView);
+    seedHello([member(SELF, { displayName: "Alice", color: "#aabbcc" }), member(BOB)], 50);
+    roomStore(SID).setState({
+      historyInitialized: true,
+      messages: [
+        chatMessage({ id: 7, userId: SELF, body: "source" }),
+        chatMessage({
+          id: 50,
+          userId: BOB,
+          body: "answer",
+          reply: { id: 7, userId: SELF, body: "source", deleted: false },
+        }),
+      ],
+    });
+    render(<MessageList serverId={SID} />);
+
+    const preview = screen.getByTestId("reply-preview-50");
+    act(() => preview.click());
+    act(() => preview.click());
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    expect(scrollIntoView).toHaveBeenNthCalledWith(1, { block: "center" });
+    expect(scrollIntoView).toHaveBeenNthCalledWith(2, { block: "center" });
+  });
+
+  it("renders a square full-width reply preview in the replied member color", () => {
+    seedHello([member(SELF, { displayName: "Alice", color: "#aabbcc" }), member(BOB)], 50);
+    roomStore(SID).setState({
+      historyInitialized: true,
+      messages: [
+        chatMessage({
+          id: 50,
+          userId: BOB,
+          reply: { id: 7, userId: SELF, body: "short", deleted: false },
+        }),
+      ],
+    });
+    render(<MessageList serverId={SID} />);
+
+    const preview = screen.getByTestId("reply-preview-50");
+    const author = screen.getByTestId("reply-author-50");
+    expect(preview.className).toContain("w-full");
+    expect(preview.className).not.toContain("rounded");
+    expect(preview.style.borderLeftColor).toBe("rgb(170, 187, 204)");
+    expect(author.style.color).toBe(preview.style.borderLeftColor);
   });
 });

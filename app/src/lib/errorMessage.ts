@@ -37,6 +37,12 @@ const RESOLVERS: Record<ErrorCode, () => string> = {
   bad_trim: () => m.error_bad_trim(),
   bad_part_size: () => m.error_bad_part_size(),
   recording_too_long: () => m.error_recording_too_long(),
+  poll_closed: () => m.error_poll_closed(),
+  poll_limit: () => m.error_poll_limit(),
+  already_bid: () => m.error_already_bid(),
+  insufficient_points: () => m.error_insufficient_points(),
+  correction_expired: () => m.error_correction_expired(),
+  correction_used: () => m.error_correction_used(),
 };
 
 export function errorMessage(code: ErrorCode): string {

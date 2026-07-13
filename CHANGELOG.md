@@ -5,6 +5,13 @@ All notable changes to Tavern are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Linux Wayland screen sharing now recovers when Tavern inherits a deleted D-Bus session socket
+  (the `Failed to connect to socket /tmp/dbus-*` / `ScreenCastPortal failed: 3` failure). Packaged
+  Linux builds validate the bus before Electron starts and use the live per-user runtime bus when
+  the inherited filesystem socket is stale.
+
 ## [0.6.0] — 2026-07-12
 
 ### Added

@@ -2,6 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { serverMessageSchema } from "@tavern/shared";
 import type { MemberInit, ServerMessage } from "@tavern/shared";
+import { PointsModule } from "../../src/do/points";
 import { RoomState } from "../../src/do/roomState";
 
 // FR-40 watch/stream stat + G1/G5 meter WIRING (WS side): the ServerRoom watch.start/stop +
@@ -127,6 +128,14 @@ async function streamOpen(stub: RoomStub, userId: string): Promise<boolean> {
   });
 }
 
+async function pointRate(stub: RoomStub, userId: string): Promise<number> {
+  return runInDurableObject(
+    stub,
+    (_instance, state) =>
+      new PointsModule(state.storage.sql).snapshot(userId, Date.now()).currentRatePerMinute,
+  );
+}
+
 describe("FR-40 watch wiring", () => {
   it("watch.start seeds the grant + meter watch + stat interval; watch.stop clears all three", async () => {
     const stub = freshRoom();
@@ -145,12 +154,16 @@ describe("FR-40 watch wiring", () => {
     await vi.waitFor(async () => {
       const s = await readState(stub, b.userId, track);
       expect(s).toEqual({ grant: "h", openWatch: true, openMeter: true });
+      expect(await pointRate(stub, a.userId)).toBe(10);
+      expect(await pointRate(stub, b.userId)).toBe(10);
     });
 
     wsB.send(JSON.stringify({ t: "watch.stop", trackName: track }));
     await vi.waitFor(async () => {
       const s = await readState(stub, b.userId, track);
       expect(s).toEqual({ grant: undefined, openWatch: false, openMeter: false });
+      expect(await pointRate(stub, a.userId)).toBe(5);
+      expect(await pointRate(stub, b.userId)).toBe(5);
     });
 
     wsA.close();
@@ -177,6 +190,34 @@ describe("FR-40 watch wiring", () => {
     });
 
     wsA.close();
+  });
+
+  it("rejects self-watching so one person cannot earn both stream bonuses alone", async () => {
+    const stub = freshRoom();
+    const member = memberInit();
+    const meta = metaFor(member.userId);
+    await seed(stub, member, meta);
+    const ws = await connect(stub, member.userId);
+    const received: ServerMessage[] = [];
+    ws.addEventListener("message", (event) => {
+      if (typeof event.data === "string")
+        received.push(serverMessageSchema.parse(JSON.parse(event.data)));
+    });
+    ws.send(JSON.stringify({ t: "voice.join" }));
+    const track = await seedScreen(stub, member);
+
+    ws.send(JSON.stringify({ t: "watch.start", trackName: track }));
+
+    await vi.waitFor(() => {
+      const error = received.find(isType("error"));
+      expect(error?.code).toBe("bad_message");
+    });
+    expect(await readState(stub, member.userId, track)).toEqual({
+      grant: undefined,
+      openWatch: false,
+      openMeter: false,
+    });
+    ws.close();
   });
 
   it("stream.start opens the streamer clock; stream.stop closes it", async () => {

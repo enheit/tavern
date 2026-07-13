@@ -1,6 +1,7 @@
 import { platform } from "@/platform/types";
 import type { RtcPort } from "../ports";
 import type { SfuSignal } from "../sfuSignal";
+import { watchConnectionRecovery } from "./connectionRecovery";
 
 export type PullState = "idle" | "connecting" | "connected" | "renegotiating" | "closed" | "failed";
 
@@ -35,7 +36,7 @@ export class PullSession {
   private readonly nameToMid = new Map<string, string>();
   private readonly stateListeners = new Set<(s: PullState) => void>();
   private readonly trackListeners = new Set<TrackCb>();
-  private readonly connFailedListeners = new Set<() => void>();
+  private readonly recoveryListeners = new Set<() => void>();
 
   constructor(deps: { rtc: RtcPort; signal: SfuSignal; serverId: string }) {
     this.rtc = deps.rtc;
@@ -61,16 +62,13 @@ export class PullSession {
     };
   }
 
-  // Fires ONLY on the terminal ICE/DTLS transition (pc.connectionState === 'failed') — never on a
-  // rejected signaling op (those set state 'failed' transiently and are retried by callers). The
-  // voice controller uses this to auto-recover a session whose transport silently died (laptop
-  // sleep, network change): without it the UI stays 'joined' over a dead pull and the user is
-  // one-way deaf until a manual rejoin. Under the mock SFU the offer carries no ICE candidates, so
-  // checks never start and this never fires (PR e2e stays deterministic).
-  onConnectionFailed(cb: () => void): () => void {
-    this.connFailedListeners.add(cb);
+  // Fires after a terminal failure OR once connectivity returns from `disconnected`. The latter is
+  // important because browsers can reconnect the PeerConnection without ever reporting `failed`,
+  // while the Cloudflare subscription still points at stale publisher sessions.
+  onConnectionRecoveryNeeded(cb: () => void): () => void {
+    this.recoveryListeners.add(cb);
     return () => {
-      this.connFailedListeners.delete(cb);
+      this.recoveryListeners.delete(cb);
     };
   }
 
@@ -103,11 +101,9 @@ export class PullSession {
     try {
       const iceServers = await this.signal.getIceServers();
       const pc = this.rtc.createPeerConnection({ iceServers, bundlePolicy: "max-bundle" });
-      pc.addEventListener("connectionstatechange", () => {
-        if (pc.connectionState === "failed") {
-          this.setState("failed");
-          for (const cb of this.connFailedListeners) cb();
-        }
+      watchConnectionRecovery(pc, (reason) => {
+        if (reason === "failed") this.setState("failed");
+        for (const cb of this.recoveryListeners) cb();
       });
       pc.addEventListener("track", (ev) => {
         const mid = ev.transceiver.mid;

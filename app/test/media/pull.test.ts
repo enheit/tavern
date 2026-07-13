@@ -177,17 +177,32 @@ describe("per-track inbound audio stats", () => {
   });
 });
 
-describe("transport failure signal", () => {
-  it("onConnectionFailed fires on pc connectionState 'failed' and unsubscribes cleanly", async () => {
+describe("transport recovery signal", () => {
+  it("fires on terminal failure and unsubscribes cleanly", async () => {
     await connect();
     const failed = vi.fn();
-    const unsub = session.onConnectionFailed(failed);
+    const unsub = session.onConnectionRecoveryNeeded(failed);
     port.last().setConnectionState("failed");
     expect(failed).toHaveBeenCalledTimes(1);
     expect(session.state).toBe("failed");
     unsub();
     port.last().setConnectionState("failed");
     expect(failed).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires after disconnected reconnects without ever reaching failed", async () => {
+    await connect();
+    const recovered = vi.fn();
+    session.onConnectionRecoveryNeeded(recovered);
+
+    port.last().setConnectionState("disconnected");
+    expect(recovered).not.toHaveBeenCalled();
+    port.last().setConnectionState("connected");
+    expect(recovered).toHaveBeenCalledTimes(1);
+
+    // Ordinary connected notifications do not rebuild a healthy session.
+    port.last().setConnectionState("connected");
+    expect(recovered).toHaveBeenCalledTimes(1);
   });
 });
 

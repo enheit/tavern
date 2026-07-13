@@ -27,4 +27,27 @@ export function applyThemeClass(theme: Theme): void {
   document.documentElement.classList.toggle("dark", resolveDark(theme));
 }
 
-applyThemeClass(readStoredTheme());
+// Theme observation starts in this pre-React module rather than in the settings UI/store. That is
+// important when `system` was already persisted: both a browser reload and a fresh Electron
+// renderer must subscribe before React mounts, without requiring the user to select System again.
+let systemMedia: MediaQueryList | undefined;
+
+function onSystemThemeChange(event: MediaQueryListEvent): void {
+  document.documentElement.classList.toggle("dark", event.matches);
+}
+
+export function activateTheme(theme: Theme): void {
+  if (systemMedia) {
+    systemMedia.removeEventListener("change", onSystemThemeChange);
+    systemMedia = undefined;
+  }
+
+  applyThemeClass(theme);
+
+  if (theme === "system" && typeof globalThis.matchMedia === "function") {
+    systemMedia = globalThis.matchMedia("(prefers-color-scheme: dark)");
+    systemMedia.addEventListener("change", onSystemThemeChange);
+  }
+}
+
+activateTheme(readStoredTheme());

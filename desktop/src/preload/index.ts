@@ -6,6 +6,7 @@ import {
   loopbackAudioDevice,
   platformSchema,
   screenAccessStatusSchema,
+  setCloseToTrayArgSchema,
   setTokenArgSchema,
   updateInfoSchema,
 } from "@tavern/shared";
@@ -93,6 +94,13 @@ const api: TavernIpc = {
     },
     async focusWindow() {
       await ipcRenderer.invoke("shell:focusWindow");
+    },
+    async getCloseToTray() {
+      const value: unknown = await ipcRenderer.invoke("shell:getCloseToTray");
+      return booleanSchema.parse(value);
+    },
+    async setCloseToTray(value) {
+      await ipcRenderer.invoke("shell:setCloseToTray", setCloseToTrayArgSchema.parse(value));
     },
   },
 };

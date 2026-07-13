@@ -1,17 +1,22 @@
 import type {
   ActivityEntry,
   ChatMessage,
+  ChatReply,
   CostStatus,
   GifAttachment,
   ImageAttachment,
   Member,
+  PointSnapshot,
+  Poll,
+  ErrorCode,
   RecordingState,
   ServerMessage,
   StreamInfo,
   VoiceState,
 } from "@tavern/shared";
-import { LIMITS } from "@tavern/shared";
+import { DEFAULT_POINT_CONFIG, LIMITS } from "@tavern/shared";
 import { createStore } from "zustand/vanilla";
+import { playUiSound } from "@/lib/uiSounds";
 import { connectRoom } from "@/lib/wsClient";
 import { useSessionStore } from "@/stores/session";
 
@@ -28,7 +33,18 @@ export interface RoomState {
   serverId: string;
   members: Member[];
   messages: ChatMessage[];
-  hasMoreHistory: boolean;
+  hasOlderHistory: boolean;
+  hasNewerHistory: boolean;
+  historyInitialized: boolean;
+  historyWindow: "timeline" | "around";
+  lastReadMessageId: number;
+  firstUnreadMessageId: number | null;
+  unreadCount: number;
+  scrollToMessageId: number | null;
+  scrollToMessageToken: number;
+  scrollToBottomToken: number;
+  replyingTo: ChatReply | null;
+  editingMessageId: number | null;
   // FR-14 optimistic echo: nonces of locally-sent messages awaiting their `chat.new` echo. The
   // echo (same nonce) replaces the pending row; a foreign `chat.new` (no nonce) just appends.
   pendingNonces: ReadonlySet<string>;
@@ -62,6 +78,9 @@ export interface RoomState {
   // §8 G5 live egress meter for the Stats tab: seeded by hello.ok's costStatus, refreshed by the
   // 60s `cost.update` broadcast while voice is active. Null only before the first snapshot.
   cost: CostStatus | null;
+  points: PointSnapshot;
+  polls: Poll[];
+  pollError: ErrorCode | null;
   dismissCostWarning: () => void;
   apply: (msg: ServerMessage) => void;
   // FR-39 live activity: append an `activity.new` entry, deduped by id (an entry can arrive both via
@@ -74,8 +93,25 @@ export interface RoomState {
   // FR-14: trim + length-guard, append a pending row, and fire `chat.send { body, nonce }`. An
   // optional `gif` (§ GIF picker) rides along; with a gif the body may be empty (a pure-GIF send).
   sendMessage: (body: string, gif?: GifAttachment, image?: ImageAttachment) => void;
-  // FR-17: request the previous history page (`chat.history { beforeId, limit }`).
+  loadInitial: () => void;
   loadOlder: () => Promise<void>;
+  loadNewer: () => Promise<void>;
+  loadLatest: () => void;
+  jumpToMessage: (messageId: number) => void;
+  jumpToUnread: () => void;
+  markRead: (messageId: number) => void;
+  setReplyingTo: (reply: ChatReply | null) => void;
+  startEditing: (messageId: number | null) => void;
+  editMessage: (messageId: number, body: string) => void;
+  deleteMessage: (messageId: number) => void;
+  setReaction: (messageId: number, emoji: string, reacted: boolean) => void;
+  createPoll: (question: string, outcomes: string[], durationSeconds: number) => void;
+  bidPoll: (pollId: string, outcomeId: string, stake: number) => void;
+  lockPoll: (pollId: string) => void;
+  resolvePoll: (pollId: string, outcomeId: string) => void;
+  correctPoll: (pollId: string, outcomeId: string) => void;
+  voidPoll: (pollId: string) => void;
+  clearPollError: () => void;
   // FR-33: set (or clear with null) the focused tile. Enforces exactly-one by holding a single value.
   setFocusedTrackName: (trackName: string | null) => void;
   // Theater fullscreen: set (or clear with null) the fullscreen tile. Exactly-one, same as focus.
@@ -83,6 +119,52 @@ export interface RoomState {
 }
 
 const ACTIVITY_TAIL_MAX = 200;
+
+function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  const byId = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) byId.set(message.id, message);
+  return [...byId.values()].toSorted((a, b) => a.id - b.id);
+}
+
+function updateMessageAndReplies(messages: ChatMessage[], updated: ChatMessage): ChatMessage[] {
+  return messages.map((message) => {
+    if (message.id === updated.id) return updated;
+    if (message.reply?.id !== updated.id) return message;
+    return {
+      ...message,
+      reply: {
+        id: updated.id,
+        userId: updated.userId,
+        body: updated.body,
+        deleted: updated.deletedAt !== undefined,
+        ...(updated.gif === undefined ? {} : { gif: updated.gif }),
+        ...(updated.image === undefined ? {} : { image: updated.image }),
+      },
+    };
+  });
+}
+
+function updateMessageReaction(
+  messages: ChatMessage[],
+  messageId: number,
+  emoji: string,
+  reaction: ChatMessage["reactions"][number] | null,
+): ChatMessage[] {
+  return messages.map((message) => {
+    if (message.id !== messageId) return message;
+    const index = message.reactions.findIndex((item) => item.emoji === emoji);
+    if (reaction === null) {
+      return { ...message, reactions: message.reactions.filter((item) => item.emoji !== emoji) };
+    }
+    if (index < 0) return { ...message, reactions: [...message.reactions, reaction] };
+    return {
+      ...message,
+      reactions: message.reactions.map((item, itemIndex) =>
+        itemIndex === index ? reaction : item,
+      ),
+    };
+  });
+}
 
 function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
   switch (msg.t) {
@@ -97,8 +179,24 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
         serverMeta: msg.serverMeta,
         status: msg.status,
         cost: msg.costStatus,
+        points: msg.points,
+        polls: msg.polls,
+        pollError: null,
         messages: [],
-        hasMoreHistory: msg.lastMessageId !== null,
+        hasOlderHistory: false,
+        hasNewerHistory: false,
+        historyInitialized: false,
+        historyWindow: "timeline",
+        lastReadMessageId: msg.lastReadMessageId,
+        firstUnreadMessageId: msg.firstUnreadMessageId,
+        unreadCount: msg.unreadCount,
+        scrollToMessageId: msg.firstUnreadMessageId,
+        scrollToMessageToken:
+          msg.firstUnreadMessageId === null
+            ? state.scrollToMessageToken
+            : state.scrollToMessageToken + 1,
+        replyingTo: null,
+        editingMessageId: null,
         pendingNonces: new Set<string>(),
         activityTail: [],
         kicked: false,
@@ -107,11 +205,58 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
         fullscreenTrackName: null,
       };
     case "chat.new":
-      // A foreign message (no matching pending nonce — echo reconciliation happens in `apply`).
-      return { messages: [...state.messages, msg.message] };
+      return {
+        ...(state.historyWindow === "timeline" && !state.hasNewerHistory
+          ? { messages: mergeMessages(state.messages, [msg.message]) }
+          : {}),
+        ...(msg.message.userId !== useSessionStore.getState().profile?.userId
+          ? {
+              unreadCount: state.unreadCount + 1,
+              firstUnreadMessageId: state.firstUnreadMessageId ?? msg.message.id,
+            }
+          : {}),
+      };
     case "chat.page":
-      // History pages are older messages fetched upward, so they prepend.
-      return { messages: [...msg.messages, ...state.messages], hasMoreHistory: msg.hasMore };
+      if (msg.mode === "initial" || msg.mode === "latest" || msg.mode === "around") {
+        return {
+          messages: mergeMessages(
+            state.messages.filter((message) => message.id < 0),
+            msg.messages,
+          ),
+          hasOlderHistory: msg.hasOlder,
+          hasNewerHistory: msg.hasNewer,
+          historyInitialized: true,
+          historyWindow: msg.mode === "around" ? "around" : "timeline",
+        };
+      }
+      return {
+        messages: mergeMessages(state.messages, msg.messages),
+        hasOlderHistory: msg.mode === "older" ? msg.hasOlder : state.hasOlderHistory,
+        hasNewerHistory: msg.mode === "newer" ? msg.hasNewer : state.hasNewerHistory,
+      };
+    case "chat.updated":
+    case "chat.deleted":
+      return {
+        messages: updateMessageAndReplies(state.messages, msg.message),
+        ...(msg.t === "chat.deleted" &&
+        msg.message.userId !== useSessionStore.getState().profile?.userId &&
+        msg.message.id > state.lastReadMessageId
+          ? {
+              unreadCount: Math.max(0, state.unreadCount - 1),
+              ...(state.unreadCount === 1 ? { firstUnreadMessageId: null } : {}),
+            }
+          : {}),
+      };
+    case "chat.read-state":
+      return {
+        lastReadMessageId: msg.lastReadMessageId,
+        firstUnreadMessageId: msg.firstUnreadMessageId,
+        unreadCount: msg.unreadCount,
+      };
+    case "chat.reaction.updated":
+      return {
+        messages: updateMessageReaction(state.messages, msg.messageId, msg.emoji, msg.reaction),
+      };
     case "presence.update":
       return {
         members: state.members.map((mem) =>
@@ -171,6 +316,14 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
     case "cost.update":
       // Live egress meter refresh (60s alarm tick) — feeds the Stats tab's free-limit readout.
       return { cost: msg.cost };
+    case "points.updated":
+      return { points: msg.points };
+    case "poll.updated":
+      return {
+        polls: [...state.polls.filter((poll) => poll.id !== msg.poll.id), msg.poll].toSorted(
+          (a, b) => a.createdAt - b.createdAt,
+        ),
+      };
     default:
       // error / pong / sound.played / sound.updated carry no room-state delta.
       return {};
@@ -182,13 +335,41 @@ export function createRoomStore(serverId: string) {
   // is "pending" iff `id < 0`. `nonceToId` maps a pending nonce to its synthetic id for echo
   // reconciliation; it is closure-private (the pinned public surface is `pendingNonces`).
   const nonceToId = new Map<string, number>();
+  const pollRequestIds = new Set<string>();
   let syntheticSeq = 0;
+  const requestHistory = (
+    mode: "initial" | "latest" | "older" | "newer" | "around",
+    cursorId?: number,
+  ): void => {
+    try {
+      connectRoom(serverId).send({
+        t: "chat.history",
+        requestId: crypto.randomUUID(),
+        mode,
+        ...(cursorId === undefined ? {} : { cursorId }),
+        limit: LIMITS.historyPageSize,
+      });
+    } catch {
+      // Reconnect resnapshots the room; visible sentinels then request the required window again.
+    }
+  };
 
   return createStore<RoomState>((set, get) => ({
     serverId,
     members: [],
     messages: [],
-    hasMoreHistory: false,
+    hasOlderHistory: false,
+    hasNewerHistory: false,
+    historyInitialized: false,
+    historyWindow: "timeline",
+    lastReadMessageId: 0,
+    firstUnreadMessageId: null,
+    unreadCount: 0,
+    scrollToMessageId: null,
+    scrollToMessageToken: 0,
+    scrollToBottomToken: 0,
+    replyingTo: null,
+    editingMessageId: null,
     pendingNonces: new Set<string>(),
     voice: { members: [], sessionStartedAt: null },
     streams: [],
@@ -204,6 +385,22 @@ export function createRoomStore(serverId: string) {
     costWarning: null,
     costWarningDismissed: false,
     cost: null,
+    points: {
+      balance: 0,
+      pendingPollWinnings: 0,
+      currentRatePerMinute: 0,
+      activeSources: [],
+      today: {
+        day: new Date().toISOString().slice(0, 10),
+        conversation: 0,
+        streaming: 0,
+        watching: 0,
+        total: 0,
+      },
+      config: DEFAULT_POINT_CONFIG,
+    },
+    polls: [],
+    pollError: null,
     dismissCostWarning: () => set({ costWarningDismissed: true }),
     apply: (msg) => {
       if (msg.t === "hello.ok") {
@@ -214,6 +411,14 @@ export function createRoomStore(serverId: string) {
       if (msg.t === "activity.new") {
         get().appendActivity(msg.entry);
         return;
+      }
+      if (msg.t === "error" && msg.ref !== undefined && pollRequestIds.delete(msg.ref)) {
+        set({ pollError: msg.code });
+        return;
+      }
+      if (msg.t === "poll.updated" && msg.requestId !== undefined) {
+        pollRequestIds.delete(msg.requestId);
+        set({ pollError: null });
       }
       if (msg.t === "chat.new" && msg.nonce !== undefined) {
         const nonce = msg.nonce;
@@ -262,20 +467,30 @@ export function createRoomStore(serverId: string) {
       const tempId = syntheticSeq;
       nonceToId.set(nonce, tempId);
       const self = useSessionStore.getState().profile;
+      const reply = get().replyingTo;
       const optimistic: ChatMessage = {
         id: tempId,
         userId: self?.userId ?? "",
         body: trimmed,
         mentions: [],
         at: Date.now(),
+        reactions: [],
         ...(gif === undefined ? {} : { gif }),
         ...(image === undefined ? {} : { image }),
+        ...(reply === null ? {} : { reply }),
       };
       set((state) => {
         const pending = new Set(state.pendingNonces);
         pending.add(nonce);
-        return { messages: [...state.messages, optimistic], pendingNonces: pending };
+        return {
+          messages: [...state.messages, optimistic],
+          pendingNonces: pending,
+          replyingTo: null,
+          scrollToBottomToken: state.scrollToBottomToken + 1,
+        };
       });
+      playUiSound("chat.send");
+      if (get().historyWindow === "around" || get().hasNewerHistory) requestHistory("latest");
       try {
         connectRoom(serverId).send({
           t: "chat.send",
@@ -283,6 +498,7 @@ export function createRoomStore(serverId: string) {
           nonce,
           ...(gif === undefined ? {} : { gif }),
           ...(image === undefined ? {} : { image }),
+          ...(reply === null ? {} : { replyToId: reply.id }),
         });
       } catch {
         // WS not open — the optimistic row stays; a reconnect resnapshot (hello.ok) clears it.
@@ -290,22 +506,151 @@ export function createRoomStore(serverId: string) {
     },
     setFocusedTrackName: (trackName) => set({ focusedTrackName: trackName }),
     setFullscreenTrackName: (trackName) => set({ fullscreenTrackName: trackName }),
+    loadInitial: () => requestHistory("initial"),
     loadOlder: async () => {
       const { messages } = get();
-      const oldest = messages[0];
-      // Only a real (positive) server id is a valid `beforeId`; a pending row's synthetic negative
-      // id would fail the wire schema, so treat a pending-only list as "load the newest page".
-      const beforeId = oldest !== undefined && oldest.id > 0 ? oldest.id : undefined;
+      const oldest = messages.find((message) => message.id > 0);
+      if (oldest !== undefined) requestHistory("older", oldest.id);
+    },
+    loadNewer: async () => {
+      const newest = get().messages.findLast((message) => message.id > 0);
+      if (newest !== undefined) requestHistory("newer", newest.id);
+    },
+    loadLatest: () => {
+      set((state) => ({ scrollToBottomToken: state.scrollToBottomToken + 1 }));
+      requestHistory("latest");
+    },
+    jumpToMessage: (messageId) => {
+      const loaded = get().messages.some((message) => message.id === messageId);
+      set((state) => ({
+        scrollToMessageId: messageId,
+        scrollToMessageToken: state.scrollToMessageToken + 1,
+      }));
+      if (loaded) return;
+      requestHistory("around", messageId);
+    },
+    jumpToUnread: () => {
+      const firstUnread = get().firstUnreadMessageId;
+      set((state) => ({
+        scrollToMessageId: firstUnread,
+        scrollToMessageToken: state.scrollToMessageToken + 1,
+      }));
+      requestHistory("initial");
+    },
+    markRead: (messageId) => {
+      if (messageId <= get().lastReadMessageId) return;
       try {
-        connectRoom(serverId).send({
-          t: "chat.history",
-          beforeId,
-          limit: LIMITS.historyPageSize,
-        });
+        connectRoom(serverId).send({ t: "chat.read", messageId });
       } catch {
-        // WS not open — the top sentinel re-fires loadOlder once the socket reopens.
+        // The server remains authoritative; reconnect returns the last durable read cursor.
       }
     },
+    setReplyingTo: (replyingTo) => set({ replyingTo }),
+    startEditing: (editingMessageId) => set({ editingMessageId }),
+    editMessage: (messageId, body) => {
+      try {
+        connectRoom(serverId).send({
+          t: "chat.edit",
+          requestId: crypto.randomUUID(),
+          messageId,
+          body,
+        });
+        set({ editingMessageId: null });
+      } catch {
+        // Keep the authoritative row unchanged when disconnected.
+      }
+    },
+    deleteMessage: (messageId) => {
+      try {
+        connectRoom(serverId).send({
+          t: "chat.delete",
+          requestId: crypto.randomUUID(),
+          messageId,
+        });
+      } catch {
+        // Keep the authoritative row unchanged when disconnected.
+      }
+    },
+    setReaction: (messageId, emoji, reacted) => {
+      try {
+        connectRoom(serverId).send({
+          t: "chat.reaction.set",
+          requestId: crypto.randomUUID(),
+          messageId,
+          emoji,
+          reacted,
+        });
+      } catch {
+        // The authoritative message remains unchanged; reconnect/history restores reaction state.
+      }
+    },
+    createPoll: (question, outcomes, durationSeconds) => {
+      const requestId = crypto.randomUUID();
+      pollRequestIds.add(requestId);
+      try {
+        connectRoom(serverId).send({
+          t: "poll.create",
+          requestId,
+          question,
+          outcomes,
+          durationSeconds,
+        });
+      } catch {
+        pollRequestIds.delete(requestId);
+        set({ pollError: "bad_request" });
+      }
+    },
+    bidPoll: (pollId, outcomeId, stake) => {
+      const requestId = crypto.randomUUID();
+      pollRequestIds.add(requestId);
+      try {
+        connectRoom(serverId).send({ t: "poll.bid", requestId, pollId, outcomeId, stake });
+      } catch {
+        pollRequestIds.delete(requestId);
+        set({ pollError: "bad_request" });
+      }
+    },
+    lockPoll: (pollId) => {
+      const requestId = crypto.randomUUID();
+      pollRequestIds.add(requestId);
+      try {
+        connectRoom(serverId).send({ t: "poll.lock", requestId, pollId });
+      } catch {
+        pollRequestIds.delete(requestId);
+        set({ pollError: "bad_request" });
+      }
+    },
+    resolvePoll: (pollId, outcomeId) => {
+      const requestId = crypto.randomUUID();
+      pollRequestIds.add(requestId);
+      try {
+        connectRoom(serverId).send({ t: "poll.resolve", requestId, pollId, outcomeId });
+      } catch {
+        pollRequestIds.delete(requestId);
+        set({ pollError: "bad_request" });
+      }
+    },
+    correctPoll: (pollId, outcomeId) => {
+      const requestId = crypto.randomUUID();
+      pollRequestIds.add(requestId);
+      try {
+        connectRoom(serverId).send({ t: "poll.correct", requestId, pollId, outcomeId });
+      } catch {
+        pollRequestIds.delete(requestId);
+        set({ pollError: "bad_request" });
+      }
+    },
+    voidPoll: (pollId) => {
+      const requestId = crypto.randomUUID();
+      pollRequestIds.add(requestId);
+      try {
+        connectRoom(serverId).send({ t: "poll.void", requestId, pollId });
+      } catch {
+        pollRequestIds.delete(requestId);
+        set({ pollError: "bad_request" });
+      }
+    },
+    clearPollError: () => set({ pollError: null }),
   }));
 }
 

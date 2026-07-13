@@ -160,6 +160,14 @@ tests. Test files reference FR ids in `describe()` strings so coverage is greppa
 - **FR-19 Voice transport**: mic published to the Cloudflare Realtime SFU; every voice member's
   audio auto-subscribed (voice is automatic; video is opt-in per FR-30). AC: two clients in voice
   hear each other (e2e via fake-media + `getStats` assertions on audioLevel/bytes).
+  AMENDED (join latency, 2026-07-13) — the local audio graph starts with the join gesture, but the
+  `voice.state` self-ack remains the authorization barrier before SFU requests and mic capture
+  (so a lost ack cannot strand a live mic). After that ack, mic acquisition and the independent
+  publishPC/voicePullPC start concurrently. The pull branch subscribes to and attaches existing
+  remote mics without waiting for local mic permission, device startup, or noise-model loading;
+  the publish branch publishes the mic independently. UI remains
+  `joining` (with an explicit indicator) until both branches finish. A mic failure preserves the
+  full-duplex contract by settling both branches, tearing down, and sending `voice.leave`.
   AMENDED (Task-1 audibility, 2026-07-12) — the auto-subscribe pipeline is self-healing, each
   piece load-bearing (removing any one re-opens an asymmetric-deafness class): (1) per-track SFU
   pull errors (200 + `tracks[].error`) THROW client-side (`PullTracksError`) after renegotiating

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ClientMessage, Member } from "@tavern/shared";
+import type { ChatMessage, ClientMessage, Member } from "@tavern/shared";
 
 vi.mock("@/lib/wsClient", () => ({ connectRoom: vi.fn(), closeAllRooms: vi.fn() }));
 
@@ -35,8 +35,10 @@ import { connectRoom } from "@/lib/wsClient";
 import type { WsConnection } from "@/lib/wsClient";
 import { Composer } from "@/features/chat/Composer";
 import { resetRoomStores, roomStore } from "@/stores/room";
+import { useSessionStore } from "@/stores/session";
 
 const SID = "s-composer";
+const SELF = "11111111-1111-1111-1111-111111111111";
 const sent: ClientMessage[] = [];
 const fakeConn: WsConnection = {
   status: "open",
@@ -75,10 +77,14 @@ beforeEach(() => {
   vi.mocked(connectRoom).mockReturnValue(fakeConn);
   resetRoomStores();
   roomStore(SID).setState({
-    members: [
-      member("11111111-1111-1111-1111-111111111111", "bob_u"),
-      member("22222222-2222-2222-2222-222222222222", "bella_u"),
-    ],
+    members: [member(SELF, "bob_u"), member("22222222-2222-2222-2222-222222222222", "bella_u")],
+    historyInitialized: true,
+  });
+  useSessionStore.getState().setAuthed({
+    userId: SELF,
+    username: "bob_u",
+    displayName: "Bob",
+    color: "#8b5cf6",
   });
 });
 
@@ -92,6 +98,16 @@ function chatSends(): ClientMessage[] {
 }
 
 describe("FR-14 composer", () => {
+  it("places the compact points control directly beside GIF", () => {
+    render(<Composer serverId={SID} />);
+    const gif = screen.getByTestId("composer-gif");
+    const points = screen.getByTestId("points-trigger");
+
+    expect(gif.parentElement).toBe(points.parentElement);
+    expect(gif.nextElementSibling).toBe(points);
+    expect(points.textContent).toBe("0");
+  });
+
   it("Enter sends trimmed body and clears", () => {
     render(<Composer serverId={SID} />);
     const ta = screen.getByTestId<HTMLTextAreaElement>("composer-input");
@@ -133,14 +149,15 @@ describe("FR-14 composer", () => {
     expect(screen.getByTestId<HTMLButtonElement>("composer-send").disabled).toBe(true);
   });
 
-  // Emoji button temporarily hidden in Composer (SHOW_EMOJI=false); re-enable this when it returns.
-  it.skip("emoji pick inserts at caret and refocuses", async () => {
+  it("renders the emoji trigger inside the input and inserts a pick at the caret", async () => {
     render(<Composer serverId={SID} />);
     const ta = screen.getByTestId<HTMLTextAreaElement>("composer-input");
+    const emojiTrigger = screen.getByTestId("composer-emoji");
+    expect(screen.getByTestId("composer-input-shell").contains(emojiTrigger)).toBe(true);
     fireEvent.change(ta, { target: { value: "ab", selectionStart: 2 } });
     ta.setSelectionRange(1, 1); // caret between a and b
 
-    fireEvent.click(screen.getByTestId("composer-emoji"));
+    fireEvent.click(emojiTrigger);
     const pick = await screen.findByTestId("mock-emoji");
     fireEvent.click(pick);
 
@@ -167,5 +184,114 @@ describe("FR-14 composer", () => {
 
     expect(chatSends()).toHaveLength(0);
     expect(ta.value).toBe("hi @bob_u ");
+  });
+
+  it("ArrowUp in an empty composer edits the latest own message", () => {
+    const messages: ChatMessage[] = [
+      { id: 1, userId: SELF, body: "first", mentions: [], reactions: [], at: 1 },
+      { id: 2, userId: SELF, body: "latest", mentions: [], reactions: [], at: 2 },
+    ];
+    roomStore(SID).setState({ messages });
+    render(<Composer serverId={SID} />);
+    const ta = screen.getByTestId<HTMLTextAreaElement>("composer-input");
+
+    fireEvent.keyDown(ta, { key: "ArrowUp" });
+    expect(ta.value).toBe("latest");
+    expect(
+      screen.getByTestId("composer-input-shell").contains(screen.getByTestId("composer-edit")),
+    ).toBe(true);
+    fireEvent.change(ta, { target: { value: "latest edited", selectionStart: 13 } });
+    fireEvent.keyDown(ta, { key: "Enter" });
+
+    expect(sent.some((frame) => frame.t === "chat.edit" && frame.messageId === 2)).toBe(true);
+  });
+
+  it("shows and clears the reply context", () => {
+    roomStore(SID).getState().setReplyingTo({
+      id: 7,
+      userId: "22222222-2222-2222-2222-222222222222",
+      body: "source",
+      deleted: false,
+    });
+    render(<Composer serverId={SID} />);
+    expect(
+      screen.getByTestId("composer-input-shell").contains(screen.getByTestId("composer-reply")),
+    ).toBe(true);
+    fireEvent.click(screen.getByTestId("composer-cancel-reply"));
+    expect(screen.queryByTestId("composer-reply")).toBeNull();
+  });
+
+  it("renders reply and ArrowUp edit attachment thumbnails inside the input shell", () => {
+    roomStore(SID).setState({
+      messages: [
+        {
+          id: 8,
+          userId: SELF,
+          body: "",
+          mentions: [],
+          reactions: [],
+          at: 1,
+          image: {
+            id: "33333333-3333-4333-8333-333333333333",
+            width: 320,
+            height: 180,
+          },
+        },
+      ],
+    });
+    roomStore(SID)
+      .getState()
+      .setReplyingTo({
+        id: 7,
+        userId: "22222222-2222-2222-2222-222222222222",
+        body: "",
+        deleted: false,
+        gif: {
+          url: "https://example.com/full.gif",
+          previewUrl: "https://example.com/preview.gif",
+          width: 320,
+          height: 180,
+        },
+      });
+    render(<Composer serverId={SID} />);
+
+    const shell = screen.getByTestId("composer-input-shell");
+    const thumbnail = screen.getByTestId<HTMLImageElement>("composer-context-thumbnail");
+    expect(shell.contains(thumbnail)).toBe(true);
+    expect(thumbnail.src).toBe("https://example.com/preview.gif");
+
+    fireEvent.click(screen.getByTestId("composer-cancel-reply"));
+    fireEvent.keyDown(screen.getByTestId("composer-input"), { key: "ArrowUp" });
+    const editThumbnail = screen.getByTestId<HTMLImageElement>("composer-context-thumbnail");
+    expect(shell.contains(editThumbnail)).toBe(true);
+    expect(editThumbnail.getAttribute("src")).toBe(
+      "/api/chat-images/s-composer/33333333-3333-4333-8333-333333333333.webp",
+    );
+  });
+
+  it("Escape cancels reply and edit modes", () => {
+    const messages: ChatMessage[] = [
+      { id: 1, userId: SELF, body: "latest", mentions: [], reactions: [], at: 1 },
+    ];
+    roomStore(SID).setState({ messages });
+    const { rerender } = render(<Composer serverId={SID} />);
+    const ta = screen.getByTestId<HTMLTextAreaElement>("composer-input");
+
+    roomStore(SID).getState().setReplyingTo({
+      id: 7,
+      userId: "22222222-2222-2222-2222-222222222222",
+      body: "source",
+      deleted: false,
+    });
+    rerender(<Composer serverId={SID} />);
+    expect(document.activeElement).toBe(ta);
+    fireEvent.keyDown(ta, { key: "Escape" });
+    expect(screen.queryByTestId("composer-reply")).toBeNull();
+
+    fireEvent.keyDown(ta, { key: "ArrowUp" });
+    expect(screen.getByTestId("composer-edit")).toBeDefined();
+    fireEvent.keyDown(ta, { key: "Escape" });
+    expect(screen.queryByTestId("composer-edit")).toBeNull();
+    expect(ta.value).toBe("");
   });
 });

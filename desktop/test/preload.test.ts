@@ -145,5 +145,12 @@ describe("IPC preload bridge (window.tavern)", () => {
     expect(ipcRenderer.invoke).toHaveBeenCalledWith("shell:setBadge", 3);
     await api.shell.focusWindow();
     expect(ipcRenderer.invoke).toHaveBeenCalledWith("shell:focusWindow");
+    state.invokeResults.set("shell:getCloseToTray", true);
+    expect(await api.shell.getCloseToTray()).toBe(true);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("shell:getCloseToTray");
+    state.invokeResults.set("shell:getCloseToTray", "yes");
+    await expect(api.shell.getCloseToTray()).rejects.toThrow();
+    await api.shell.setCloseToTray(false);
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith("shell:setCloseToTray", false);
   });
 });

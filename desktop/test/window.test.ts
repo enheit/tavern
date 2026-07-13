@@ -75,6 +75,22 @@ describe("window shell + navigation lockdown", () => {
     expect(app.setBadgeCount).toHaveBeenLastCalledWith(0);
   });
 
+  it("uses a taskbar overlay icon on Windows", () => {
+    const platform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      createWindow();
+      const win = BrowserWindow.instances[0];
+      if (win === undefined) throw new Error("no window");
+      setAppBadge(2);
+      expect(win.setOverlayIcon).toHaveBeenLastCalledWith(expect.anything(), "2 unread messages");
+      setAppBadge(null);
+      expect(win.setOverlayIcon).toHaveBeenLastCalledWith(null, "");
+    } finally {
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+    }
+  });
+
   it("blocks navigation to a foreign origin, allows same-origin", () => {
     const contents = new FakeWebContents();
     installNavigationGuards(asWebContents(contents));

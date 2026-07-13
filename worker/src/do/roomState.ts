@@ -6,6 +6,8 @@ import type {
   Member,
   MemberInit,
   Presence,
+  PointSnapshot,
+  Poll,
   PresetId,
   RecordingState,
   ServerMessage,
@@ -14,6 +16,7 @@ import type {
   VoiceMember,
   VoiceState,
 } from "@tavern/shared";
+import type { ChatReadState } from "./chat";
 import { rowToMember } from "./sql";
 import type { CostMeter } from "./costMeter";
 
@@ -661,6 +664,15 @@ export class RoomState {
     return result;
   }
 
+  connectedUserIds(): string[] {
+    const ids = new Set<string>();
+    for (const ws of this.ctx.getWebSockets()) {
+      const att = this.attachmentOf(ws);
+      if (att?.hello === true) ids.add(att.userId);
+    }
+    return [...ids];
+  }
+
   send(ws: WebSocket, msg: ServerMessage): void {
     ws.send(JSON.stringify(serverMessageSchema.parse(msg)));
   }
@@ -687,9 +699,12 @@ export class RoomState {
   helloSnapshot(
     userId: string,
     lastMessageId: number,
+    readState: ChatReadState,
     costStatus: CostStatus,
     recording: RecordingState,
     streams: StreamInfo[],
+    points: PointSnapshot,
+    polls: Poll[],
   ): HelloOk {
     const meta = invariant(this.meta, "room meta not initialized");
     const members = this.listMembers();
@@ -711,8 +726,15 @@ export class RoomState {
       recording,
       status: this.status,
       lastMessageId,
+      ...readState,
       costStatus,
+      points,
+      polls,
     };
+  }
+
+  id(): string {
+    return invariant(this.meta, "room meta not initialized").id;
   }
 
   // Presence transition on a socket completing its handshake: broadcast `online` only on 0→1.

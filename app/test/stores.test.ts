@@ -1,14 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Member, ServerMessage, UserProfile, VolumesV1 } from "@tavern/shared";
 import { VolumesV1 as VolumesV1Schema } from "@tavern/shared";
 import type { RoomState } from "@/stores/room";
 import { createRoomStore } from "@/stores/room";
+import { playUiSound } from "@/lib/uiSounds";
+import { useSessionStore } from "@/stores/session";
 import {
   DEVICE_SETTINGS_KEY,
   loadDeviceSettings,
   useSettingsStore,
   VOLUMES_STORAGE_KEY,
 } from "@/stores/settings";
+
+vi.mock("@/lib/uiSounds", () => ({
+  playUiSound: vi.fn(),
+  primeUiSounds: vi.fn(() => () => undefined),
+}));
 
 function profile(userId: string, displayName = "Alice"): UserProfile {
   return { userId, username: "alice", displayName, color: "#aabbcc" };
@@ -39,8 +46,38 @@ const baseHello: Extract<ServerMessage, { t: "hello.ok" }> = {
   ],
   recording: { active: false },
   lastMessageId: 42,
+  lastReadMessageId: 0,
+  firstUnreadMessageId: null,
+  unreadCount: 0,
   costStatus: { usedGB: 0, capGB: 100, blocked: false },
+  polls: [],
+  points: zeroPoints(),
 };
+
+beforeEach(() => {
+  vi.mocked(playUiSound).mockClear();
+  useSessionStore.setState({
+    status: "authed",
+    profile: { userId: "u1", username: "alice", displayName: "Alice", color: "#aabbcc" },
+  });
+});
+
+function zeroPoints() {
+  return {
+    balance: 0,
+    pendingPollWinnings: 0,
+    currentRatePerMinute: 0,
+    activeSources: [],
+    today: { day: "2026-07-13", conversation: 0, streaming: 0, watching: 0, total: 0 },
+    config: {
+      enabled: true,
+      basePointsPerMinute: 5,
+      streamerBonusPerMinute: 5,
+      watcherBonusPerMinute: 5,
+      dailyCap: null,
+    },
+  };
+}
 
 // A store seeded with the base snapshot so update/remove reducers have prior state to act on.
 function seededStore() {
@@ -63,13 +100,16 @@ const cases: ReducerCase[] = [
       expect(s.members).toHaveLength(1);
       expect(s.serverMeta?.nickname).toBe("tavern");
       expect(s.messages).toHaveLength(0);
-      expect(s.hasMoreHistory).toBe(true);
+      expect(s.historyInitialized).toBe(false);
       expect(s.streams).toHaveLength(1);
     },
   },
   {
     name: "chat.new",
-    frame: { t: "chat.new", message: { id: 1, userId: "u1", body: "hi", mentions: [], at: 1 } },
+    frame: {
+      t: "chat.new",
+      message: { id: 1, userId: "u1", body: "hi", mentions: [], reactions: [], at: 1 },
+    },
     check: (s) => {
       expect(s.messages).toHaveLength(1);
       expect(s.messages[0]?.body).toBe("hi");
@@ -79,12 +119,15 @@ const cases: ReducerCase[] = [
     name: "chat.page",
     frame: {
       t: "chat.page",
-      messages: [{ id: 2, userId: "u1", body: "older", mentions: [], at: 0 }],
-      hasMore: false,
+      requestId: "11111111-1111-4111-8111-111111111111",
+      mode: "initial",
+      messages: [{ id: 2, userId: "u1", body: "older", mentions: [], reactions: [], at: 0 }],
+      hasOlder: false,
+      hasNewer: false,
     },
     check: (s) => {
       expect(s.messages[0]?.body).toBe("older");
-      expect(s.hasMoreHistory).toBe(false);
+      expect(s.hasOlderHistory).toBe(false);
     },
   },
   {
@@ -217,6 +260,14 @@ describe("§App-A room reducer", () => {
       c.check(store.getState());
     });
   }
+});
+
+describe("chat send sound", () => {
+  it("plays the chat-send sound on a valid local send", () => {
+    const store = createRoomStore("sid");
+    store.getState().sendMessage("hello there");
+    expect(vi.mocked(playUiSound)).toHaveBeenCalledWith("chat.send");
+  });
 });
 
 describe("§5.4 volumes persistence", () => {

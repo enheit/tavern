@@ -12,13 +12,17 @@ import {
   ChatMessage,
   GifAttachment,
   ImageAttachment,
+  ReactionEmoji,
+  ChatReaction,
   ActivityEntry,
   Presence,
+  PointSnapshot,
+  Poll,
 } from "./domain";
 
 const trackName = z.string().min(1).max(128);
 
-// ---- Client → Server (16) ----
+// ---- Client → Server ----
 const hello = z.object({ t: z.literal("hello"), proto: z.literal(1) });
 const chatSend = z.object({
   t: z.literal("chat.send"),
@@ -29,11 +33,33 @@ const chatSend = z.object({
   nonce: z.uuid(),
   gif: GifAttachment.optional(),
   image: ImageAttachment.optional(),
+  replyToId: z.number().int().positive().optional(),
 });
 const chatHistory = z.object({
   t: z.literal("chat.history"),
-  beforeId: z.number().int().positive().optional(),
+  requestId: z.uuid(),
+  mode: z.enum(["initial", "latest", "older", "newer", "around"]),
+  cursorId: z.number().int().positive().optional(),
   limit: z.number().int().min(1).max(LIMITS.historyPageSize),
+});
+const chatRead = z.object({ t: z.literal("chat.read"), messageId: z.number().int().positive() });
+const chatEdit = z.object({
+  t: z.literal("chat.edit"),
+  requestId: z.uuid(),
+  messageId: z.number().int().positive(),
+  body: z.string().max(LIMITS.messageMaxChars),
+});
+const chatDelete = z.object({
+  t: z.literal("chat.delete"),
+  requestId: z.uuid(),
+  messageId: z.number().int().positive(),
+});
+const chatReactionSet = z.object({
+  t: z.literal("chat.reaction.set"),
+  requestId: z.uuid(),
+  messageId: z.number().int().positive(),
+  emoji: ReactionEmoji,
+  reacted: z.boolean(),
 });
 const voiceJoin = z.object({ t: z.literal("voice.join") });
 const voiceLeave = z.object({ t: z.literal("voice.leave") });
@@ -66,12 +92,59 @@ const statusSet = z.object({
   t: z.literal("status.set"),
   text: z.string().max(LIMITS.statusMaxChars),
 });
+const pollCreate = z.object({
+  t: z.literal("poll.create"),
+  requestId: z.uuid(),
+  question: z.string().trim().min(1).max(LIMITS.pollQuestionMaxChars),
+  outcomes: z
+    .array(z.string().trim().min(1).max(LIMITS.pollOutcomeMaxChars))
+    .min(LIMITS.pollOutcomeMin)
+    .max(LIMITS.pollOutcomeMax),
+  durationSeconds: z
+    .number()
+    .int()
+    .min(LIMITS.pollDurationMinSeconds)
+    .max(LIMITS.pollDurationMaxSeconds),
+});
+const pollBid = z.object({
+  t: z.literal("poll.bid"),
+  requestId: z.uuid(),
+  pollId: z.uuid(),
+  outcomeId: z.uuid(),
+  stake: z.number().int().positive(),
+});
+const pollLock = z.object({
+  t: z.literal("poll.lock"),
+  requestId: z.uuid(),
+  pollId: z.uuid(),
+});
+const pollResolve = z.object({
+  t: z.literal("poll.resolve"),
+  requestId: z.uuid(),
+  pollId: z.uuid(),
+  outcomeId: z.uuid(),
+});
+const pollCorrect = z.object({
+  t: z.literal("poll.correct"),
+  requestId: z.uuid(),
+  pollId: z.uuid(),
+  outcomeId: z.uuid(),
+});
+const pollVoid = z.object({
+  t: z.literal("poll.void"),
+  requestId: z.uuid(),
+  pollId: z.uuid(),
+});
 const ping = z.object({ t: z.literal("ping") });
 
 export const clientMessageSchema = z.discriminatedUnion("t", [
   hello,
   chatSend,
   chatHistory,
+  chatRead,
+  chatEdit,
+  chatDelete,
+  chatReactionSet,
   voiceJoin,
   voiceLeave,
   voiceStateClient,
@@ -84,11 +157,17 @@ export const clientMessageSchema = z.discriminatedUnion("t", [
   recStart,
   recStop,
   statusSet,
+  pollCreate,
+  pollBid,
+  pollLock,
+  pollResolve,
+  pollCorrect,
+  pollVoid,
   ping,
 ]);
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
-// ---- Server → Client (23) ----
+// ---- Server → Client ----
 const helloOk = z.object({
   t: z.literal("hello.ok"),
   self: UserProfile,
@@ -99,7 +178,12 @@ const helloOk = z.object({
   recording: RecordingState,
   status: z.string(),
   lastMessageId: z.number().int().nullable(),
+  lastReadMessageId: z.number().int().nonnegative(),
+  firstUnreadMessageId: z.number().int().positive().nullable(),
+  unreadCount: z.number().int().nonnegative(),
   costStatus: CostStatus,
+  points: PointSnapshot,
+  polls: z.array(Poll).default([]),
 });
 const errorMsg = z.object({
   t: z.literal("error"),
@@ -114,10 +198,37 @@ const chatNew = z.object({
 });
 const chatPage = z.object({
   t: z.literal("chat.page"),
+  requestId: z.uuid(),
+  mode: z.enum(["initial", "latest", "older", "newer", "around"]),
   messages: z.array(ChatMessage),
-  hasMore: z.boolean(),
+  hasOlder: z.boolean(),
+  hasNewer: z.boolean(),
+});
+const chatUpdated = z.object({
+  t: z.literal("chat.updated"),
+  message: ChatMessage,
+  requestId: z.uuid().optional(),
+});
+const chatDeleted = z.object({
+  t: z.literal("chat.deleted"),
+  message: ChatMessage,
+  requestId: z.uuid().optional(),
+});
+const chatReadState = z.object({
+  t: z.literal("chat.read-state"),
+  lastReadMessageId: z.number().int().nonnegative(),
+  firstUnreadMessageId: z.number().int().positive().nullable(),
+  unreadCount: z.number().int().nonnegative(),
+});
+const chatReactionUpdated = z.object({
+  t: z.literal("chat.reaction.updated"),
+  messageId: z.number().int().positive(),
+  emoji: ReactionEmoji,
+  reaction: ChatReaction.nullable(),
+  requestId: z.uuid().optional(),
 });
 const activityNew = z.object({ t: z.literal("activity.new"), entry: ActivityEntry });
+const hangoutUpdated = z.object({ t: z.literal("hangout.updated"), at: z.number() });
 const presenceUpdate = z.object({
   t: z.literal("presence.update"),
   userId: z.uuid(),
@@ -191,6 +302,17 @@ const costUpdate = z.object({
   cost: CostStatus,
   at: z.number(),
 });
+const pointsUpdated = z.object({
+  t: z.literal("points.updated"),
+  points: PointSnapshot,
+  at: z.number(),
+});
+const pollUpdated = z.object({
+  t: z.literal("poll.updated"),
+  poll: Poll,
+  requestId: z.uuid().optional(),
+  at: z.number(),
+});
 
 export const serverMessageSchema = z.discriminatedUnion("t", [
   helloOk,
@@ -198,7 +320,12 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
   pong,
   chatNew,
   chatPage,
+  chatUpdated,
+  chatDeleted,
+  chatReadState,
+  chatReactionUpdated,
   activityNew,
+  hangoutUpdated,
   presenceUpdate,
   memberUpdate,
   memberJoined,
@@ -217,6 +344,8 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
   kicked,
   costWarning,
   costUpdate,
+  pointsUpdated,
+  pollUpdated,
 ]);
 export type ServerMessage = z.infer<typeof serverMessageSchema>;
 

@@ -249,6 +249,8 @@ export class RecordingsModule {
     if (row === null) return { ok: false, error: "not_found" };
     if (row.startedBy !== userId && !isAdmin) return { ok: false, error: "forbidden" };
     this.sql.exec(`DELETE FROM recordings WHERE id = ?`, recordingId);
+    // The same typed nudge used after finalization keeps peer recording lists and Tavern Home in sync.
+    this.room.broadcast({ t: "rec.state", recording: this.state(), at: Date.now() });
     return { ok: true, r2Key: this.r2Key(recordingId) };
   }
 

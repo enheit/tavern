@@ -15,6 +15,7 @@ import { TONE_WAV, WORKER_URL } from "./playwright.config";
 // under it — the ordering avoids that by construction).
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+const workerPort = new URL(WORKER_URL).port;
 
 const fakeMediaArgs = [
   "--use-fake-ui-for-media-stream",
@@ -43,7 +44,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "pnpm -F @tavern/worker exec wrangler dev --env e2e --port 8787",
+    command: `pnpm -F @tavern/worker exec wrangler dev --env e2e --port ${workerPort}`,
     url: `${WORKER_URL}/api/health`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

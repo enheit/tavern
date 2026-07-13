@@ -1,6 +1,8 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { m } from "@/paraglide/messages.js";
+import { roomStore } from "@/stores/room";
+import { useStore } from "zustand";
 import { VoiceSettingsSection } from "@/features/voice/VoiceSettingsSection";
 import { AccountSection } from "./AccountSection";
 import { AppSection } from "./AppSection";
@@ -9,12 +11,15 @@ import { NotificationsSection } from "./NotificationsSection";
 // FR-03/04/05/06/07/16 settings surface: a shadcn Dialog (opened from the UserMenu) with the three
 // pinned tabs. Each section owns its own save/persist behavior; this component only frames them.
 export function SettingsDialog({
+  serverId,
   open,
   onOpenChange,
 }: {
+  serverId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const cost = useStore(roomStore(serverId), (state) => state.cost);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent data-testid="settings-dialog" className="sm:max-w-md">
@@ -40,7 +45,7 @@ export function SettingsDialog({
             <AccountSection />
           </TabsContent>
           <TabsContent value="app">
-            <AppSection />
+            <AppSection cost={cost} />
           </TabsContent>
           <TabsContent value="notifications">
             <NotificationsSection />

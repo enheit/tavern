@@ -1,7 +1,9 @@
 import { join } from "node:path";
-import { BrowserWindow, app, shell } from "electron";
+import { BrowserWindow, app, nativeImage, shell } from "electron";
 import type { WebContents } from "electron";
-import { isQuittingApp } from "./lifecycle";
+import { isQuittingApp, markQuitting } from "./lifecycle";
+import { getCloseToTray } from "./preferences";
+import { UNREAD_DOT_PNG_DATA_URL } from "./unreadIcon";
 
 const APP_ORIGIN = "app://tavern";
 
@@ -27,7 +29,15 @@ export function focusMainWindow(): void {
 
 // RESERVED for post-v1 unread badges (§1.9) — implemented, never called in v1.
 export function setAppBadge(count: number | null): void {
-  app.setBadgeCount(count ?? 0);
+  const unread = count ?? 0;
+  if (process.platform === "win32") {
+    mainWindow?.setOverlayIcon(
+      unread > 0 ? nativeImage.createFromDataURL(UNREAD_DOT_PNG_DATA_URL) : null,
+      unread > 0 ? `${unread} unread messages` : "",
+    );
+  } else {
+    app.setBadgeCount(unread);
+  }
 }
 
 // scheme://host origin. `URL.origin` is unusable here: app:// is a non-special scheme so it reports
@@ -85,14 +95,19 @@ export function createWindow(): BrowserWindow {
   win.once("ready-to-show", () => {
     win.show();
   });
-  // Close-to-tray: a user closing the window (title-bar X, Cmd+W) hides it so the renderer keeps
-  // running in the background — voice stays connected and OS notifications still arrive. Only a real
-  // quit (tray "Exit", Cmd+Q, auto-update restart — all set the quitting flag via `before-quit`)
-  // lets the close through and destroys the window.
+  // The main-process preference is authoritative for title-bar close/Cmd+W. Its default keeps the
+  // renderer alive in the tray (voice + notifications continue); disabling it turns that same user
+  // gesture into a genuine app quit. Explicit quit paths already set the quitting flag and bypass
+  // this decision entirely.
   win.on("close", (event) => {
     if (isQuittingApp()) return;
-    event.preventDefault();
-    win.hide();
+    if (getCloseToTray()) {
+      event.preventDefault();
+      win.hide();
+      return;
+    }
+    markQuitting();
+    app.quit();
   });
   win.on("closed", () => {
     mainWindow = null;

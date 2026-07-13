@@ -33,7 +33,7 @@ function makeBridge(
       onUpdateReady: () => () => undefined,
       restartToUpdate: () => undefined,
     },
-    shell: { setBadge: () => undefined, focusWindow: () => undefined },
+    shell: { setBadge: () => undefined, focusWindow: () => undefined, closeBehavior: null },
   };
 }
 

@@ -20,6 +20,11 @@ const seedSharesBody = z.object({
 });
 
 const doResSchema = z.object({ screens: z.number() });
+const seedPointsBody = z.object({
+  serverId: z.uuid(),
+  userId: z.uuid(),
+  balance: z.number().int().nonnegative(),
+});
 
 export const testSeedRoute = new Hono<{ Bindings: Env; Variables: AuthVars }>();
 
@@ -61,6 +66,22 @@ testSeedRoute.post("/seed-code", async (c) => {
     .bind(code, Date.now())
     .run();
   return c.json({ code });
+});
+
+testSeedRoute.post("/seed-points", async (c) => {
+  if (c.env.TAVERN_TEST !== "1") return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  const parsed = seedPointsBody.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  const { serverId, userId, balance } = parsed.data;
+  const stub = c.env.SERVER_ROOM.get(c.env.SERVER_ROOM.idFromName(serverId));
+  const res = await stub.fetch("https://do.internal/internal/test/seed-points", {
+    method: "POST",
+    headers: { "content-type": "application/json", "X-Tavern-Internal": "1" },
+    body: JSON.stringify({ userId, balance }),
+  });
+  if (!res.ok) return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  const body: unknown = await res.json();
+  return c.json(body);
 });
 
 // Mock-SFU state readout (Task-1 diagnostics): the mock keeps its published-track registry in

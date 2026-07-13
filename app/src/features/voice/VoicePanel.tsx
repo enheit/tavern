@@ -10,7 +10,7 @@ import { useVoice } from "./useVoice";
 // path); a bare leave would dirty-end (discard) the recording server-side.
 export function VoicePanel({ serverId }: { serverId: string }) {
   const { status, inVoiceServerId, leave } = useVoice(serverId);
-  const active = inVoiceServerId === serverId && (status === "joined" || status === "joining");
+  const active = inVoiceServerId === serverId && status === "joined";
   if (!active) return null;
 
   const onLeave = async (): Promise<void> => {

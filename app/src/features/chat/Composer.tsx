@@ -1,11 +1,12 @@
-import type { GifResult, Member } from "@tavern/shared";
+import type { ChatReply, GifResult, Member } from "@tavern/shared";
 import { LIMITS } from "@tavern/shared";
-import { SmileIcon } from "lucide-react";
+import { SmileIcon, XIcon } from "lucide-react";
 import {
   type ChangeEvent,
   type ClipboardEvent,
   type KeyboardEvent,
   useLayoutEffect,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -23,9 +24,12 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
+import { useSessionStore } from "@/stores/session";
 import { GifPicker } from "./GifPicker";
 import { MentionAutocomplete } from "./MentionAutocomplete";
-import { firstImageFile } from "./uploadChatImage";
+import { PointsButton } from "./PointsButton";
+import { PollCreateButton } from "@/features/polls/PollCreateButton";
+import { chatImageViewUrl, firstImageFile } from "./uploadChatImage";
 import { useChatImageUpload } from "./useChatImageUpload";
 
 // FR-14/15 message composer: auto-growing textarea (1–5 rows), Enter-to-send / Shift+Enter newline,
@@ -36,8 +40,6 @@ const COUNTER_THRESHOLD = 1800; // the live counter appears strictly above this 
 const MAX_ROWS = 5;
 // The word immediately left of the caret, when it is an `@handle` — opens the autocomplete.
 const MENTION_WORD = /(?:^|\s)(@[a-z0-9_]*)$/i;
-// Emoji picker temporarily hidden (per request); flip back to re-enable the button + popover.
-const SHOW_EMOJI = false;
 
 interface MentionState {
   query: string;
@@ -52,10 +54,40 @@ function detectMention(value: string, caret: number): MentionState | null {
   return { query: token.slice(1), start: caret - token.length, end: caret };
 }
 
+function ContextThumbnail({
+  message,
+  serverId,
+}: {
+  message: Pick<ChatReply, "gif" | "image">;
+  serverId: string;
+}) {
+  const src =
+    message.image !== undefined
+      ? chatImageViewUrl(serverId, message.image.id)
+      : message.gif?.previewUrl;
+  if (src === undefined) return null;
+  return (
+    <img
+      data-testid="composer-context-thumbnail"
+      src={src}
+      alt=""
+      className="size-10 shrink-0 rounded object-cover"
+    />
+  );
+}
+
 export function Composer({ serverId }: { serverId: string }) {
   const store = roomStore(serverId);
   const sendMessage = useStore(store, (s) => s.sendMessage);
   const members = useStore(store, (s) => s.members);
+  const messages = useStore(store, (s) => s.messages);
+  const replyingTo = useStore(store, (s) => s.replyingTo);
+  const setReplyingTo = useStore(store, (s) => s.setReplyingTo);
+  const editingMessageId = useStore(store, (s) => s.editingMessageId);
+  const historyWindow = useStore(store, (s) => s.historyWindow);
+  const hasNewerHistory = useStore(store, (s) => s.hasNewerHistory);
+  const startEditing = useStore(store, (s) => s.startEditing);
+  const editMessage = useStore(store, (s) => s.editMessage);
 
   const [value, setValue] = useState("");
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -77,7 +109,12 @@ export function Composer({ serverId }: { serverId: string }) {
   const rows = Math.min(MAX_ROWS, Math.max(1, value.split("\n").length));
   const overLimit = value.length > LIMITS.messageMaxChars;
   const showCounter = value.length > COUNTER_THRESHOLD;
-  const canSend = value.trim().length > 0 && !overLimit;
+  const editingMessage = messages.find((message) => message.id === editingMessageId);
+  const canSend =
+    !overLimit &&
+    (value.trim().length > 0 ||
+      (editingMessage !== undefined &&
+        (editingMessage.gif !== undefined || editingMessage.image !== undefined)));
   const autocompleteOpen = mention !== null && suggestions.length > 0;
 
   // Apply a queued caret position after the controlled value re-renders (mention pick / emoji
@@ -90,6 +127,19 @@ export function Composer({ serverId }: { serverId: string }) {
     ta.setSelectionRange(caret, caret);
     pendingCaret.current = null;
   }, [value]);
+
+  useEffect(() => {
+    if (editingMessageId === null) return;
+    const target = messages.find((message) => message.id === editingMessageId);
+    if (target === undefined) return;
+    setValue(target.body);
+    setReplyingTo(null);
+    textareaRef.current?.focus();
+  }, [editingMessageId, messages, setReplyingTo]);
+
+  useEffect(() => {
+    if (replyingTo !== null) textareaRef.current?.focus();
+  }, [replyingTo]);
 
   function onChange(event: ChangeEvent<HTMLTextAreaElement>): void {
     const next = event.target.value;
@@ -118,7 +168,8 @@ export function Composer({ serverId }: { serverId: string }) {
 
   function submit(): void {
     if (!canSend) return;
-    sendMessage(value);
+    if (editingMessageId !== null) editMessage(editingMessageId, value);
+    else sendMessage(value);
     setValue("");
     setMention(null);
   }
@@ -147,7 +198,21 @@ export function Composer({ serverId }: { serverId: string }) {
     setGifOpen(false);
   }
 
+  function cancelContext(): void {
+    if (editingMessageId !== null) {
+      startEditing(null);
+      setValue("");
+    }
+    if (replyingTo !== null) setReplyingTo(null);
+    setMention(null);
+  }
+
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
+    if (event.key === "Escape" && (replyingTo !== null || editingMessageId !== null)) {
+      event.preventDefault();
+      cancelContext();
+      return;
+    }
     if (autocompleteOpen) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -172,6 +237,23 @@ export function Composer({ serverId }: { serverId: string }) {
         return;
       }
     }
+    if (
+      event.key === "ArrowUp" &&
+      value.length === 0 &&
+      editingMessageId === null &&
+      historyWindow === "timeline" &&
+      !hasNewerHistory
+    ) {
+      const selfId = useSessionStore.getState().profile?.userId;
+      const latest = messages.findLast(
+        (message) => message.id > 0 && message.userId === selfId && message.deletedAt === undefined,
+      );
+      if (latest !== undefined) {
+        event.preventDefault();
+        startEditing(latest.id);
+        return;
+      }
+    }
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       submit();
@@ -189,63 +271,115 @@ export function Composer({ serverId }: { serverId: string }) {
       ) : null}
       <div className="flex flex-col gap-2">
         <div className="flex items-end gap-2">
-          {SHOW_EMOJI ? (
-            <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
-              <PopoverTrigger
-                data-testid="composer-emoji"
-                aria-label={m.chat_emoji_label()}
-                className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          <div
+            data-testid="composer-input-shell"
+            className="min-w-0 flex-1 overflow-hidden rounded-md border bg-transparent focus-within:ring-1 focus-within:ring-ring"
+          >
+            {replyingTo !== null ? (
+              <div
+                data-testid="composer-reply"
+                className="flex min-w-0 items-center gap-2 border-b border-l-2 border-l-primary bg-muted/60 px-2 py-1.5 text-xs"
               >
-                <SmileIcon className="size-5" />
-              </PopoverTrigger>
-              <PopoverContent
-                data-testid="emoji-popover"
-                align="start"
-                side="top"
-                className="w-[320px] p-0"
-              >
-                <EmojiPicker
-                  emojibaseUrl="/emojibase"
-                  onEmojiSelect={(picked) => insertEmoji(picked.emoji)}
-                  className="h-[352px]"
+                <ContextThumbnail message={replyingTo} serverId={serverId} />
+                <span className="min-w-0 flex-1 truncate">
+                  {m.chat_replying_to({ text: replyingTo.body || m.chat_attachment() })}
+                </span>
+                <button
+                  type="button"
+                  data-testid="composer-cancel-reply"
+                  aria-label={m.chat_cancel_reply()}
+                  onClick={cancelContext}
+                  className="shrink-0 rounded p-1 hover:bg-accent"
                 >
-                  <EmojiPickerSearch />
-                  <EmojiPickerContent />
-                  <EmojiPickerFooter />
-                </EmojiPicker>
-              </PopoverContent>
-            </Popover>
-          ) : null}
-          <textarea
-            ref={textareaRef}
-            data-testid="composer-input"
-            value={value}
-            rows={rows}
-            onChange={onChange}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-            placeholder={m.chat_composer_placeholder()}
-            className="min-h-9 flex-1 resize-none rounded-md border bg-transparent px-3 py-1.5 text-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          />
+                  <XIcon className="size-3.5" />
+                </button>
+              </div>
+            ) : null}
+            {editingMessage !== undefined ? (
+              <div
+                data-testid="composer-edit"
+                className="flex min-w-0 items-center gap-2 border-b border-l-2 border-l-amber-500 bg-muted/60 px-2 py-1.5 text-xs"
+              >
+                <ContextThumbnail message={editingMessage} serverId={serverId} />
+                <span className="min-w-0 flex-1">
+                  <span className="block font-medium">{m.chat_editing_message()}</span>
+                  <span className="block truncate text-muted-foreground">
+                    {editingMessage.body || m.chat_attachment()}
+                  </span>
+                </span>
+                <button
+                  type="button"
+                  data-testid="composer-cancel-edit"
+                  aria-label={m.chat_cancel_edit()}
+                  onClick={cancelContext}
+                  className="shrink-0 rounded p-1 hover:bg-accent"
+                >
+                  <XIcon className="size-3.5" />
+                </button>
+              </div>
+            ) : null}
+            <div className="relative">
+              <textarea
+                ref={textareaRef}
+                data-testid="composer-input"
+                value={value}
+                rows={rows}
+                onChange={onChange}
+                onKeyDown={onKeyDown}
+                onPaste={onPaste}
+                placeholder={m.chat_composer_placeholder()}
+                className="block min-h-9 w-full resize-none bg-transparent py-1.5 pr-10 pl-3 text-sm outline-none"
+              />
+              <Popover open={emojiOpen} onOpenChange={setEmojiOpen}>
+                <PopoverTrigger
+                  data-testid="composer-emoji"
+                  aria-label={m.chat_emoji_label()}
+                  className="absolute right-1 bottom-1 flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                >
+                  <SmileIcon className="size-4" />
+                </PopoverTrigger>
+                <PopoverContent
+                  data-testid="emoji-popover"
+                  align="end"
+                  side="top"
+                  className="w-[320px] p-0"
+                >
+                  <EmojiPicker
+                    emojibaseUrl="/emojibase"
+                    onEmojiSelect={(picked) => insertEmoji(picked.emoji)}
+                    className="h-[352px]"
+                  >
+                    <EmojiPickerSearch />
+                    <EmojiPickerContent />
+                    <EmojiPickerFooter />
+                  </EmojiPicker>
+                </PopoverContent>
+              </Popover>
+            </div>
+          </div>
         </div>
         <div className="flex items-center justify-between">
-          <Popover open={gifOpen} onOpenChange={setGifOpen}>
-            <PopoverTrigger
-              data-testid="composer-gif"
-              aria-label={m.chat_gif_label()}
-              className="flex h-8 items-center rounded-md px-2.5 text-xs font-bold text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-            >
-              {m.chat_gif_label()}
-            </PopoverTrigger>
-            <PopoverContent
-              data-testid="gif-popover"
-              align="start"
-              side="top"
-              className="w-[340px] p-0"
-            >
-              <GifPicker onPick={pickGif} />
-            </PopoverContent>
-          </Popover>
+          <div className="flex items-center gap-1">
+            <Popover open={gifOpen} onOpenChange={setGifOpen}>
+              <PopoverTrigger
+                data-testid="composer-gif"
+                aria-label={m.chat_gif_label()}
+                className="flex h-8 items-center rounded-md px-2.5 text-xs font-bold text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+              >
+                {m.chat_gif_label()}
+              </PopoverTrigger>
+              <PopoverContent
+                data-testid="gif-popover"
+                align="start"
+                side="top"
+                className="w-[340px] p-0"
+              >
+                <GifPicker onPick={pickGif} />
+              </PopoverContent>
+            </Popover>
+            <PointsButton serverId={serverId} />
+            <PollCreateButton serverId={serverId} />
+          </div>
           <div className="flex items-center gap-2">
             {uploading ? (
               <span
@@ -263,7 +397,7 @@ export function Composer({ serverId }: { serverId: string }) {
               disabled={!canSend}
               onClick={submit}
             >
-              {m.chat_composer_send()}
+              {editingMessageId === null ? m.chat_composer_send() : m.chat_save_edit()}
             </Button>
           </div>
         </div>

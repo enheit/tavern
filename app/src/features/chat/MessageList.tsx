@@ -1,80 +1,183 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { Spinner } from "@/components/ui/spinner";
+import { focusStore } from "@/lib/focusState";
+import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
 import { MessageRow } from "./MessageRow";
 
-// FR-14/17 scrolling message history. Sticks to the bottom while the user is at the bottom; a top
-// IntersectionObserver sentinel drives `loadOlder()` while `hasMoreHistory` (this also fetches the
-// FIRST page — `hello.ok` leaves `messages` empty). After a prepend the scroll position is restored
-// by the scrollHeight delta so the viewport does not jump.
 const BOTTOM_THRESHOLD_PX = 40;
 
-export function MessageList({ serverId }: { serverId: string }) {
+export function MessageList({ serverId, active = true }: { serverId: string; active?: boolean }) {
   const store = roomStore(serverId);
   const messages = useStore(store, (s) => s.messages);
   const members = useStore(store, (s) => s.members);
-  const hasMore = useStore(store, (s) => s.hasMoreHistory);
+  const hasOlder = useStore(store, (s) => s.hasOlderHistory);
+  const hasNewer = useStore(store, (s) => s.hasNewerHistory);
+  const initialized = useStore(store, (s) => s.historyInitialized);
+  const historyWindow = useStore(store, (s) => s.historyWindow);
+  const firstUnreadId = useStore(store, (s) => s.firstUnreadMessageId);
+  const unreadCount = useStore(store, (s) => s.unreadCount);
+  const scrollTarget = useStore(store, (s) => s.scrollToMessageId);
+  const scrollTargetToken = useStore(store, (s) => s.scrollToMessageToken);
+  const scrollToBottomToken = useStore(store, (s) => s.scrollToBottomToken);
+  const loadInitial = useStore(store, (s) => s.loadInitial);
   const loadOlder = useStore(store, (s) => s.loadOlder);
+  const loadNewer = useStore(store, (s) => s.loadNewer);
+  const loadLatest = useStore(store, (s) => s.loadLatest);
+  const jumpToUnread = useStore(store, (s) => s.jumpToUnread);
+  const markRead = useStore(store, (s) => s.markRead);
+  const setReplyingTo = useStore(store, (s) => s.setReplyingTo);
+  const startEditing = useStore(store, (s) => s.startEditing);
+  const deleteMessage = useStore(store, (s) => s.deleteMessage);
+  const setReaction = useStore(store, (s) => s.setReaction);
+  const focused = useStore(focusStore, (s) => s.focused);
   const self = useSessionStore((s) => s.profile);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const topSentinelRef = useRef<HTMLDivElement | null>(null);
+  const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
-  const loadingRef = useRef(false);
-  const prependRef = useRef<number | null>(null);
+  const loadingOlderRef = useRef(false);
+  const loadingNewerRef = useRef(false);
+  const prependHeightRef = useRef<number | null>(null);
+  const seenUnreadRef = useRef(new Set<number>());
+  const handledTargetTokenRef = useRef(0);
+  const handledBottomTokenRef = useRef(0);
+  const initialRequestedRef = useRef(false);
+  const [atBottom, setAtBottom] = useState(true);
 
-  const memberById = useMemo(() => new Map(members.map((mem) => [mem.userId, mem])), [members]);
-
-  const onScroll = useCallback(() => {
-    const el = scrollRef.current;
-    if (el === null) return;
-    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_THRESHOLD_PX;
-  }, []);
+  const memberById = useMemo(
+    () => new Map(members.map((member) => [member.userId, member])),
+    [members],
+  );
+  const latestOwnId = useMemo(
+    () =>
+      messages.findLast(
+        (message) =>
+          message.id > 0 && message.userId === self?.userId && message.deletedAt === undefined,
+      )?.id ?? null,
+    [messages, self?.userId],
+  );
 
   useEffect(() => {
-    const el = scrollRef.current;
-    const sentinel = sentinelRef.current;
-    if (el === null || sentinel === null || !hasMore) return;
-    const io = new IntersectionObserver(
+    if (!initialized && !initialRequestedRef.current) {
+      initialRequestedRef.current = true;
+      loadInitial();
+    }
+    if (initialized) initialRequestedRef.current = false;
+  }, [initialized, loadInitial]);
+
+  const updateReadState = useCallback(() => {
+    const container = scrollRef.current;
+    if (!active || !focused || container === null || firstUnreadId === null) return;
+    const firstIndex = messages.findIndex((message) => message.id === firstUnreadId);
+    if (firstIndex < 0) return;
+    const containerRect = container.getBoundingClientRect();
+    for (const message of messages.slice(firstIndex)) {
+      const row = container.querySelector<HTMLElement>(`[data-message-id="${message.id}"]`);
+      if (row === null) continue;
+      const rect = row.getBoundingClientRect();
+      const visible = rect.bottom > containerRect.top && rect.top < containerRect.bottom;
+      if (visible) seenUnreadRef.current.add(message.id);
+    }
+
+    let frontier: number | null = null;
+    for (const message of messages.slice(firstIndex)) {
+      if (message.userId === self?.userId || message.deletedAt !== undefined) {
+        frontier = message.id;
+        continue;
+      }
+      if (!seenUnreadRef.current.has(message.id)) break;
+      frontier = message.id;
+    }
+    if (frontier !== null) markRead(frontier);
+  }, [active, firstUnreadId, focused, markRead, messages, self?.userId]);
+
+  const onScroll = useCallback(() => {
+    const element = scrollRef.current;
+    if (element === null) return;
+    const nextAtBottom =
+      element.scrollHeight - element.scrollTop - element.clientHeight < BOTTOM_THRESHOLD_PX;
+    atBottomRef.current = nextAtBottom;
+    setAtBottom(nextAtBottom);
+    updateReadState();
+  }, [updateReadState]);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    const top = topSentinelRef.current;
+    const bottom = bottomSentinelRef.current;
+    if (root === null || top === null || bottom === null) return;
+    const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting !== true) return;
-        if (loadingRef.current) return;
-        loadingRef.current = true;
-        prependRef.current = el.scrollHeight;
-        void loadOlder();
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          if (entry.target === top && hasOlder && !loadingOlderRef.current) {
+            loadingOlderRef.current = true;
+            prependHeightRef.current = root.scrollHeight;
+            void loadOlder();
+          }
+          if (entry.target === bottom && hasNewer && !loadingNewerRef.current) {
+            loadingNewerRef.current = true;
+            void loadNewer();
+          }
+        }
       },
-      { root: el, threshold: 0 },
+      { root, threshold: 0 },
     );
-    io.observe(sentinel);
-    return () => io.disconnect();
-  }, [hasMore, loadOlder]);
+    observer.observe(top);
+    observer.observe(bottom);
+    return () => observer.disconnect();
+  }, [hasNewer, hasOlder, loadNewer, loadOlder]);
 
   useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el === null) return;
-    const prevHeight = prependRef.current;
-    if (prevHeight !== null) {
-      // A prepend just landed — keep the same messages under the viewport.
-      el.scrollTop += el.scrollHeight - prevHeight;
-      prependRef.current = null;
-      loadingRef.current = false;
-    } else if (atBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
+    const element = scrollRef.current;
+    if (element === null) return;
+    const previousHeight = prependHeightRef.current;
+    if (previousHeight !== null) {
+      element.scrollTop += element.scrollHeight - previousHeight;
+      prependHeightRef.current = null;
+      loadingOlderRef.current = false;
     }
-  }, [messages]);
+    loadingNewerRef.current = false;
+
+    if (active && scrollTarget !== null && handledTargetTokenRef.current !== scrollTargetToken) {
+      const target = element.querySelector<HTMLElement>(`[data-message-id="${scrollTarget}"]`);
+      if (target !== null) {
+        target.scrollIntoView({ block: "center" });
+        target.dataset.highlighted = "true";
+        target.addEventListener(
+          "animationend",
+          () => {
+            delete target.dataset.highlighted;
+          },
+          { once: true },
+        );
+        handledTargetTokenRef.current = scrollTargetToken;
+      }
+    } else if (handledBottomTokenRef.current !== scrollToBottomToken) {
+      element.scrollTop = element.scrollHeight;
+      atBottomRef.current = true;
+      setAtBottom(true);
+      handledBottomTokenRef.current = scrollToBottomToken;
+    } else if (active && atBottomRef.current) {
+      element.scrollTop = element.scrollHeight;
+    }
+    updateReadState();
+  }, [active, messages, scrollTarget, scrollTargetToken, scrollToBottomToken, updateReadState]);
 
   return (
-    <div data-testid="message-list" className="flex min-h-0 flex-1 flex-col">
+    <div data-testid="message-list" className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollRef}
         data-testid="message-scroll"
         onScroll={onScroll}
         className="min-h-0 flex-1 overflow-y-auto py-2"
       >
-        <div ref={sentinelRef} data-testid="message-top-sentinel" className="h-px w-full" />
-        {hasMore ? (
+        <div ref={topSentinelRef} data-testid="message-top-sentinel" className="h-px w-full" />
+        {hasOlder ? (
           <div className="flex justify-center py-1 text-muted-foreground">
             <Spinner />
           </div>
@@ -85,13 +188,62 @@ export function MessageList({ serverId }: { serverId: string }) {
               key={message.id}
               message={message}
               member={memberById.get(message.userId)}
+              replyMember={message.reply ? memberById.get(message.reply.userId) : undefined}
+              members={members}
               selfUserId={self?.userId}
               selfUsername={self?.username}
               serverId={serverId}
+              showUnreadDivider={message.id === firstUnreadId}
+              canEdit={message.id === latestOwnId && historyWindow === "timeline" && !hasNewer}
+              onReply={() =>
+                setReplyingTo({
+                  id: message.id,
+                  userId: message.userId,
+                  body: message.body,
+                  deleted: message.deletedAt !== undefined,
+                  ...(message.gif === undefined ? {} : { gif: message.gif }),
+                  ...(message.image === undefined ? {} : { image: message.image }),
+                })
+              }
+              onEdit={() => startEditing(message.id)}
+              onDelete={() => deleteMessage(message.id)}
+              onJumpToReply={() =>
+                message.reply && store.getState().jumpToMessage(message.reply.id)
+              }
+              onSetReaction={(emoji, reacted) => setReaction(message.id, emoji, reacted)}
             />
           ))}
         </ul>
+        {hasNewer ? (
+          <div className="flex justify-center py-1 text-muted-foreground">
+            <Spinner />
+          </div>
+        ) : null}
+        <div
+          ref={bottomSentinelRef}
+          data-testid="message-bottom-sentinel"
+          className="h-px w-full"
+        />
       </div>
+      {unreadCount > 0 && !atBottom ? (
+        <button
+          type="button"
+          data-testid="new-message-capsule"
+          onClick={jumpToUnread}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-red-600 px-3 py-1.5 text-xs font-semibold text-white shadow-lg"
+        >
+          {m.chat_new_messages_count({ n: unreadCount })}
+        </button>
+      ) : historyWindow === "around" ? (
+        <button
+          type="button"
+          data-testid="back-to-latest"
+          onClick={loadLatest}
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-foreground px-3 py-1.5 text-xs font-semibold text-background shadow-lg"
+        >
+          {m.chat_back_to_latest()}
+        </button>
+      ) : null}
     </div>
   );
 }

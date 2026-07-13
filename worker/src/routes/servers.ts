@@ -6,7 +6,10 @@ import {
   JoinServerRequest,
   LIMITS,
   PatchServerRequest,
+  PointConfig,
+  PollPage,
   StatsResponse,
+  TavernHomeResponse,
 } from "@tavern/shared";
 import type { ErrorCode, MemberInit, ServerSummary, UserProfile } from "@tavern/shared";
 import { requireAdmin, requireAuth, requireMember, zodJson } from "../middleware";
@@ -423,6 +426,10 @@ const ActivityQuery = z.object({
   before: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().optional(),
 });
+const PollQuery = z.object({
+  before: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().positive().optional(),
+});
 
 // GET /api/servers/:id/activity?before&limit (FR-39): member-gated read proxied to the DO (reads that
 // don't need a push are HTTP, §6.1). The DO owns pagination; the Worker validates the response against
@@ -447,6 +454,36 @@ serversRoute.get("/:id/activity", requireMember, async (c) => {
   return c.json(ActivityPage.parse(page));
 });
 
+serversRoute.get("/:id/polls", requireMember, async (c) => {
+  const query = PollQuery.safeParse({
+    before: c.req.query("before"),
+    limit: c.req.query("limit"),
+  });
+  if (!query.success) {
+    return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  }
+  const userId = invariant(c.var.userId, "requireMember guarantees userId");
+  const params = new URLSearchParams({ userId });
+  if (query.data.before !== undefined) params.set("before", String(query.data.before));
+  if (query.data.limit !== undefined) params.set("limit", String(query.data.limit));
+  const stub = c.env.SERVER_ROOM.get(c.env.SERVER_ROOM.idFromName(c.var.serverId));
+  const res = await stub.fetch(`https://do.internal/internal/polls?${params.toString()}`, {
+    headers: { "X-Tavern-Internal": "1" },
+  });
+  const page: unknown = await res.json();
+  return c.json(PollPage.parse(page));
+});
+
+// GET /api/servers/:id/home: member-gated bounded recap for the idle center canvas.
+serversRoute.get("/:id/home", requireMember, async (c) => {
+  const stub = c.env.SERVER_ROOM.get(c.env.SERVER_ROOM.idFromName(c.var.serverId));
+  const res = await stub.fetch("https://do.internal/internal/home", {
+    headers: { "X-Tavern-Internal": "1" },
+  });
+  const body: unknown = await res.json();
+  return c.json(TavernHomeResponse.parse(body));
+});
+
 // GET /api/servers/:id/stats (FR-40): member-gated snapshot proxied to the DO. The DO computes the
 // server-authoritative stats (§6.1); the Worker validates the DO→Worker boundary against the shared
 // `StatsResponse` schema (§9.8).
@@ -458,3 +495,25 @@ serversRoute.get("/:id/stats", requireMember, async (c) => {
   const stats: unknown = await res.json();
   return c.json(StatsResponse.parse(stats));
 });
+
+// PUT /api/servers/:id/points/config: the server admin owns this server's economy. The Worker
+// authenticates + authorizes against D1, then the room DO settles the old rates and atomically
+// installs the new configuration before notifying connected members.
+serversRoute.put(
+  "/:id/points/config",
+  requireMember,
+  requireAdmin,
+  zodJson(PointConfig),
+  async (c) => {
+    const userId = invariant(c.var.userId, "requireAdmin guarantees userId");
+    const config = PointConfig.parse(await c.req.json());
+    const stub = c.env.SERVER_ROOM.get(c.env.SERVER_ROOM.idFromName(c.var.serverId));
+    const res = await stub.fetch("https://do.internal/internal/points/config", {
+      method: "PUT",
+      headers: { "content-type": "application/json", "X-Tavern-Internal": "1" },
+      body: JSON.stringify({ userId, config }),
+    });
+    const body: unknown = await res.json();
+    return c.json(PointConfig.parse(body));
+  },
+);

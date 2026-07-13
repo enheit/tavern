@@ -3,6 +3,7 @@ import { EyeIcon, HeadphoneOffIcon, MicOffIcon, MonitorUpIcon, VideoIcon } from 
 import { useState } from "react";
 import { useStore } from "zustand";
 import { useVolumeScroll } from "@/features/volume/useVolumeScroll";
+import { UserProfileName } from "@/features/users/UserProfileName";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { useMediaStore } from "@/stores/media";
@@ -81,9 +82,7 @@ export function VoiceMemberChip({ serverId, member }: { serverId: string; member
       {/* Name + its transient volume echo share the flexible column so the name still truncates and
           the percent sits immediately to its right (shown only just after a scroll notch, then fades). */}
       <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        <span className="min-w-0 truncate" style={{ color }}>
-          {displayName}
-        </span>
+        {profile ? <UserProfileName serverId={serverId} member={profile} /> : null}
         {percent !== null && (
           <span
             data-testid={`voice-volume-pct-${member.userId}`}

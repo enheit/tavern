@@ -93,6 +93,8 @@ function makeIpc(): TavernIpc {
     shell: {
       setBadge: vi.fn(async () => undefined),
       focusWindow: vi.fn(async () => undefined),
+      getCloseToTray: vi.fn(async () => true),
+      setCloseToTray: vi.fn(async () => undefined),
     },
   };
 }
@@ -119,8 +121,15 @@ describe("platform/electron", () => {
     expect(ipc.shell.setBadge).toHaveBeenCalledWith(5);
     p.shell.focusWindow();
     expect(ipc.shell.focusWindow).toHaveBeenCalled();
+    expect(await p.shell.closeBehavior?.getCloseToTray()).toBe(true);
+    await p.shell.closeBehavior?.setCloseToTray(false);
+    expect(ipc.shell.setCloseToTray).toHaveBeenCalledWith(false);
     p.updates.restartToUpdate();
     expect(ipc.updates.restartToUpdate).toHaveBeenCalled();
+  });
+
+  it("does not expose desktop close behavior through the web bridge", () => {
+    expect(createWebPlatform().shell.closeBehavior).toBeNull();
   });
 
   it("fans notification-click and update-ready callbacks out with unsubscribe", () => {

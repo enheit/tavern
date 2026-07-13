@@ -4,6 +4,7 @@ import {
   notificationArgSchema,
   selectSourceArgSchema,
   setBadgeArgSchema,
+  setCloseToTrayArgSchema,
   setTokenArgSchema,
 } from "@tavern/shared";
 import type { ScreenAccessStatus, ScreenSource } from "@tavern/shared";
@@ -28,6 +29,8 @@ export interface IpcServices {
   shell: {
     setBadge(count: number | null): void | Promise<void>;
     focusWindow(): void | Promise<void>;
+    getCloseToTray(): boolean | Promise<boolean>;
+    setCloseToTray(value: boolean): void | Promise<void>;
   };
 }
 
@@ -97,5 +100,13 @@ export function registerIpc(services: IpcServices): void {
   ipcMain.handle("shell:focusWindow", async (event) => {
     assertTrustedSender(event);
     return services.shell.focusWindow();
+  });
+  ipcMain.handle("shell:getCloseToTray", async (event) => {
+    assertTrustedSender(event);
+    return services.shell.getCloseToTray();
+  });
+  ipcMain.handle("shell:setCloseToTray", async (event, arg: unknown) => {
+    assertTrustedSender(event);
+    return services.shell.setCloseToTray(setCloseToTrayArgSchema.parse(arg));
   });
 }

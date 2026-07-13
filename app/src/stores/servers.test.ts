@@ -27,9 +27,31 @@ function seedRoom(serverId: string, nickname: string): void {
     streams: [],
     recording: { active: false },
     lastMessageId: null,
+    lastReadMessageId: 0,
+    firstUnreadMessageId: null,
+    unreadCount: 0,
     costStatus: { usedGB: 0, capGB: 900, blocked: false },
+    polls: [],
+    points: testPoints(),
   };
   roomStore(serverId).getState().apply(hello);
+}
+
+function testPoints() {
+  return {
+    balance: 0,
+    pendingPollWinnings: 0,
+    currentRatePerMinute: 0,
+    activeSources: [],
+    today: { day: "2026-07-13", conversation: 0, streaming: 0, watching: 0, total: 0 },
+    config: {
+      enabled: true,
+      basePointsPerMinute: 5,
+      streamerBonusPerMinute: 5,
+      watcherBonusPerMinute: 5,
+      dailyCap: null,
+    },
+  };
 }
 
 beforeEach(() => {

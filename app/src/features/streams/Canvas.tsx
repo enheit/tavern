@@ -7,7 +7,6 @@ import { captureStreamScreenshot } from "@/features/screenshots/captureScreensho
 import { m } from "@/paraglide/messages.js";
 import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
-import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
 import { StreamTile } from "./StreamTile";
 import { isWatchingTrack } from "./useWatch";
@@ -36,14 +35,9 @@ function isInteractiveTarget(el: EventTarget | null): boolean {
 // re-measured with a ResizeObserver. FR-33 focus mode is a SEPARATE flex-column layout (the focused
 // tile fills the top; every other stream sits below it as a thumbnail in a horizontal filmstrip —
 // click a thumbnail to promote it to main) — never a computeLayout case. Tile order is trackName
-// ascending (stable). Store-driven: reads the active server's streams + focus.
-export function Canvas() {
-  const serverId = useServersStore((s) => s.activeServerId);
-  if (serverId === null) return <div data-testid="canvas" className="h-full w-full" />;
-  return <CanvasInner serverId={serverId} />;
-}
-
-function CanvasInner({ serverId }: { serverId: string }) {
+// ascending (stable). WorkspaceTabs owns navigation and tells the canvas whether its shortcuts are
+// active; the canvas itself owns only stream presentation.
+export function Canvas({ serverId, active }: { serverId: string; active: boolean }) {
   const store = roomStore(serverId);
   const streams = useStore(store, (s) => s.streams);
   const focusedTrackName = useStore(store, (s) => s.focusedTrackName);
@@ -98,6 +92,7 @@ function CanvasInner({ serverId }: { serverId: string }) {
         else if (focusedTrackName !== null) setFocused(null);
         return;
       }
+      if (!active) return;
       if (e.key === "f" || e.key === "F") {
         if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || isTypingTarget(e.target)) return;
         e.preventDefault();
@@ -151,6 +146,7 @@ function CanvasInner({ serverId }: { serverId: string }) {
     serverId,
     setFullscreen,
     setFocused,
+    active,
   ]);
 
   const sorted = [...streams].toSorted((a, b) => a.trackName.localeCompare(b.trackName));
@@ -186,79 +182,76 @@ function CanvasInner({ serverId }: { serverId: string }) {
     );
   }
 
-  if (sorted.length === 0) return <div ref={ref} data-testid="canvas" className="h-full w-full" />;
-
-  if (focusedStream) {
-    const others = sorted.filter((s) => s.trackName !== focusedStream.trackName);
-    return (
-      <div
-        ref={ref}
-        data-testid="canvas"
-        data-focused="true"
-        className="flex h-full w-full flex-col gap-2 p-2"
-      >
-        {/* Main stream fills the space above the strip. Clicking it escalates to theater fullscreen
-            (same as `f` / the tile's maximize button); clicking the fullscreen stream drops back here —
-            click cycles main ↔ fullscreen. Esc (or a thumbnail click) is the way back to the grid. */}
-        <div className="min-h-0 min-w-0 flex-1">
-          <StreamTile
-            stream={focusedStream}
-            selfStream={selfStreamFor(focusedStream.trackName)}
-            onToggleFocus={() => setFullscreen(focusedStream.trackName)}
-            onToggleFullscreen={() => setFullscreen(focusedStream.trackName)}
-          />
-        </div>
-        {/* Every OTHER stream as a thumbnail in a horizontal filmstrip below the main tile. Clicking a
-            thumbnail promotes it to main (FR-33). Tiles stay mounted, so their watch pulls stay live —
-            no re-pull, and no re-Watch when returning to the grid. */}
-        {others.length > 0 && (
-          <div data-testid="focus-strip" className="flex h-28 shrink-0 gap-2 overflow-x-auto">
-            {others.map((s) => (
-              <div key={s.trackName} className="aspect-video h-full shrink-0">
-                <StreamTile
-                  stream={s}
-                  selfStream={selfStreamFor(s.trackName)}
-                  onToggleFocus={() => setFocused(s.trackName)}
-                  onToggleFullscreen={() => setFullscreen(s.trackName)}
-                />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  const { rows } = computeLayout(sorted.length, size.w, size.h);
+  const others =
+    focusedStream === undefined
+      ? []
+      : sorted.filter((stream) => stream.trackName !== focusedStream.trackName);
   const cells: StreamInfo[][] = [];
-  let idx = 0;
-  for (const count of rows) {
-    cells.push(sorted.slice(idx, idx + count));
-    idx += count;
+  if (sorted.length > 0 && focusedStream === undefined) {
+    const { rows } = computeLayout(sorted.length, size.w, size.h);
+    let index = 0;
+    for (const count of rows) {
+      cells.push(sorted.slice(index, index + count));
+      index += count;
+    }
   }
 
   return (
-    <div ref={ref} data-testid="canvas" className="flex h-full w-full flex-col gap-2 p-2">
-      {cells.map((rowStreams, r) => (
-        <div
-          key={rowStreams[0]?.trackName ?? String(r)}
-          data-testid={`canvas-row-${r}`}
-          className="grid min-h-0 flex-1 gap-2"
-          style={{ gridTemplateColumns: `repeat(${rowStreams.length}, minmax(0, 1fr))` }}
-        >
-          {rowStreams.map((s) => (
+    <div
+      ref={ref}
+      data-testid="canvas"
+      data-focused={focusedStream === undefined ? undefined : "true"}
+      className="flex h-full min-h-0 w-full flex-col gap-2 p-2"
+    >
+      {focusedStream === undefined ? (
+        cells.map((rowStreams, rowIndex) => (
+          <div
+            key={rowStreams[0]?.trackName ?? String(rowIndex)}
+            data-testid={`canvas-row-${rowIndex}`}
+            className="grid min-h-0 flex-1 gap-2"
+            style={{ gridTemplateColumns: `repeat(${rowStreams.length}, minmax(0, 1fr))` }}
+          >
+            {rowStreams.map((stream) => (
+              <StreamTile
+                key={stream.trackName}
+                stream={stream}
+                selfStream={selfStreamFor(stream.trackName)}
+                onToggleFocus={() =>
+                  setFocused(focusedTrackName === stream.trackName ? null : stream.trackName)
+                }
+                onToggleFullscreen={() => setFullscreen(stream.trackName)}
+              />
+            ))}
+          </div>
+        ))
+      ) : (
+        <>
+          {/* Main stream fills the space above the strip. Clicking it escalates to theater fullscreen
+              (same as `f` / the tile's maximize button); clicking the fullscreen stream drops back here. */}
+          <div className="min-h-0 min-w-0 flex-1">
             <StreamTile
-              key={s.trackName}
-              stream={s}
-              selfStream={selfStreamFor(s.trackName)}
-              onToggleFocus={() =>
-                setFocused(focusedTrackName === s.trackName ? null : s.trackName)
-              }
-              onToggleFullscreen={() => setFullscreen(s.trackName)}
+              stream={focusedStream}
+              selfStream={selfStreamFor(focusedStream.trackName)}
+              onToggleFocus={() => setFullscreen(focusedStream.trackName)}
+              onToggleFullscreen={() => setFullscreen(focusedStream.trackName)}
             />
-          ))}
-        </div>
-      ))}
+          </div>
+          {others.length > 0 ? (
+            <div data-testid="focus-strip" className="flex h-28 shrink-0 gap-2 overflow-x-auto">
+              {others.map((stream) => (
+                <div key={stream.trackName} className="aspect-video h-full shrink-0">
+                  <StreamTile
+                    stream={stream}
+                    selfStream={selfStreamFor(stream.trackName)}
+                    onToggleFocus={() => setFocused(stream.trackName)}
+                    onToggleFullscreen={() => setFullscreen(stream.trackName)}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

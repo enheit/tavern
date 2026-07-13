@@ -52,7 +52,7 @@ async function bootPair(browser: Browser, baseURL: string | undefined, api: Api)
   const openedA = await pageFor(browser, baseURL, a);
   const openedB = await pageFor(browser, baseURL, b);
   await Promise.all([bootOnto(openedA, server.id), bootOnto(openedB, server.id)]);
-  // Both sockets live: each sees the other in the People tab (restored to Chat afterward).
+  // Both sockets live: each sees the other on Dashboard while Chat remains persistent.
   await expectMemberVisible(openedA.page, b.userId);
   await expectMemberVisible(openedB.page, a.userId);
   return { a, b, server, openedA, openedB };

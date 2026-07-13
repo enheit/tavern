@@ -214,6 +214,17 @@ describe("PublishSession lifecycle", () => {
     port.last().setConnectionState("failed");
     expect(session.state).toBe("failed");
   });
+
+  it("requests a rebuild after disconnected reconnects without reaching failed", async () => {
+    await connect();
+    const recoveryNeeded = vi.fn();
+    session.onConnectionRecoveryNeeded(recoveryNeeded);
+
+    port.last().setConnectionState("disconnected");
+    expect(recoveryNeeded).not.toHaveBeenCalled();
+    port.last().setConnectionState("connected");
+    expect(recoveryNeeded).toHaveBeenCalledTimes(1);
+  });
 });
 
 // Task-2 (d): the published mic targets Opus 64 kbps — fmtp maxaveragebitrate in the applied

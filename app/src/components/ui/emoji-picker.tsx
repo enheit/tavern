@@ -18,7 +18,7 @@ function EmojiPicker({
   return (
     <EmojiPickerPrimitive.Root
       className={cn(
-        "isolate flex h-full w-fit flex-col overflow-hidden rounded-md bg-popover text-popover-foreground",
+        "isolate flex h-full w-full flex-col overflow-hidden rounded-md bg-popover text-popover-foreground",
         className,
       )}
       data-slot="emoji-picker"
@@ -59,7 +59,7 @@ function EmojiPickerEmoji({ emoji, className, ...props }: EmojiPickerListEmojiPr
     <button
       {...props}
       className={cn(
-        "flex size-7 items-center justify-center rounded-sm text-base data-[active]:bg-accent",
+        "flex h-9 flex-1 items-center justify-center rounded-sm text-xl data-[active]:bg-accent",
         className,
       )}
       data-slot="emoji-picker-emoji"

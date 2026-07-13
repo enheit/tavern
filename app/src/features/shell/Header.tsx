@@ -23,7 +23,7 @@ import { useSessionStore } from "@/stores/session";
 
 // The pinned header (§7.6): server switcher (left), spacer, connection dot, user menu. Every child is
 // driven by a store selector — no props.
-export function Header() {
+export function Header({ serverId }: { serverId: string }) {
   return (
     <header
       data-testid="app-header"
@@ -41,7 +41,7 @@ export function Header() {
         <UpdatePill />
         <AdminSettings />
         <ConnectionDot />
-        <UserMenu />
+        <UserMenu serverId={serverId} />
       </div>
     </header>
   );
@@ -156,7 +156,7 @@ function ConnectionDot() {
 }
 
 // FR-11 client-side logout + the FR-16/settings entry point (opens the controlled SettingsDialog).
-function UserMenu() {
+function UserMenu({ serverId }: { serverId: string }) {
   const { logout } = useAuth();
   const profile = useSessionStore((s) => s.profile);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -209,7 +209,7 @@ function UserMenu() {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <SettingsDialog serverId={serverId} open={settingsOpen} onOpenChange={setSettingsOpen} />
     </>
   );
 }

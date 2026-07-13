@@ -35,6 +35,12 @@ export const ERROR_CODES = [
   "bad_trim",
   "bad_part_size",
   "recording_too_long",
+  "poll_closed",
+  "poll_limit",
+  "already_bid",
+  "insufficient_points",
+  "correction_expired",
+  "correction_used",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

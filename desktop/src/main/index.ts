@@ -15,11 +15,12 @@ import { registerIpc } from "./ipc";
 import type { IpcServices } from "./ipc";
 import { setupNotifications, showNotification } from "./notifications";
 import { registerPermissions } from "./permissions";
+import { getCloseToTray, initializePreferences, setCloseToTray } from "./preferences";
 import { registerAppProtocolHandler, registerAppScheme } from "./protocol";
 import { getToken, setToken } from "./secrets";
 import { markQuitting } from "./lifecycle";
 import { acquireSingleInstanceLock } from "./singleInstance";
-import { createTray, destroyTray } from "./tray";
+import { createTray, destroyTray, setTrayUnread } from "./tray";
 import { initUpdates, restartToUpdate } from "./updates";
 import { shutdownVenmic } from "./venmic";
 import { createWindow, focusMainWindow, setAppBadge, showMainWindow } from "./window";
@@ -41,10 +42,13 @@ function buildServices(): IpcServices {
     shell: {
       setBadge: (count) => {
         setAppBadge(count);
+        setTrayUnread(count ?? 0);
       },
       focusWindow: () => {
         focusMainWindow();
       },
+      getCloseToTray,
+      setCloseToTray,
     },
   };
 }
@@ -58,9 +62,8 @@ if (!acquireSingleInstanceLock()) {
 } else {
   registerAppScheme();
 
-  // Close-to-tray gate: the window's close handler swallows normal closes into a hide-to-tray, so
-  // every genuine quit (tray "Exit", Cmd+Q, auto-update quitAndInstall) must announce itself here
-  // first — `before-quit` fires ahead of window close on all of those paths.
+  // Every genuine quit (tray "Exit", Cmd+Q, auto-update quitAndInstall) announces itself before the
+  // window close handler evaluates the user's close-to-tray preference.
   app.on("before-quit", () => {
     markQuitting();
   });
@@ -80,6 +83,7 @@ if (!acquireSingleInstanceLock()) {
   });
 
   void app.whenReady().then(() => {
+    initializePreferences();
     // Dev runs the stock Electron binary whose bundle supplies the Dock icon; build/icon.png is
     // only applied by electron-builder at package time, so in dev set the Dock icon at runtime.
     if (!app.isPackaged && process.platform === "darwin") {

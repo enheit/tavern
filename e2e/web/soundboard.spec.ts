@@ -52,23 +52,19 @@ async function seedRoom(
       await page.goto(`/?e2e=1`);
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
       await expect(page.getByTestId("controls-bar")).toBeVisible();
-      // The soundboard temporarily lives as a tab (moved out from under the chat) — the panel
-      // mounts only once the tab is selected, so boot-readiness gates on the trigger instead.
-      await expect(page.getByTestId("tab-soundboard")).toBeVisible();
+      await expect(page.getByTestId("workspace-tab-soundboard")).toBeVisible();
       return { user, context, page };
     }),
   );
   await Promise.all(
     clients.map(async (client) => {
-      await client.page.getByTestId("tab-people").click();
       await Promise.all(
         clients
           .filter((other) => other.user.userId !== client.user.userId)
           .map((other) =>
-            expect(client.page.getByTestId(`member-${other.user.userId}`)).toBeVisible(),
+            expect(client.page.getByTestId(`home-member-${other.user.userId}`)).toBeVisible(),
           ),
       );
-      await client.page.getByTestId("tab-chat").click();
     }),
   );
   return { serverId: server.id, clients };
@@ -96,7 +92,7 @@ async function joinVoice(client: Client): Promise<void> {
 // Selects the soundboard tab and waits for the panel to mount (its content unmounts when another
 // tab is active, so every soundboard interaction must run behind this).
 async function openSoundboard(client: Client): Promise<void> {
-  await client.page.getByTestId("tab-soundboard").click();
+  await client.page.getByTestId("workspace-tab-soundboard").click();
   await expect(client.page.getByTestId("soundboard-panel")).toBeVisible();
 }
 

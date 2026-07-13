@@ -3,9 +3,8 @@ import { expect, expectMemberVisible, test } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL, WORKER_URL } from "../playwright.config";
 
-// FR-39 Activity tab, live path: A's voice join/leave (driven at the WS protocol level, since the
-// voice UI is a later step) must appear in B's open Activity tab without a refresh, newest-first,
-// with A's displayName interpolated. B is the real browser under test; A is a bare protocol client.
+// Tavern Home presence path: A's connection and voice state are driven at the WS protocol level.
+// B is the real browser under test; A is a bare protocol client.
 
 interface VoiceWs {
   send(frame: { t: string }): void;
@@ -59,8 +58,8 @@ async function ticketFor(user: SeededUser, serverId: string): Promise<string> {
   return WsTicketResponse.parse(await res.json()).ticket;
 }
 
-test.describe("FR-39 activity e2e", () => {
-  test("voice join and leave by A appear live in B activity tab without refresh", async ({
+test.describe("Tavern Home live presence", () => {
+  test("voice join and leave by A update B's idle-center Home without refresh", async ({
     browser,
     baseURL,
     api,
@@ -78,32 +77,31 @@ test.describe("FR-39 activity e2e", () => {
     const page = await context.newPage();
     let voice: VoiceWs | null = null;
     try {
-      // B boots onto the server; seeing A in People proves B's snapshot + WebSocket are live (so B
+      // B boots onto the server; seeing A on Dashboard proves B's snapshot + WebSocket are live (so B
       // will receive A's activity.new broadcasts).
       await page.goto("/");
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
       await expectMemberVisible(page, a.userId);
 
-      // Open the Activity tab BEFORE A does anything — the rows must land live, not on refresh.
-      await page.getByTestId("tab-activity").click();
+      await expect(page.getByTestId("tavern-home")).toBeVisible();
+      await expect(page.getByText("The voice room is quiet", { exact: true })).toBeVisible();
+      await expect(page.getByTestId("home-members-offline")).toContainText(a.username);
 
       voice = await openVoiceWs(server.id, await ticketFor(a, server.id));
+      await expect(page.getByTestId("home-members-online")).toContainText(a.username);
 
-      // A joins voice → B sees the join row (A's displayName interpolated).
+      // A joins voice → B's live strip updates from the room snapshot.
       voice.send({ t: "voice.join" });
-      const joinText = `${a.username} joined voice`;
-      await expect(page.getByText(joinText, { exact: true })).toBeVisible({ timeout: 5000 });
-
-      // A leaves voice → B sees the leave row, newest-first (above the join row).
+      await expect(page.getByText("1 in voice", { exact: true })).toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId("home-live-avatars").getByTitle(a.username)).toBeVisible({
+        timeout: 5000,
+      });
+      // A leaves voice → the strip returns to its quiet state without a refresh.
       voice.send({ t: "voice.leave" });
-      const leaveText = `${a.username} left voice`;
-      await expect(page.getByText(leaveText, { exact: true })).toBeVisible({ timeout: 5000 });
-
-      const texts = await page.getByTestId("activity-row").allTextContents();
-      const leaveIdx = texts.findIndex((t) => t.includes(leaveText));
-      const joinIdx = texts.findIndex((t) => t.includes(joinText));
-      expect(leaveIdx).toBeGreaterThanOrEqual(0);
-      expect(joinIdx).toBeGreaterThan(leaveIdx); // leave is newer → rendered above join
+      await expect(page.getByText("The voice room is quiet", { exact: true })).toBeVisible({
+        timeout: 5000,
+      });
+      await expect(page.getByTestId("home-members-online")).toContainText(a.username);
     } finally {
       voice?.close();
       await context.close();

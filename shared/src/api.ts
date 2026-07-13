@@ -1,7 +1,16 @@
 import { z } from "zod";
 import { LIMITS } from "./limits";
 import { errorCodeSchema } from "./errors";
-import { UserProfile, UserSettings, ServerSummary, ActivityEntry, GifAttachment } from "./domain";
+import {
+  UserProfile,
+  UserSettings,
+  ServerSummary,
+  ActivityEntry,
+  GifAttachment,
+  PointConfig,
+  Poll,
+  PollParticipantResult,
+} from "./domain";
 
 const atLeastOneKey = (o: object) => Object.keys(o).length >= 1;
 
@@ -61,6 +70,18 @@ export const PatchServerRequest = z
   })
   .refine(atLeastOneKey, { message: "bad_request" });
 export type PatchServerRequest = z.infer<typeof PatchServerRequest>;
+
+export const PutPointConfigRequest = PointConfig;
+export type PutPointConfigRequest = z.infer<typeof PutPointConfigRequest>;
+
+export const PollDetail = Poll.extend({ participants: z.array(PollParticipantResult) });
+export type PollDetail = z.infer<typeof PollDetail>;
+
+export const PollPage = z.object({
+  polls: z.array(PollDetail),
+  hasMore: z.boolean(),
+});
+export type PollPage = z.infer<typeof PollPage>;
 
 export const WsTicketRequest = z.object({ serverId: z.uuid() });
 export type WsTicketRequest = z.infer<typeof WsTicketRequest>;
@@ -134,6 +155,32 @@ export type Screenshot = z.infer<typeof Screenshot>;
 
 export const ScreenshotsResponse = z.object({ screenshots: z.array(Screenshot) });
 export type ScreenshotsResponse = z.infer<typeof ScreenshotsResponse>;
+
+// The idle-center Tavern Home is a bounded social recap, not an audit log. Hangouts are derived from
+// exact voice-presence overlap; `sharedDurationMs` excludes solo time and reconnect gaps.
+export const HangoutSummary = z.object({
+  id: z.number().int().positive(),
+  participantIds: z.array(z.uuid()).min(2),
+  startedAt: z.number(),
+  endedAt: z.number(),
+  sharedDurationMs: z.number().int().nonnegative(),
+});
+export type HangoutSummary = z.infer<typeof HangoutSummary>;
+
+export const PointLeaderboardEntry = z.object({
+  userId: z.uuid(),
+  balance: z.number().int().nonnegative(),
+});
+export type PointLeaderboardEntry = z.infer<typeof PointLeaderboardEntry>;
+
+export const TavernHomeResponse = z.object({
+  recentHangouts: z.array(HangoutSummary),
+  pointLeaderboard: z.array(PointLeaderboardEntry),
+  latestScreenshot: Screenshot.nullable(),
+  latestRecording: Recording.nullable(),
+  latestSound: Sound.nullable(),
+});
+export type TavernHomeResponse = z.infer<typeof TavernHomeResponse>;
 
 // GET /api/gifs/search — the Worker proxies a GIF provider (Klipy) and returns THIS normalized shape
 // so the client never couples to a specific vendor's JSON (swapping providers stays worker-only). A

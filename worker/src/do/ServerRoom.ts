@@ -7,20 +7,25 @@ import {
   CLOSE_PROTOCOL_VIOLATION,
   LIMITS,
   MemberInit,
+  PointConfig,
   Sound,
   UserProfile,
 } from "@tavern/shared";
-import type { ClientMessage, ErrorCode } from "@tavern/shared";
+import type { ClientMessage, ErrorCode, ServerMessage } from "@tavern/shared";
 import { z } from "zod";
 import { migrate } from "./sql";
 import { RoomState, rtcAuthorizeReqSchema } from "./roomState";
 import type { ConnAttachment, RoomMeta, RtcAuthorizeRes } from "./roomState";
 import { ChatModule } from "./chat";
 import { ActivityModule } from "./activity";
+import { HangoutsModule } from "./hangouts";
+import { homeSnapshot } from "./home";
 import { StatsModule } from "./stats";
 import { CostMeter } from "./costMeter";
 import { RecordingsModule } from "./recordings";
 import { createScreenshot, deleteScreenshot, listScreenshots } from "./screenshots";
+import { PointsModule, type PointEligibility } from "./points";
+import { PollsModule, type PollMutationResult } from "./polls";
 import {
   createSound,
   deleteSound,
@@ -77,6 +82,8 @@ const deleteSoundBody = z.object({
   soundId: z.string(),
   actor: z.object({ userId: z.string(), isAdmin: z.boolean() }),
 });
+const pointConfigBody = z.object({ userId: z.uuid(), config: PointConfig });
+const testSeedPointsBody = z.object({ userId: z.uuid(), balance: z.number().int().nonnegative() });
 
 // TavernError code → the HTTP status the Worker route forwards for a soundboard op.
 function soundErrorStatus(code: ErrorCode): 403 | 404 | 422 {
@@ -123,6 +130,7 @@ export class ServerRoom extends DurableObject<Env> {
   // One ActivityModule per DO → the append-and-broadcast producer for every event (§S3.3). Voice
   // producers (voice.join/voice.leave) are wired here in S3.4; stream/recording producers in S8/S9.
   private readonly activity: ActivityModule;
+  private readonly hangouts: HangoutsModule;
   // One StatsModule per DO → server-authoritative watch/stream accumulators (FR-40). Fed by the voice
   // leave/alarm sweep now; S8.4 feeds it stream/watch start/stop.
   private readonly stats: StatsModule;
@@ -133,6 +141,8 @@ export class ServerRoom extends DurableObject<Env> {
   // rec.start/rec.stop router + the disconnect/leave dirty-end path; the Worker multipart routes reach
   // it via /internal/recordings/*. Broadcasts + activity go through `room`/`activity`.
   private readonly recordings: RecordingsModule;
+  private readonly points: PointsModule;
+  private readonly polls: PollsModule;
   // connId → hello-timeout handle (in-memory; a 5 s pending timer keeps the DO from hibernating, so
   // the same instance handles the hello within the window — negligible cost, §S3.1 task 6).
   private readonly helloTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -159,8 +169,11 @@ export class ServerRoom extends DurableObject<Env> {
     this.room = new RoomState(ctx, env);
     this.chat = new ChatModule(ctx.storage.sql);
     this.activity = new ActivityModule(ctx.storage.sql);
+    this.hangouts = new HangoutsModule(ctx.storage.sql);
     this.stats = new StatsModule(ctx);
     this.costMeter = new CostMeter(ctx, env);
+    this.points = new PointsModule(ctx.storage.sql);
+    this.polls = new PollsModule(ctx.storage, this.points);
     this.recordings = new RecordingsModule({
       sql: ctx.storage.sql,
       storage: ctx.storage,
@@ -172,6 +185,10 @@ export class ServerRoom extends DurableObject<Env> {
       hello: (ws, att) => this.handleHello(ws, att),
       "chat.send": (ws, att, msg) => this.handleChatSend(ws, att, msg),
       "chat.history": (ws, att, msg) => this.handleChatHistory(ws, att, msg),
+      "chat.read": (ws, att, msg) => this.handleChatRead(ws, att, msg),
+      "chat.edit": (ws, att, msg) => this.handleChatEdit(ws, att, msg),
+      "chat.delete": (ws, att, msg) => this.handleChatDelete(ws, att, msg),
+      "chat.reaction.set": (ws, att, msg) => this.handleChatReactionSet(ws, att, msg),
       "voice.join": (ws, att) => this.handleVoiceJoin(ws, att),
       "voice.leave": (_ws, att) => this.leaveVoice(att.userId, Date.now()),
       "voice.state": (ws, att, msg) => this.handleVoiceState(ws, att, msg),
@@ -184,12 +201,21 @@ export class ServerRoom extends DurableObject<Env> {
       "rec.start": (ws, att) => this.handleRecStart(ws, att),
       "rec.stop": (ws, att) => this.handleRecStop(ws, att),
       "status.set": (_ws, _att, msg) => this.handleStatusSet(msg),
+      "poll.create": (ws, att, msg) => this.handlePollMutation(ws, att, msg),
+      "poll.bid": (ws, att, msg) => this.handlePollMutation(ws, att, msg),
+      "poll.lock": (ws, att, msg) => this.handlePollMutation(ws, att, msg),
+      "poll.resolve": (ws, att, msg) => this.handlePollMutation(ws, att, msg),
+      "poll.correct": (ws, att, msg) => this.handlePollMutation(ws, att, msg),
+      "poll.void": (ws, att, msg) => this.handlePollMutation(ws, att, msg),
       ping: (ws) => this.notImplemented(ws),
     };
     ctx.blockConcurrencyWhile(async () => {
       migrate(ctx.storage.sql);
+      this.hangouts.backfill(Date.now());
       await this.room.load();
       await this.recordings.load();
+      const pollDeadline = this.polls.nextDeadline();
+      if (pollDeadline !== null) await this.ensureAlarmNoLaterThan(pollDeadline);
     });
     // Protocol pings answered without waking the DO (App-A `ping`/`pong`).
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('{"t":"ping"}', '{"t":"pong"}'));
@@ -259,6 +285,8 @@ export class ServerRoom extends DurableObject<Env> {
         const body: { member: unknown; serverMeta: RoomMeta } = await request.json();
         const member = MemberInit.parse(body.member);
         this.room.upsertMember(member);
+        this.chat.refreshReactorDisplayName(member.userId, member.displayName);
+        this.chat.initializeReadCursor(member.userId);
         await this.room.setMeta(body.serverMeta);
         this.room.broadcast({
           t: "member.joined",
@@ -277,6 +305,7 @@ export class ServerRoom extends DurableObject<Env> {
         const body: { profile: unknown } = await request.json();
         const profile = UserProfile.parse(body.profile);
         this.room.updateProfile(profile);
+        this.chat.refreshReactorDisplayName(profile.userId, profile.displayName);
         this.room.broadcast({ t: "member.update", profile, at });
         return new Response(null, { status: 204 });
       }
@@ -330,6 +359,37 @@ export class ServerRoom extends DurableObject<Env> {
         });
         return Response.json(page);
       }
+      case "/internal/polls": {
+        const userId = url.searchParams.get("userId");
+        if (userId === null) {
+          return Response.json({ error: "bad_request" satisfies ErrorCode }, { status: 400 });
+        }
+        const before = url.searchParams.get("before");
+        const limit = url.searchParams.get("limit");
+        await this.processPollDue(at);
+        return Response.json(
+          this.polls.page(
+            userId,
+            before === null ? undefined : Number(before),
+            limit === null ? LIMITS.historyPageSize : Number(limit),
+          ),
+        );
+      }
+      // GET /internal/home → bounded idle-center recap. A due pending hangout can be finalized lazily
+      // here as well as by the alarm, so a delayed alarm never leaves a stale dashboard.
+      case "/internal/home": {
+        if (this.hangouts.finalizeDue(at)) this.room.broadcast({ t: "hangout.updated", at });
+        return Response.json(
+          homeSnapshot({
+            sql: this.ctx.storage.sql,
+            hangouts: this.hangouts,
+            points: this.points,
+            memberIds: this.room.listMembers().map((member) => member.userId),
+            now: at,
+            recordings: this.recordings,
+          }),
+        );
+      }
       // POST /internal/rtc/authorize (§6.1) — the SOLE authority on voice membership (G1), the
       // share cap (G4), pull grants + the egress kill (G5). The Worker route builds the op from the
       // client body (deriving `kind` from the track-name grammar); the DO decides + registers.
@@ -339,7 +399,26 @@ export class ServerRoom extends DurableObject<Env> {
           return Response.json({ ok: false, error: "bad_request" } satisfies RtcAuthorizeRes);
         }
         const res = await this.room.rtcAuthorize(parsed.data, this.costMeter, at);
+        if (res.ok) await this.syncPoints(at);
         return Response.json(res);
+      }
+      case "/internal/points/config": {
+        if (request.method !== "PUT") {
+          return Response.json({ error: "bad_request" satisfies ErrorCode }, { status: 400 });
+        }
+        const body = pointConfigBody.parse(await request.json());
+        this.points.updateConfig(body.config, body.userId, at);
+        this.broadcastPointSnapshots(at);
+        return Response.json(this.points.config());
+      }
+      case "/internal/test/seed-points": {
+        if (this.env.TAVERN_TEST !== "1") {
+          return Response.json({ error: "not_found" satisfies ErrorCode }, { status: 404 });
+        }
+        const body = testSeedPointsBody.parse(await request.json());
+        this.points.setBalanceForTest(body.userId, body.balance, at);
+        this.broadcastPointSnapshotsFor([body.userId], at);
+        return Response.json(this.points.snapshot(body.userId, at));
       }
       // GET /internal/stats → StatsResponse (§6.1 `GET /api/servers/:id/stats`). perUser unions the
       // member cache + message senders + stream-seconds rows; messages from ChatModule.
@@ -574,14 +653,20 @@ export class ServerRoom extends DurableObject<Env> {
     // share started still learns it (`stream.added` fires once, at publish). The hello timer was
     // cleared above (before the await), so nothing closes this socket during the read.
     const streams = await this.room.activeStreams();
+    await this.syncPoints(at, false);
+    await this.processPollDue(at);
+    const readState = this.chat.readState(att.userId);
     this.room.send(
       ws,
       this.room.helloSnapshot(
         att.userId,
         this.chat.lastMessageId(),
+        readState,
         this.costMeter.status(at),
         this.recordings.state(),
         streams,
+        this.points.snapshot(att.userId, at),
+        this.polls.visible(att.userId, at),
       ),
     );
     if (firstHello) this.room.presenceOnHello(ws, att.userId, at);
@@ -599,6 +684,7 @@ export class ServerRoom extends DurableObject<Env> {
       now: Date.now(),
       ...(msg.gif === undefined ? {} : { gif: msg.gif }),
       ...(msg.image === undefined ? {} : { image: msg.image }),
+      ...(msg.replyToId === undefined ? {} : { replyToId: msg.replyToId }),
     });
     if (!result.ok) {
       // rate_limited (and the defense-in-depth bad_message) reply on this socket only; it stays open.
@@ -610,14 +696,186 @@ export class ServerRoom extends DurableObject<Env> {
     this.room.broadcast({ t: "chat.new", message }, { except: this.room.socketsOf(att.userId) });
   }
 
+  private async handlePollMutation(
+    ws: WebSocket,
+    att: ConnAttachment,
+    msg: ClientMessage,
+  ): Promise<void> {
+    if (
+      msg.t !== "poll.create" &&
+      msg.t !== "poll.bid" &&
+      msg.t !== "poll.lock" &&
+      msg.t !== "poll.resolve" &&
+      msg.t !== "poll.correct" &&
+      msg.t !== "poll.void"
+    ) {
+      return;
+    }
+    const now = Date.now();
+    await this.processPollDue(now);
+    const actor = this.room.listMembers().find((member) => member.userId === att.userId);
+    if (actor === undefined) {
+      this.room.send(ws, { t: "error", code: "not_member", ref: msg.requestId });
+      return;
+    }
+    let result: PollMutationResult;
+    switch (msg.t) {
+      case "poll.create":
+        result = this.polls.create({
+          creatorId: actor.userId,
+          creatorDisplayName: actor.displayName,
+          question: msg.question,
+          outcomes: msg.outcomes,
+          durationSeconds: msg.durationSeconds,
+          now,
+        });
+        break;
+      case "poll.bid":
+        result = this.polls.bid({
+          pollId: msg.pollId,
+          outcomeId: msg.outcomeId,
+          userId: actor.userId,
+          displayName: actor.displayName,
+          stake: msg.stake,
+          now,
+        });
+        break;
+      case "poll.lock":
+        result = this.polls.lock(msg.pollId, actor.userId, actor.isAdmin, now);
+        break;
+      case "poll.resolve":
+        result = this.polls.resolve(msg.pollId, msg.outcomeId, actor.userId, actor.isAdmin, now);
+        break;
+      case "poll.correct":
+        result = this.polls.correct(msg.pollId, msg.outcomeId, actor.userId, actor.isAdmin, now);
+        break;
+      case "poll.void":
+        result = this.polls.void(msg.pollId, actor.userId, actor.isAdmin, now);
+        break;
+    }
+    if (!result.ok) {
+      this.room.send(ws, { t: "error", code: result.code, ref: msg.requestId });
+      return;
+    }
+    this.broadcastPoll(result.poll.id, now, msg.requestId, actor.userId);
+    this.broadcastPointSnapshotsFor(result.affectedUserIds, now);
+    const deadline = this.polls.nextDeadline();
+    if (deadline !== null) await this.ensureAlarmNoLaterThan(deadline);
+  }
+
   // chat.history: paginated read (ChatModule), replied only to the requesting socket.
   private handleChatHistory(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): void {
     if (msg.t !== "chat.history") return;
     const page = this.chat.history({
-      ...(msg.beforeId === undefined ? {} : { beforeId: msg.beforeId }),
+      userId: att.userId,
+      mode: msg.mode,
+      ...(msg.cursorId === undefined ? {} : { cursorId: msg.cursorId }),
       limit: msg.limit,
     });
-    this.room.send(ws, { t: "chat.page", messages: page.messages, hasMore: page.hasMore });
+    this.room.send(ws, {
+      t: "chat.page",
+      requestId: msg.requestId,
+      mode: msg.mode,
+      messages: page.messages,
+      hasOlder: page.hasOlder,
+      hasNewer: page.hasNewer,
+    });
+  }
+
+  private handleChatRead(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): void {
+    if (msg.t !== "chat.read") return;
+    const state = this.chat.markRead(att.userId, msg.messageId);
+    if (state === null) {
+      this.room.send(ws, { t: "error", code: "bad_message" });
+      return;
+    }
+    this.room.broadcast({ t: "chat.read-state", ...state }, { toUserId: att.userId });
+  }
+
+  private handleChatEdit(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): void {
+    if (msg.t !== "chat.edit") return;
+    const result = this.chat.edit({
+      userId: att.userId,
+      messageId: msg.messageId,
+      body: msg.body,
+      members: this.room.listMembers(),
+      now: Date.now(),
+    });
+    if (!result.ok) {
+      this.room.send(ws, { t: "error", code: result.code, ref: msg.requestId });
+      return;
+    }
+    this.room.broadcast(
+      { t: "chat.updated", message: result.message, requestId: msg.requestId },
+      { toUserId: att.userId },
+    );
+    this.room.broadcast(
+      { t: "chat.updated", message: result.message },
+      { except: this.room.socketsOf(att.userId) },
+    );
+  }
+
+  private async handleChatDelete(
+    ws: WebSocket,
+    att: ConnAttachment,
+    msg: ClientMessage,
+  ): Promise<void> {
+    if (msg.t !== "chat.delete") return;
+    const result = this.chat.delete({
+      userId: att.userId,
+      messageId: msg.messageId,
+      now: Date.now(),
+    });
+    if (!result.ok) {
+      this.room.send(ws, { t: "error", code: result.code, ref: msg.requestId });
+      return;
+    }
+    if (result.imageId !== undefined) await this.cleanupChatImages();
+    this.room.broadcast(
+      { t: "chat.deleted", message: result.message, requestId: msg.requestId },
+      { toUserId: att.userId },
+    );
+    this.room.broadcast(
+      { t: "chat.deleted", message: result.message },
+      { except: this.room.socketsOf(att.userId) },
+    );
+    for (const userId of this.room.connectedUserIds()) {
+      this.room.broadcast(
+        { t: "chat.read-state", ...this.chat.readState(userId) },
+        { toUserId: userId },
+      );
+    }
+  }
+
+  private handleChatReactionSet(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): void {
+    if (msg.t !== "chat.reaction.set") return;
+    const actor = this.room.listMembers().find((member) => member.userId === att.userId);
+    if (actor === undefined) {
+      this.room.send(ws, { t: "error", code: "not_member", ref: msg.requestId });
+      return;
+    }
+    const result = this.chat.setReaction({
+      userId: att.userId,
+      displayName: actor.displayName,
+      messageId: msg.messageId,
+      emoji: msg.emoji,
+      reacted: msg.reacted,
+      now: Date.now(),
+    });
+    if (!result.ok) {
+      this.room.send(ws, { t: "error", code: result.code, ref: msg.requestId });
+      return;
+    }
+    const update: Extract<ServerMessage, { t: "chat.reaction.updated" }> = {
+      t: "chat.reaction.updated",
+      messageId: msg.messageId,
+      emoji: result.emoji,
+      reaction: result.reaction,
+    };
+    this.room.broadcast({ ...update, requestId: msg.requestId }, { toUserId: att.userId });
+    if (result.changed) {
+      this.room.broadcast(update, { except: this.room.socketsOf(att.userId) });
+    }
   }
 
   // sound.play (FR-36): token-bucket rate-limit the caller (LIMITS.rateSoundPlayPerSec, per user,
@@ -656,6 +914,7 @@ export class ServerRoom extends DurableObject<Env> {
   // join is a no-op that just re-sends the current snapshot to the requester.
   private async handleVoiceJoin(ws: WebSocket, att: ConnAttachment): Promise<void> {
     const at = Date.now();
+    const beforeIds = this.room.voiceState().members.map((member) => member.userId);
     const already = this.room.voiceState().members.some((m) => m.userId === att.userId);
     const snapshot = this.room.voiceJoin(att.userId, at);
     await this.room.persistVoice();
@@ -663,6 +922,11 @@ export class ServerRoom extends DurableObject<Env> {
       this.room.send(ws, { t: "voice.state", voice: snapshot, at });
       return;
     }
+    const afterIds = snapshot.members.map((member) => member.userId);
+    if (this.hangouts.noteVoiceChange(beforeIds, afterIds, at)) {
+      this.room.broadcast({ t: "hangout.updated", at });
+    }
+    await this.syncPoints(at);
     this.room.broadcast({
       t: "activity.new",
       entry: this.activity.append("voice.join", att.userId, {}, at),
@@ -677,16 +941,25 @@ export class ServerRoom extends DurableObject<Env> {
   // broadcasts the new snapshot to all remaining sockets.
   private async leaveVoice(userId: string, now: number): Promise<void> {
     if (!this.room.voiceState().members.some((m) => m.userId === userId)) return;
+    const beforeIds = this.room.voiceState().members.map((member) => member.userId);
     const { snapshot } = this.room.voiceLeave(userId, now);
     await this.room.persistVoice();
     await this.stats.closeAllFor(userId, now);
     // Drop the leaver's SFU sessions/tracks/grants + flush their open meter watches (§S3.4 disconnect
     // cleanup path; the SFU GCs the dead session itself). Broadcasts stream.removed for their video.
     await this.room.rtcCleanupFor(userId, this.costMeter, now);
+    await this.syncPoints(now);
     // FR-25 dirty end: if the leaver owns the active recording without a prior graceful rec.stop, cancel
     // it (abort R2 multipart, delete row, broadcast inactive, aborted activity). No-op otherwise, so a
     // graceful stop-then-leave or a non-recorder's leave costs nothing.
     await this.recordings.handleUserGone(userId, now);
+    this.hangouts.noteVoiceChange(
+      beforeIds,
+      snapshot.members.map((member) => member.userId),
+      now,
+    );
+    const hangoutDeadline = this.hangouts.pendingDeadline();
+    if (hangoutDeadline !== null) await this.ensureAlarmNoLaterThan(hangoutDeadline);
     this.room.broadcast({
       t: "activity.new",
       entry: this.activity.append("voice.leave", userId, {}, now),
@@ -727,12 +1000,14 @@ export class ServerRoom extends DurableObject<Env> {
     msg: ClientMessage,
   ): Promise<void> {
     if (msg.t !== "voice.state") return;
+    const at = Date.now();
     const snapshot = this.room.setVoiceFlags(att.userId, {
       muted: msg.muted,
       deafened: msg.deafened,
     });
     await this.room.persistVoice();
-    this.room.broadcast({ t: "voice.state", voice: snapshot, at: Date.now() });
+    await this.syncPoints(at);
+    this.room.broadcast({ t: "voice.state", voice: snapshot, at });
   }
 
   // stream.start (FR-39/FR-40): the publisher's "hours streamed" clock opens (server-authoritative,
@@ -782,6 +1057,7 @@ export class ServerRoom extends DurableObject<Env> {
       this.costMeter,
       now,
     );
+    await this.syncPoints(now);
     // FR-39: record the share stop (one entry per stopped track) + broadcast live to open Activity tabs.
     this.room.broadcast({
       t: "activity.new",
@@ -811,13 +1087,14 @@ export class ServerRoom extends DurableObject<Env> {
       return;
     }
     const info = await this.room.rtcWatchable(msg.trackName);
-    if (info === null) {
+    if (info === null || info.streamerId === att.userId) {
       this.room.send(ws, { t: "error", code: "bad_message" });
       return;
     }
     await this.room.rtcAddGrant(att.userId, msg.trackName, "h");
     await this.costMeter.openWatch(att.userId, msg.trackName, info.preset, "h", at);
     await this.stats.noteWatchStart(att.userId, info.streamerId, at);
+    await this.syncPoints(at);
     // § watching indicator: the grant set changed — fan the fresh watch.state snapshot to everyone.
     await this.room.broadcastWatching(at);
   }
@@ -832,6 +1109,7 @@ export class ServerRoom extends DurableObject<Env> {
     const streamerId = streamerIdOf(msg.trackName);
     if (streamerId !== null) await this.stats.noteWatchStop(att.userId, streamerId, at);
     await this.room.rtcRemoveGrant(att.userId, msg.trackName);
+    await this.syncPoints(at);
     // § watching indicator: the grant set changed — fan the fresh watch.state snapshot to everyone.
     await this.room.broadcastWatching(at);
   }
@@ -862,6 +1140,7 @@ export class ServerRoom extends DurableObject<Env> {
   // members remain or open intervals exist, else let the alarm lapse.
   async alarm(): Promise<void> {
     const now = Date.now();
+    await this.cleanupChatImages();
     // KV is the source of truth; re-read it so a crash-leftover seeded straight into storage is seen.
     await this.room.loadVoice();
     // (a) Reconcile ghosts (voice members with zero live sockets) through the leave path. Sequential —
@@ -874,6 +1153,9 @@ export class ServerRoom extends DurableObject<Env> {
     let chain: Promise<void> = Promise.resolve();
     for (const userId of ghostIds) chain = chain.then(() => this.leaveVoice(userId, now));
     await chain;
+    await this.syncPoints(now);
+    await this.processPollDue(now);
+    if (this.hangouts.finalizeDue(now)) this.room.broadcast({ t: "hangout.updated", at: now });
     // (b) While voice still has members, bank the accumulators mid-session, then tick the egress meter
     // (§8 G5). A newly-crossed 700 GB warn threshold → broadcast cost.warning once per month-bucket.
     if (this.room.voiceState().members.length > 0) {
@@ -892,8 +1174,110 @@ export class ServerRoom extends DurableObject<Env> {
     }
     // (c) Re-arm iff work remains (members or open intervals); otherwise let the alarm lapse.
     const stillActive =
-      this.room.voiceState().members.length > 0 || (await this.stats.hasOpenIntervals());
-    if (stillActive) await this.ctx.storage.setAlarm(now + this.alarmIntervalMs());
+      this.room.voiceState().members.length > 0 ||
+      (await this.stats.hasOpenIntervals()) ||
+      this.chat.hasPendingImageCleanup();
+    const hangoutDeadline = this.hangouts.pendingDeadline();
+    const pollDeadline = this.polls.nextDeadline();
+    const routineDeadline = stillActive ? now + this.alarmIntervalMs() : null;
+    const nextDeadline =
+      [routineDeadline, hangoutDeadline, pollDeadline]
+        .filter((deadline): deadline is number => deadline !== null)
+        .toSorted((a, b) => a - b)[0] ?? null;
+    if (nextDeadline !== null) await this.ctx.storage.setAlarm(nextDeadline);
+  }
+
+  private async syncPoints(now: number, broadcast = true): Promise<void> {
+    const eligibility = await this.pointEligibility();
+    this.points.replaceSources(eligibility, now);
+    if (broadcast) this.broadcastPointSnapshots(now);
+  }
+
+  private async pointEligibility(): Promise<PointEligibility> {
+    const voice = this.room.voiceState();
+    const voiceIds = new Set(voice.members.map((member) => member.userId));
+    const conversational = voice.members
+      .filter((member) => !member.muted && !member.deafened)
+      .map((member) => member.userId);
+    const conversation = conversational.length >= 2 ? conversational : [];
+    const streaming = new Set<string>();
+    const watching = new Set<string>();
+    const rtc = await this.room.rtcSnapshot();
+    for (const [viewerId, grants] of Object.entries(rtc.grants)) {
+      if (!voiceIds.has(viewerId)) continue;
+      for (const trackName of Object.keys(grants)) {
+        const track = rtc.tracks[trackName];
+        if (
+          track === undefined ||
+          (track.kind !== "screen" && track.kind !== "cam") ||
+          track.userId === viewerId ||
+          !voiceIds.has(track.userId)
+        ) {
+          continue;
+        }
+        watching.add(viewerId);
+        streaming.add(track.userId);
+      }
+    }
+    return {
+      conversation,
+      streaming: [...streaming],
+      watching: [...watching],
+    };
+  }
+
+  private broadcastPointSnapshots(at: number): void {
+    for (const userId of this.room.connectedUserIds()) {
+      this.room.broadcast(
+        { t: "points.updated", points: this.points.snapshot(userId, at), at },
+        { toUserId: userId },
+      );
+    }
+  }
+
+  private broadcastPointSnapshotsFor(userIds: readonly string[], at: number): void {
+    for (const userId of new Set(userIds)) {
+      this.room.broadcast(
+        { t: "points.updated", points: this.points.snapshot(userId, at), at },
+        { toUserId: userId },
+      );
+    }
+  }
+
+  private broadcastPoll(pollId: string, at: number, requestId?: string, actorId?: string): void {
+    for (const userId of this.room.connectedUserIds()) {
+      this.room.broadcast(
+        {
+          t: "poll.updated",
+          poll: this.polls.poll(pollId, userId),
+          ...(requestId !== undefined && userId === actorId ? { requestId } : {}),
+          at,
+        },
+        { toUserId: userId },
+      );
+    }
+  }
+
+  private async processPollDue(now: number): Promise<void> {
+    const due = this.polls.processDue(now);
+    for (const poll of due.polls) this.broadcastPoll(poll.id, now);
+    this.broadcastPointSnapshotsFor(due.affectedUserIds, now);
+  }
+
+  private async cleanupChatImages(): Promise<void> {
+    for (const imageId of this.chat.pendingImageCleanup()) {
+      try {
+        await this.env.MEDIA.delete(`${this.room.id()}/chat-images/${imageId}.webp`);
+        this.chat.completeImageCleanup(imageId);
+      } catch (error: unknown) {
+        console.error("chat image cleanup failed", {
+          serverId: this.room.id(),
+          imageId,
+          error,
+        });
+      }
+    }
+    if (this.chat.hasPendingImageCleanup()) await this.ensureAlarmArmed(Date.now());
   }
 
   // Arms the alarm only if none is scheduled (never pushes an in-flight ghost-close window forward).
@@ -901,6 +1285,11 @@ export class ServerRoom extends DurableObject<Env> {
     if ((await this.ctx.storage.getAlarm()) === null) {
       await this.ctx.storage.setAlarm(now + this.alarmIntervalMs());
     }
+  }
+
+  private async ensureAlarmNoLaterThan(deadline: number): Promise<void> {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > deadline) await this.ctx.storage.setAlarm(deadline);
   }
 
   private alarmIntervalMs(): number {
