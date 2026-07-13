@@ -160,9 +160,9 @@ const cases: [string, z.ZodType, unknown][] = [
 ];
 
 describe("contract surface", () => {
-  it("ERROR_CODES has 32 unique members", () => {
-    expect(ERROR_CODES.length).toBe(32);
-    expect(new Set(ERROR_CODES).size).toBe(32);
+  it("ERROR_CODES has 38 unique members", () => {
+    expect(ERROR_CODES.length).toBe(38);
+    expect(new Set(ERROR_CODES).size).toBe(38);
   });
 
   it("CreateServerRequest requires both a password and a non-empty (trimmed) code", () => {
