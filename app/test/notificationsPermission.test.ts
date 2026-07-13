@@ -161,7 +161,16 @@ describe("FR-16 notification sounds", () => {
     const conn = fakeConnection();
     vi.mocked(connectRoom).mockReturnValue(conn as never);
     useServersStore.setState({
-      servers: [{ id: "srv-1", nickname: "tavern", adminUserId: "other", hasPassword: false, createdAt: 1, joinedAt: 1 }],
+      servers: [
+        {
+          id: "srv-1",
+          nickname: "tavern",
+          adminUserId: "other",
+          hasPassword: false,
+          createdAt: 1,
+          joinedAt: 1,
+        },
+      ],
       activeServerId: "srv-1",
     });
     teardown = initNotifications();
@@ -177,7 +186,16 @@ describe("FR-16 notification sounds", () => {
     const conn = fakeConnection();
     vi.mocked(connectRoom).mockReturnValue(conn as never);
     useServersStore.setState({
-      servers: [{ id: "srv-1", nickname: "tavern", adminUserId: "other", hasPassword: false, createdAt: 1, joinedAt: 1 }],
+      servers: [
+        {
+          id: "srv-1",
+          nickname: "tavern",
+          adminUserId: "other",
+          hasPassword: false,
+          createdAt: 1,
+          joinedAt: 1,
+        },
+      ],
       activeServerId: "srv-1",
     });
     teardown = initNotifications();

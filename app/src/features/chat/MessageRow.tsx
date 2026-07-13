@@ -187,7 +187,7 @@ function ReactionCapsules({
                   reactedBySelf && "bg-muted/50 text-foreground hover:bg-muted/70",
                 )}
               >
-                <span aria-hidden="true" className="text-[15px] leading-none">
+                <span aria-hidden={true} className="text-[15px] leading-none">
                   {reaction.emoji}
                 </span>
                 <span className="text-[10px] leading-none text-muted-foreground">

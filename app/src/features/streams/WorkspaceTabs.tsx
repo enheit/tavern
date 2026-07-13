@@ -51,7 +51,7 @@ export function WorkspaceTabs({ serverId }: { serverId: string }) {
     >
       <TabsList
         variant="chip"
-        aria-label="Workspace"
+        aria-label={m.workspace_label()}
         className="w-full shrink-0 justify-start overflow-x-auto rounded-none bg-background/95 p-2 [&>*]:flex-none"
       >
         <TabsTrigger value="dashboard" data-testid="workspace-tab-dashboard">

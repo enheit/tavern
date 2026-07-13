@@ -583,7 +583,8 @@ export class VoiceController {
     const ids = new Set(members.map((m) => m.userId));
     if (this.soundEffectsReady) {
       for (const id of ids) {
-        if (!this.voiceMemberIds.has(id) && id !== selfId && !this.deafened) playUiSound("voice.join");
+        if (!this.voiceMemberIds.has(id) && id !== selfId && !this.deafened)
+          playUiSound("voice.join");
       }
       for (const id of this.voiceMemberIds) {
         if (!ids.has(id) && id !== selfId && !this.deafened) playUiSound("voice.leave");

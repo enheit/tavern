@@ -274,6 +274,7 @@
   "home_no_sounds": "No sounds yet.",
   "home_play_count": "{count} plays",
   "home_open_soundboard": "Open",
+  "workspace_label": "Workspace",
   "canvas_dashboard": "Dashboard",
   "canvas_stream": "Stream",
   "voice_join": "Join voice",

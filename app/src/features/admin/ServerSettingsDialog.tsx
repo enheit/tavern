@@ -135,9 +135,7 @@ function PointsSection({ serverId }: { serverId: string }) {
         id="admin-points-base"
         label={m.admin_points_base()}
         value={draft.basePointsPerMinute}
-        update={(basePointsPerMinute) =>
-          setDraft((value) => ({ ...value, basePointsPerMinute }))
-        }
+        update={(basePointsPerMinute) => setDraft((value) => ({ ...value, basePointsPerMinute }))}
       />
       <RateField
         id="admin-points-stream"

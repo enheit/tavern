@@ -562,7 +562,11 @@ describe("FR-18 join/leave", () => {
     expect(vi.mocked(playUiSound)).toHaveBeenCalledWith("stream.start");
     vi.mocked(playUiSound).mockClear();
 
-    h.ws.emit({ t: "stream.removed", trackName: "screen:22222222-2222-2222-2222-222222222222:1", at: 5000 });
+    h.ws.emit({
+      t: "stream.removed",
+      trackName: "screen:22222222-2222-2222-2222-222222222222:1",
+      at: 5000,
+    });
     expect(vi.mocked(playUiSound)).toHaveBeenCalledWith("stream.stop");
     vi.mocked(playUiSound).mockClear();
   });
@@ -639,7 +643,9 @@ describe("FR-18 join/leave", () => {
     expect(h.pulls).toHaveLength(2);
     expect(h.ws.sent.filter((m) => m.t === "voice.join")).toHaveLength(2);
     expect(useMediaStore.getState().voiceStatus).toBe("joined");
-    expect(vi.mocked(playUiSound).mock.calls.filter(([kind]) => kind === "voice.join")).toHaveLength(1);
+    expect(
+      vi.mocked(playUiSound).mock.calls.filter(([kind]) => kind === "voice.join"),
+    ).toHaveLength(1);
   });
 });
 

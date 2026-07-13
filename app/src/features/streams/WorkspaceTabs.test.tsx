@@ -3,13 +3,14 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetRoomStores, roomStore } from "@/stores/room";
+import { m } from "@/paraglide/messages.js";
 import { WorkspaceTabs } from "./WorkspaceTabs";
 
 vi.mock("@/features/home/TavernHome", () => ({
   TavernHome: ({ onOpenSoundboard }: { onOpenSoundboard: () => void }) => (
     <div data-testid="tavern-home">
       <button type="button" onClick={onOpenSoundboard}>
-        Open soundboard
+        {m.home_open_soundboard()}
       </button>
     </div>
   ),
@@ -109,7 +110,7 @@ describe("workspace navigation", () => {
 
   it("opens Soundboard from the Dashboard card", () => {
     render(<WorkspaceTabs serverId={SERVER_ID} />);
-    fireEvent.click(screen.getByRole("button", { name: "Open soundboard" }));
+    fireEvent.click(screen.getByRole("button", { name: m.home_open_soundboard() }));
 
     expect(screen.getByTestId("workspace-tab-soundboard").getAttribute("aria-selected")).toBe(
       "true",
