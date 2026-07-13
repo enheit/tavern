@@ -1,7 +1,6 @@
 import {
   CheckCircle2Icon,
   BarChart3Icon,
-  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
   ChevronUpIcon,

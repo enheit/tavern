@@ -66,6 +66,33 @@ export function ServerSettingsDialog({ serverId }: { serverId: string }) {
   );
 }
 
+function RateField({
+  id,
+  label,
+  value,
+  update,
+}: {
+  id: string;
+  label: string;
+  value: number;
+  update: (value: number) => void;
+}) {
+  return (
+    <Label htmlFor={id} className="grid grid-cols-[1fr_7rem] items-center gap-3 text-xs">
+      <span>{label}</span>
+      <Input
+        id={id}
+        data-testid={id}
+        type="number"
+        min={0}
+        max={LIMITS.pointRateMaxPerMinute}
+        value={value}
+        onChange={(event) => update(Number(event.target.value))}
+      />
+    </Label>
+  );
+}
+
 function PointsSection({ serverId }: { serverId: string }) {
   const current = useStore(roomStore(serverId), (state) => state.points.config);
   const [draft, setDraft] = useState<PointConfig>(current);
@@ -91,21 +118,6 @@ function PointsSection({ serverId }: { serverId: string }) {
     }
   };
 
-  const rateField = (id: string, label: string, value: number, update: (value: number) => void) => (
-    <Label htmlFor={id} className="grid grid-cols-[1fr_7rem] items-center gap-3 text-xs">
-      <span>{label}</span>
-      <Input
-        id={id}
-        data-testid={id}
-        type="number"
-        min={0}
-        max={LIMITS.pointRateMaxPerMinute}
-        value={value}
-        onChange={(event) => update(Number(event.target.value))}
-      />
-    </Label>
-  );
-
   return (
     <section data-testid="admin-points" className="flex flex-col gap-3 border-t pt-4">
       <div className="flex items-center justify-between">
@@ -119,24 +131,30 @@ function PointsSection({ serverId }: { serverId: string }) {
           onCheckedChange={(enabled) => setDraft((value) => ({ ...value, enabled }))}
         />
       </div>
-      {rateField(
-        "admin-points-base",
-        m.admin_points_base(),
-        draft.basePointsPerMinute,
-        (basePointsPerMinute) => setDraft((value) => ({ ...value, basePointsPerMinute })),
-      )}
-      {rateField(
-        "admin-points-stream",
-        m.admin_points_stream(),
-        draft.streamerBonusPerMinute,
-        (streamerBonusPerMinute) => setDraft((value) => ({ ...value, streamerBonusPerMinute })),
-      )}
-      {rateField(
-        "admin-points-watch",
-        m.admin_points_watch(),
-        draft.watcherBonusPerMinute,
-        (watcherBonusPerMinute) => setDraft((value) => ({ ...value, watcherBonusPerMinute })),
-      )}
+      <RateField
+        id="admin-points-base"
+        label={m.admin_points_base()}
+        value={draft.basePointsPerMinute}
+        update={(basePointsPerMinute) =>
+          setDraft((value) => ({ ...value, basePointsPerMinute }))
+        }
+      />
+      <RateField
+        id="admin-points-stream"
+        label={m.admin_points_stream()}
+        value={draft.streamerBonusPerMinute}
+        update={(streamerBonusPerMinute) =>
+          setDraft((value) => ({ ...value, streamerBonusPerMinute }))
+        }
+      />
+      <RateField
+        id="admin-points-watch"
+        label={m.admin_points_watch()}
+        value={draft.watcherBonusPerMinute}
+        update={(watcherBonusPerMinute) =>
+          setDraft((value) => ({ ...value, watcherBonusPerMinute }))
+        }
+      />
       <Label
         htmlFor="admin-points-cap"
         className="grid grid-cols-[1fr_7rem] items-center gap-3 text-xs"

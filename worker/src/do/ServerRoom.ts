@@ -1265,18 +1265,23 @@ export class ServerRoom extends DurableObject<Env> {
   }
 
   private async cleanupChatImages(): Promise<void> {
-    for (const imageId of this.chat.pendingImageCleanup()) {
-      try {
-        await this.env.MEDIA.delete(`${this.room.id()}/chat-images/${imageId}.webp`);
-        this.chat.completeImageCleanup(imageId);
-      } catch (error: unknown) {
-        console.error("chat image cleanup failed", {
-          serverId: this.room.id(),
-          imageId,
-          error,
-        });
-      }
-    }
+    const pending = this.chat.pendingImageCleanup();
+    await pending.reduce<Promise<void>>(
+      (chain, imageId) =>
+        chain.then(async () => {
+          try {
+            await this.env.MEDIA.delete(`${this.room.id()}/chat-images/${imageId}.webp`);
+            this.chat.completeImageCleanup(imageId);
+          } catch (error: unknown) {
+            console.error("chat image cleanup failed", {
+              serverId: this.room.id(),
+              imageId,
+              error,
+            });
+          }
+        }),
+      Promise.resolve(),
+    );
     if (this.chat.hasPendingImageCleanup()) await this.ensureAlarmArmed(Date.now());
   }
 
