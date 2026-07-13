@@ -3,7 +3,8 @@
 A cozy little hangout for a small group of friends — voice chat, text channels, screen sharing,
 and a soundboard, all in one place.
 
-![Tavern screenshot](docs/assets/screenshot.png)
+<img width="3104" height="1964" alt="image" src="https://github.com/user-attachments/assets/77211a63-c4a4-4150-88fd-0b58e247d01f" />
+
 
 ## License
 
