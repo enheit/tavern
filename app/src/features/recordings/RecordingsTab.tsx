@@ -104,7 +104,10 @@ export function RecordingsTab({ serverId }: { serverId: string }) {
   });
 
   const recordings = useMemo(
-    () => query.data?.pages.flatMap((page) => page.recordings) ?? [],
+    () =>
+      (query.data?.pages.flatMap((page) => page.recordings) ?? []).toSorted(
+        (a, b) => b.startedAt - a.startedAt,
+      ),
     [query.data],
   );
   const scrollRef = useRef<HTMLDivElement | null>(null);

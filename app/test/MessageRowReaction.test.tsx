@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage, Member } from "@tavern/shared";
@@ -112,7 +112,7 @@ describe("MessageRow reactions", () => {
     fireEvent.click(await screen.findByTestId("mock-reaction-emoji"));
 
     expect(onSetReaction).toHaveBeenCalledWith("😄", true);
-    expect(screen.queryByTestId("mock-reaction-picker")).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId("mock-reaction-picker")).toBeNull());
   });
 
   it("summarizes long reactor name lists after eight people", async () => {

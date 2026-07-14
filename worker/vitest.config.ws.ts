@@ -12,7 +12,11 @@ export default defineConfig({
       // Keep the serial WebSocket project hermetic too; the Wrangler config's remote Images binding
       // is unrelated to these tests and must never require Cloudflare credentials in CI.
       remoteBindings: false,
-      wrangler: { configPath: "./wrangler.jsonc" },
+      wrangler: {
+        configPath: "./wrangler.jsonc",
+        // Public test fixture: production injects a distinct secret through Wrangler.
+        secrets: { BETTER_AUTH_SECRET: "test-only-auth-secret-00000000000000000000000000000000" },
+      },
       // TAVERN_TEST_FAST_ALARM=1 pins the fast (5s) voice alarm for the FR-24 tests (§S3.4 task 5);
       // it belongs only in the test env, never production wrangler config.
       miniflare: {

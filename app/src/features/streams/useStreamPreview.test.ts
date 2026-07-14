@@ -12,7 +12,7 @@ const PREVIEW_A = "123e4567-e89b-42d3-a456-426614174000";
 const PREVIEW_B = "223e4567-e89b-42d3-a456-426614174000";
 
 function previewResponse(body: string): Response {
-  return new Response(new Blob([body], { type: "image/webp" }), {
+  return new Response(body, {
     status: 200,
     headers: { "content-type": "image/webp" },
   });

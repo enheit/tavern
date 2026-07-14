@@ -10,12 +10,19 @@ export default defineConfig({
       // hermetic and credential-free. Disabling all remote bindings makes the Vitest integration use
       // Wrangler's offline Images implementation instead of opening one remote proxy per test file.
       remoteBindings: false,
-      wrangler: { configPath: "./wrangler.jsonc" },
+      wrangler: {
+        configPath: "./wrangler.jsonc",
+        // Public test fixture: production injects a distinct secret through Wrangler.
+        secrets: { BETTER_AUTH_SECRET: "test-only-auth-secret-00000000000000000000000000000000" },
+      },
       // TEST_MIGRATIONS is applied by test/setup.ts's applyD1Migrations(); empty until S1.2.
       // TAVERN_SFU_MOCK=1 swaps the Realtime client for the fixture-backed mock (S7.1, §10) so the
       // rtc-proxy tests never touch the live SFU — committed here so CI does not depend on .dev.vars.
       miniflare: {
-        bindings: { TEST_MIGRATIONS: await readD1Migrations("./migrations"), TAVERN_SFU_MOCK: "1" },
+        bindings: {
+          TEST_MIGRATIONS: await readD1Migrations("./migrations"),
+          TAVERN_SFU_MOCK: "1",
+        },
       },
     })),
   ],

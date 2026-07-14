@@ -149,9 +149,7 @@ describe("sound editor", () => {
   it("loads the retained original and saves an extended metadata trim without replacing it", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(
-        async () => new Response(new Blob([new Uint8Array([0x49, 0x44, 0x33])]), { status: 200 }),
-      ),
+      vi.fn(async () => new Response(new Uint8Array([0x49, 0x44, 0x33]), { status: 200 })),
     );
     const onPatch = vi.fn(async () => undefined);
     const onReplace = vi.fn(async () => undefined);
