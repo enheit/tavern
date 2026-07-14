@@ -96,6 +96,7 @@ async function queryGraphql(
   env: Env,
   query: string,
   variables: Record<string, string>,
+  fetcher: typeof fetch,
 ): Promise<unknown> {
   const token = env.CLOUDFLARE_ANALYTICS_TOKEN;
   const accountId = env.CLOUDFLARE_ACCOUNT_ID;
@@ -107,7 +108,7 @@ async function queryGraphql(
   ) {
     throw new Error("Cloudflare analytics is not configured");
   }
-  const response = await fetch(GRAPHQL_URL, {
+  const response = await fetcher(GRAPHQL_URL, {
     method: "POST",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: JSON.stringify({ query, variables: { accountTag: accountId, ...variables } }),
@@ -215,7 +216,12 @@ const TURN_QUERY = `query TavernTurn($accountTag: string!, $start: Date!, $end: 
   } }
 }`;
 
-async function refreshRemoteUsage(env: Env, periodStart: number, periodEnd: number): Promise<void> {
+async function refreshRemoteUsage(
+  env: Env,
+  periodStart: number,
+  periodEnd: number,
+  fetcher: typeof fetch,
+): Promise<void> {
   if (env.CLOUDFLARE_ANALYTICS_TOKEN === undefined || env.CLOUDFLARE_ACCOUNT_ID === undefined)
     return;
   const dateVariables = { start: toUtcDate(periodStart), end: toUtcDate(periodEnd) };
@@ -223,17 +229,27 @@ async function refreshRemoteUsage(env: Env, periodStart: number, periodEnd: numb
   await Promise.all([
     refreshSource(env.DB, "r2", async () => {
       const data = R2Result.parse(
-        await queryGraphql(env, R2_QUERY, { ...timeVariables, bucketName: "tavern-media" }),
+        await queryGraphql(
+          env,
+          R2_QUERY,
+          { ...timeVariables, bucketName: "tavern-media" },
+          fetcher,
+        ),
       );
       const rows = data.viewer.accounts[0]?.r2OperationsAdaptiveGroups ?? [];
       return { operations: total(rows, (row) => row.sum.requests) };
     }),
     refreshSource(env.DB, "d1", async () => {
       const data = D1Result.parse(
-        await queryGraphql(env, D1_QUERY, {
-          ...dateVariables,
-          databaseId: "49d52212-7fd9-4d4e-a7dd-d48f90dc0219",
-        }),
+        await queryGraphql(
+          env,
+          D1_QUERY,
+          {
+            ...dateVariables,
+            databaseId: "49d52212-7fd9-4d4e-a7dd-d48f90dc0219",
+          },
+          fetcher,
+        ),
       );
       const rows = data.viewer.accounts[0]?.d1AnalyticsAdaptiveGroups ?? [];
       return {
@@ -243,7 +259,9 @@ async function refreshRemoteUsage(env: Env, periodStart: number, periodEnd: numb
       };
     }),
     refreshSource(env.DB, "worker", async () => {
-      const data = WorkerResult.parse(await queryGraphql(env, WORKER_QUERY, timeVariables));
+      const data = WorkerResult.parse(
+        await queryGraphql(env, WORKER_QUERY, timeVariables, fetcher),
+      );
       const rows = data.viewer.accounts[0]?.workersInvocationsAdaptive ?? [];
       return {
         requests: total(rows, (row) => row.sum.requests),
@@ -255,7 +273,7 @@ async function refreshRemoteUsage(env: Env, periodStart: number, periodEnd: numb
       const keyId = env.TURN_KEY_ID;
       if (keyId === undefined || keyId.trim() === "") throw new Error("TURN key is not configured");
       const data = TurnResult.parse(
-        await queryGraphql(env, TURN_QUERY, { ...dateVariables, keyId }),
+        await queryGraphql(env, TURN_QUERY, { ...dateVariables, keyId }, fetcher),
       );
       const rows = data.viewer.accounts[0]?.callsTurnUsageAdaptiveGroups ?? [];
       return {
@@ -268,7 +286,7 @@ async function refreshRemoteUsage(env: Env, periodStart: number, periodEnd: numb
       const accountId = env.CLOUDFLARE_ACCOUNT_ID;
       if (token === undefined || accountId === undefined)
         throw new Error("Cloudflare analytics is not configured");
-      const response = await fetch(
+      const response = await fetcher(
         `https://api.cloudflare.com/client/v4/accounts/${accountId}/analytics_engine/sql`,
         {
           method: "POST",
@@ -283,11 +301,15 @@ async function refreshRemoteUsage(env: Env, periodStart: number, periodEnd: numb
   ]);
 }
 
-export async function refreshCloudflareUsage(env: Env, reconcile: boolean): Promise<void> {
+export async function refreshCloudflareUsage(
+  env: Env,
+  reconcile: boolean,
+  fetcher: typeof fetch = fetch,
+): Promise<void> {
   const media = await readMediaUsage(env.DB);
   if (reconcile || media.reconciledAt === null) await reconcileMediaInventory(env.DB, env.MEDIA);
   const now = Date.now();
-  await refreshRemoteUsage(env, startOfUtcMonth(now), now);
+  await refreshRemoteUsage(env, startOfUtcMonth(now), now, fetcher);
 }
 
 async function cachePayload<T extends z.ZodType>(
@@ -343,7 +365,7 @@ export async function readCloudflareUsage(env: Env): Promise<CloudflareUsageResp
       z.object({
         requests: z.number().int().nonnegative(),
         errors: z.number().int().nonnegative(),
-        cpuTimeMs: z.number().nonnegative(),
+        cpuTimeMs: z.number().nonnegative().nullable(),
       }),
     ),
     cachePayload(

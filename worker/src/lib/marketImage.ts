@@ -83,7 +83,10 @@ export function forceInfiniteWebpLoop(input: Uint8Array): Uint8Array {
   return output;
 }
 
-export async function normalizeMarketIcon(images: ImagesBinding, file: File): Promise<Uint8Array> {
+export async function normalizeMarketIcon(
+  images: Pick<ImagesBinding, "info" | "input">,
+  file: File,
+): Promise<Uint8Array> {
   if (file.size > LIMITS.marketIconInputMaxBytes) {
     throw new MarketImageError("payload_too_large");
   }
