@@ -165,8 +165,10 @@ describe("Tavern Home read", () => {
         base + 460_000,
       );
       sql.exec(
-        `INSERT INTO sounds(id, name, uploader_id, r2_key, duration_ms, trim_start_ms, trim_end_ms, created_at)
-         VALUES (?, 'cheers', ?, ?, 1000, 0, 1000, ?)`,
+        `INSERT INTO sounds(
+           id, name, emoji, gain, source_file_name, uploader_id, r2_key,
+           duration_ms, trim_start_ms, trim_end_ms, created_at)
+         VALUES (?, 'cheers', '🔊', 1, 'cheers.mp3', ?, ?, 1000, 0, 1000, ?)`,
         soundId,
         a,
         `sounds/${soundId}.mp3`,

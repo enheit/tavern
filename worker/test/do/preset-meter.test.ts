@@ -36,14 +36,14 @@ describe("FR-27 preset repricing", () => {
     });
   });
 
-  it("the same watcher on l meters 1,875,000 bytes per 60s (250 kbps)", async () => {
+  it("the same watcher on l meters 1,350,000 bytes per 60s (180 kbps)", async () => {
     const viewer = crypto.randomUUID();
     await runInDurableObject(freshRoom(), async (_i, state) => {
       const meter = new CostMeter(state, {});
       await meter.openWatch(viewer, TRACK, "720p30", "l", T0);
       await meter.closeWatch(viewer, TRACK, T0 + MINUTE);
-      // 250 * 1000 / 8 * 60 = 1,875,000 (the l-rate is fixed regardless of the preset)
-      expect(sumEgress(state)).toBe(1_875_000);
+      // 180 * 1000 / 8 * 60 = 1,350,000 (720p30's l layer is derived from its preset cap)
+      expect(sumEgress(state)).toBe(1_350_000);
     });
   });
 
@@ -73,10 +73,9 @@ describe("FR-27 preset repricing", () => {
       await meter.closeWatch(viewerH, TRACK, T0 + MINUTE);
       await meter.closeWatch(viewerL, TRACK, T0 + MINUTE);
       await meter.closeWatch(other, "screen:pub:2", T0 + MINUTE);
-      // viewerH: 30s@1800 + 30s@3500 = 19,875,000 ; viewerL: 60s@250 = 1,875,000 (rid preserved, l-rate
-      // is preset-independent so the reprice is a no-op on its bytes) ; other (different stream): 60s@1800
-      // = 13,500,000 (untouched by the reprice).
-      expect(sumEgress(state)).toBe(19_875_000 + 1_875_000 + 13_500_000);
+      // viewerH: 30s@1800 + 30s@3500 = 19,875,000 ; viewerL keeps rid l while repricing from
+      // 30s@180 + 30s@350 = 1,987,500 ; other (different stream): 60s@1800 = 13,500,000.
+      expect(sumEgress(state)).toBe(19_875_000 + 1_987_500 + 13_500_000);
     });
   });
 });
