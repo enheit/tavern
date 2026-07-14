@@ -3,6 +3,8 @@ REALTIME_APP_ID=
 REALTIME_APP_SECRET=
 TURN_KEY_ID=
 TURN_KEY_API_TOKEN=
+# Optional read-only token for Tavern-scoped Cloudflare usage refreshes.
+CLOUDFLARE_ANALYTICS_TOKEN=
 # Test/dev only: '1' shortens the empty-voice alarm to 5s. NEVER set in production config.
 TAVERN_TEST_FAST_ALARM=
 # Static better-auth base URL for the local dev worker (see worker/src/auth.ts).

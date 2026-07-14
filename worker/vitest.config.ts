@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { TEST_SECRETS } from "./vitest.test-env";
 
 // 2026 pool-workers style: cloudflareTest() Vite plugin (defineWorkersConfig/poolOptions is obsolete).
 // In 0.18.4 both cloudflareTest and readD1Migrations ship from the package root (no /config subpath).
@@ -12,8 +13,7 @@ export default defineConfig({
       remoteBindings: false,
       wrangler: {
         configPath: "./wrangler.jsonc",
-        // Public test fixture: production injects a distinct secret through Wrangler.
-        secrets: { BETTER_AUTH_SECRET: "test-only-auth-secret-00000000000000000000000000000000" },
+        secrets: TEST_SECRETS,
       },
       // TEST_MIGRATIONS is applied by test/setup.ts's applyD1Migrations(); empty until S1.2.
       // TAVERN_SFU_MOCK=1 swaps the Realtime client for the fixture-backed mock (S7.1, §10) so the

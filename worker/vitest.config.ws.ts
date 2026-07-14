@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { TEST_SECRETS } from "./vitest.test-env";
 
 // Dedicated project for the ServerRoom DO WebSocket tests. Per-file storage isolation does not
 // support DO WebSockets (official known issue), so `test:ws` runs it with `--max-workers=1
@@ -14,8 +15,7 @@ export default defineConfig({
       remoteBindings: false,
       wrangler: {
         configPath: "./wrangler.jsonc",
-        // Public test fixture: production injects a distinct secret through Wrangler.
-        secrets: { BETTER_AUTH_SECRET: "test-only-auth-secret-00000000000000000000000000000000" },
+        secrets: TEST_SECRETS,
       },
       // TAVERN_TEST_FAST_ALARM=1 pins the fast (5s) voice alarm for the FR-24 tests (§S3.4 task 5);
       // it belongs only in the test env, never production wrangler config.
