@@ -1143,7 +1143,12 @@ export class RoomState {
     if (!att.hello) return;
     if (this.helloSocketCount(att.userId, ws) > 0) return;
     if (!this.hasMember(att.userId)) return;
-    this.broadcast({ t: "presence.update", userId: att.userId, presence: "offline", at });
+    // getWebSockets() still includes the socket currently delivering its close event. Exclude it so
+    // the offline fan-out cannot attempt send() on the already-closed connection.
+    this.broadcast(
+      { t: "presence.update", userId: att.userId, presence: "offline", at },
+      { except: ws },
+    );
   }
 
   // Count of the user's completed-handshake sockets, optionally excluding one (the current event's ws).

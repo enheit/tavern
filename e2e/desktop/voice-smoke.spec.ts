@@ -1,6 +1,6 @@
 /* oxlint-disable no-underscore-dangle -- reads the pinned §10 e2e hook global window.__tavernTestRtc */
 import { closeAll, launchDesktop } from "../harness/desktop";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectServerReady, test } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
 // FR-18 desktop voice smoke: one Electron instance (launchDesktop sets TAVERN_E2E=1 → main-process
@@ -45,7 +45,7 @@ test.describe("FR-18 desktop voice smoke", () => {
     await page.goto(WEB_URL);
 
     // Boot gate lands the single-server member on the server shell.
-    await expect(page.getByTestId("controls-bar")).toBeVisible({ timeout: 30_000 });
+    await expectServerReady(page, 30_000);
 
     // Join voice with the fake mic.
     await page.getByTestId("channel-voice").click();

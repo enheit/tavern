@@ -1,6 +1,6 @@
 /* oxlint-disable no-underscore-dangle -- reads the pinned §10 e2e hook globals window.__tavernTest* */
 import type { Browser, BrowserContext, Page } from "@playwright/test";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectServerReady, test } from "../harness/fixtures";
 import type { Api, SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -207,15 +207,17 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
       );
       await Promise.all(
         [a, b, c].map((member) =>
-          expect(
-            observer.page.getByTestId(`voice-lounge-avatar-${member.user.userId}`),
-          ).toBeVisible({ timeout: 10_000 }),
+          expect(observer.page.getByTestId(`voice-avatar-tile-${member.user.userId}`)).toBeVisible({
+            timeout: 10_000,
+          }),
         ),
       );
-      await expect(observer.page.getByTestId("voice-lounge")).toHaveAttribute(
-        "data-renderer",
-        "ready",
-        { timeout: 10_000 },
+      await Promise.all(
+        [a, b, c].map((member) =>
+          expect(
+            observer.page.getByTestId(`voice-avatar-tile-${member.user.userId}`),
+          ).toHaveAttribute("data-renderer", "ready", { timeout: 10_000 }),
+        ),
       );
       const screenshotPath = testInfo.outputPath("voice-lounge.png");
       await observer.page.screenshot({ path: screenshotPath, fullPage: true });
@@ -247,12 +249,12 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
           await expect(viewer.page.getByTestId(`voice-chip-${b.user.userId}`)).toBeVisible({
             timeout: 10_000,
           });
-          await expect(viewer.page.getByTestId(`voice-lounge-avatar-${a.user.userId}`)).toBeVisible(
-            { timeout: 10_000 },
-          );
-          await expect(viewer.page.getByTestId(`voice-lounge-avatar-${b.user.userId}`)).toBeVisible(
-            { timeout: 10_000 },
-          );
+          await expect(viewer.page.getByTestId(`voice-avatar-tile-${a.user.userId}`)).toBeVisible({
+            timeout: 10_000,
+          });
+          await expect(viewer.page.getByTestId(`voice-avatar-tile-${b.user.userId}`)).toBeVisible({
+            timeout: 10_000,
+          });
         }),
       );
       await expect(a.page.getByTestId("voice-members").getByRole("listitem")).toHaveCount(2);
@@ -307,11 +309,9 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
         "true",
         { timeout: 2_500 },
       );
-      await expect(a.page.getByTestId("voice-lounge")).toHaveAttribute("data-renderer", "ready");
-      await expect(a.page.getByTestId(`voice-lounge-avatar-${a.user.userId}`)).toHaveAttribute(
-        "data-speaking",
-        "true",
-      );
+      const avatar = a.page.getByTestId(`voice-avatar-tile-${a.user.userId}`);
+      await expect(avatar).toHaveAttribute("data-renderer", "ready");
+      await expect(avatar).toHaveAttribute("data-speaking", "true");
     } finally {
       await closeClients(clients);
     }
@@ -413,7 +413,7 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
       // Persisted locally (settings.volumes.v1) → survives a fresh boot (full page reload via "/").
       await a.page.goto(`/?e2e=1`);
       await expect(a.page).toHaveURL(new RegExp(`/s/${serverId}$`));
-      await expect(a.page.getByTestId("controls-bar")).toBeVisible();
+      await expectServerReady(a.page);
       await expect
         .poll(() => a.page.evaluate((id) => window.__tavernTestAudio?.userGains[id], b.user.userId))
         .toBe(1.5);
@@ -496,15 +496,15 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
       await joinVoice(b);
       await expect(c.page.getByTestId("voice-timer")).toBeVisible();
 
-      // Both members drop their sockets (leave). The DO closes the empty session (immediate on the
-      // last socket close; the fast alarm — TAVERN_TEST_FAST_ALARM=1, 5 s — is the crash-safety net).
+      // Both members drop their sockets. The DO preserves media for the 15 s reconnect lease, then
+      // its alarm expires both leases and closes the empty session.
       await a.context.close();
       await b.context.close();
 
       // The timer disappears for C (sessionStartedAt → null) and Home returns to quiet.
-      await expect(c.page.getByTestId("voice-timer")).toHaveCount(0, { timeout: 8_000 });
+      await expect(c.page.getByTestId("voice-timer")).toHaveCount(0, { timeout: 25_000 });
       await expect(c.page.getByText("The voice room is quiet", { exact: true })).toBeVisible({
-        timeout: 8_000,
+        timeout: 25_000,
       });
     } finally {
       await c.context.close();

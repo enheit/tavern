@@ -9,7 +9,7 @@
 import { chromium, expect, test } from "@playwright/test";
 import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { REALTIME_URL, TONE_WAV } from "../playwright.config";
-import { test as harness } from "../harness/fixtures";
+import { expectServerReady, test as harness } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 
 declare global {
@@ -38,7 +38,7 @@ async function newClient(browser: Browser, user: SeededUser): Promise<Client> {
   });
   const page = await context.newPage();
   await page.goto(`/?e2e=1`);
-  await expect(page.getByTestId("controls-bar")).toBeVisible({ timeout: 20_000 });
+  await expectServerReady(page);
   return { user, context, page };
 }
 

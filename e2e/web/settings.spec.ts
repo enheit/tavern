@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Browser, Page } from "@playwright/test";
-import { expect, expectMemberVisible, test, withDashboardMembers } from "../harness/fixtures";
+import {
+  expect,
+  expectMemberVisible,
+  expectServerReady,
+  test,
+  withDashboardMembers,
+} from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -37,7 +43,7 @@ async function pageFor(
 async function bootOnto(opened: Opened, serverId: string): Promise<void> {
   await opened.page.goto("/");
   await expect(opened.page).toHaveURL(new RegExp(`/s/${serverId}$`));
-  await expect(opened.page.getByTestId("composer-input")).toBeVisible();
+  await expectServerReady(opened.page);
 }
 
 async function openSettings(page: Page): Promise<void> {
@@ -234,16 +240,12 @@ test.describe("FR-03 FR-04 FR-05 FR-06 FR-07 settings persistence", () => {
       // Roster membership is enough to render the lounge; the mock SFU intentionally has no media
       // plane, so this visual test does not wait for its PeerConnection to become connected.
       await openedA.page.getByTestId("channel-voice").click();
-      const avatar = openedB.page.getByTestId(`voice-lounge-avatar-${a.userId}`);
+      const avatar = openedB.page.getByTestId(`voice-avatar-tile-${a.userId}`);
       await expect(avatar).toBeVisible({ timeout: 10_000 });
       await expect(avatar).toHaveAttribute("data-avatar-mode", "custom");
-      await expect(openedB.page.getByTestId("voice-lounge")).toHaveAttribute(
-        "data-renderer",
-        "ready",
-        { timeout: 10_000 },
-      );
+      await expect(avatar).toHaveAttribute("data-renderer", "ready", { timeout: 10_000 });
       const screenshotPath = testInfo.outputPath("custom-voice-avatar.png");
-      await openedB.page.getByTestId("voice-lounge").screenshot({ path: screenshotPath });
+      await avatar.screenshot({ path: screenshotPath });
       await testInfo.attach("custom-voice-avatar", {
         path: screenshotPath,
         contentType: "image/png",

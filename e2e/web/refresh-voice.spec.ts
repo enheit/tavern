@@ -1,5 +1,5 @@
 /* oxlint-disable no-underscore-dangle -- reads the pinned §10 e2e hook globals window.__tavernTest* */
-import { expect, test } from "../harness/fixtures";
+import { expect, expectServerReady, test } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
 // A reload terminates browser-owned media. It must therefore return the UI to its idle state instead
@@ -32,7 +32,7 @@ test.describe("refresh clears live media state", () => {
     try {
       await page.goto("/?e2e=1");
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId("app-shell")).toBeVisible();
+      await expectServerReady(page);
 
       // Join voice, mute, start the webcam (fake capture device).
       await page.getByTestId("channel-voice").click();
@@ -84,7 +84,7 @@ test.describe("refresh clears live media state", () => {
       // active or be reconstructed without a fresh user action.
       await page.goto("/?e2e=1");
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId("app-shell")).toBeVisible();
+      await expectServerReady(page);
       await expect(page.getByTestId(`voice-chip-${user.userId}`)).toHaveCount(0, {
         timeout: 20_000,
       });
@@ -96,7 +96,7 @@ test.describe("refresh clears live media state", () => {
         sessionStorage.getItem("tavern-refresh-stale-stream-tiles"),
       );
       expect(JSON.parse(staleTiles ?? "[]")).toEqual([]);
-      await expect.poll(() => rtcStates(page)).toBeNull();
+      await expect.poll(() => rtcStates(page)).toEqual({ publish: "idle", pull: "none" });
     } finally {
       await context.close();
     }
@@ -114,6 +114,7 @@ test.describe("refresh clears live media state", () => {
     try {
       await page.goto("/?e2e=1");
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
+      await expectServerReady(page);
       await page.getByTestId("channel-voice").click();
       await expect(page.getByTestId(`voice-chip-${user.userId}`)).toBeVisible({ timeout: 20_000 });
       await page.getByTestId("controls-leave").click();
@@ -123,7 +124,7 @@ test.describe("refresh clears live media state", () => {
 
       await page.goto("/?e2e=1");
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId("controls-bar")).toBeVisible();
+      await expectServerReady(page);
       await expect(page.getByTestId(`voice-chip-${user.userId}`)).toHaveCount(0);
     } finally {
       await context.close();

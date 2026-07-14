@@ -1,6 +1,6 @@
 /* oxlint-disable no-underscore-dangle -- reads the §10 e2e hook global window.__tavernTestRtc */
 import type { Browser, BrowserContext, Page } from "@playwright/test";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectServerReady, test } from "../harness/fixtures";
 import type { Api, SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -79,7 +79,7 @@ async function seedRoom(
       const page = await context.newPage();
       await page.goto(`/?e2e=1`);
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId("controls-bar")).toBeVisible();
+      await expectServerReady(page);
       return { user, context, page };
     }),
   );
@@ -147,9 +147,13 @@ test.describe("FR-25 recording e2e (mock SFU)", () => {
         timeout: 10_000,
       });
 
-      // (1) B sees the red REC chip and Home's live recording state (visible to all members).
+      // (1) B sees the persistent red REC chip. Voice participants are now routed to the live canvas,
+      // so the Dashboard's duplicate "Recording" label is intentionally mounted but hidden.
       await expect(b.page.getByTestId("rec-indicator")).toBeVisible({ timeout: 10_000 });
-      await expect(b.page.getByText("Recording", { exact: true })).toBeVisible({ timeout: 10_000 });
+      await expect(b.page.getByTestId("workspace-tab-stream")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
 
       // Record ~6s (FR-25 AC ≥ 5s).
       await a.page.waitForTimeout(6000);

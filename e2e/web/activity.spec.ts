@@ -7,7 +7,7 @@ import { WEB_URL, WORKER_URL } from "../playwright.config";
 // B is the real browser under test; A is a bare protocol client.
 
 interface VoiceWs {
-  send(frame: { t: string }): void;
+  send(frame: { t: "voice.join"; mediaReadyVersion: 2 } | { t: "voice.leave" }): void;
   close(): void;
 }
 
@@ -59,7 +59,7 @@ async function ticketFor(user: SeededUser, serverId: string): Promise<string> {
 }
 
 test.describe("Tavern Home live presence", () => {
-  test("voice join and leave by A update B's idle-center Home without refresh", async ({
+  test("voice join by A opens B's live canvas and leave returns Home without refresh", async ({
     browser,
     baseURL,
     api,
@@ -90,12 +90,15 @@ test.describe("Tavern Home live presence", () => {
       voice = await openVoiceWs(server.id, await ticketFor(a, server.id));
       await expect(page.getByTestId("home-members-online")).toContainText(a.username);
 
-      // A joins voice → B's live strip updates from the room snapshot.
-      voice.send({ t: "voice.join" });
-      await expect(page.getByText("1 in voice", { exact: true })).toBeVisible({ timeout: 5000 });
-      await expect(page.getByTestId("home-live-avatars").getByTitle(a.username)).toBeVisible({
+      // A joins voice → the redesigned workspace moves B from the idle Home view to the live canvas.
+      voice.send({ t: "voice.join", mediaReadyVersion: 2 });
+      await expect(page.getByTestId(`voice-avatar-tile-${a.userId}`)).toBeVisible({
         timeout: 5000,
       });
+      await expect(page.getByTestId("workspace-tab-stream")).toHaveAttribute(
+        "aria-selected",
+        "true",
+      );
       // A leaves voice → the strip returns to its quiet state without a refresh.
       voice.send({ t: "voice.leave" });
       await expect(page.getByText("The voice room is quiet", { exact: true })).toBeVisible({

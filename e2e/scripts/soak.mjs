@@ -201,7 +201,7 @@ async function main() {
   await Promise.all(
     clients.map(async (c) => {
       await c.page.goto(`${base}/?e2e=1`);
-      await waitFor(c.page, '[data-testid="controls-bar"]');
+      await waitFor(c.page, '[data-testid="app-shell"]');
       // chat.send/voice.join while the WS is still connecting is dropped by design — gate on open.
       await waitFor(c.page, '[data-testid="connection-dot"][data-status="open"]');
       c.lastDot = "open";

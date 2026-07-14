@@ -1,5 +1,5 @@
 import { closeAll, launchDesktop } from "../harness/desktop";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectServerReady, test } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
 test.describe("desktop close behavior", () => {
@@ -15,7 +15,7 @@ test.describe("desktop close behavior", () => {
     await expect(desktop.page.getByTestId("page-login")).toBeAttached({ timeout: 30_000 });
     await desktop.page.evaluate((token) => window.tavern?.secrets.setToken(token), user.token);
     await desktop.page.goto(WEB_URL);
-    await expect(desktop.page.getByTestId("controls-bar")).toBeVisible({ timeout: 30_000 });
+    await expectServerReady(desktop.page, 30_000);
 
     await desktop.page.getByTestId("sidebar-settings-button").click();
     await desktop.page.getByTestId("settings-tab-app").click();

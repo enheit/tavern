@@ -1,4 +1,5 @@
 import type { PresetId, ScreenRid } from "@tavern/shared";
+import { platform } from "@/platform/types";
 import { watchConnectionRecovery } from "./connectionRecovery";
 import {
   SCREEN_PRESETS,
@@ -327,7 +328,10 @@ export class PublishSession {
         }
         if (answer.publicationId !== undefined) {
           try {
-            await waitForPeerConnectionConnected(pc);
+            // The hermetic E2E SFU intentionally has no media plane or ICE candidates; its
+            // structurally-valid SDP handshake is the readiness proof. Production must still prove
+            // a connected PeerConnection before making the reserved publication pullable.
+            if (!platform.isE2E) await waitForPeerConnectionConnected(pc);
             await this.signal.confirmPublishedTracks(
               this.serverId,
               sessionId,

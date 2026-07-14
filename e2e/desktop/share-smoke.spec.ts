@@ -1,5 +1,5 @@
 import { closeAll, launchDesktop } from "../harness/desktop";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectServerReady, test } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
 // FR-28 desktop screen-share smoke: one Electron instance (launchDesktop sets TAVERN_E2E=1 → the
@@ -36,7 +36,7 @@ test.describe("FR-28 desktop share smoke", () => {
     await expect(page.getByTestId("page-login")).toBeAttached({ timeout: 30_000 });
     await page.evaluate((token) => window.tavern?.secrets.setToken(token), user.token);
     await page.goto(WEB_URL);
-    await expect(page.getByTestId("controls-bar")).toBeVisible({ timeout: 30_000 });
+    await expectServerReady(page, 30_000);
 
     // The screen-share control is enabled only while in voice — join first.
     await page.getByTestId("channel-voice").click();

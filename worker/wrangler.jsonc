@@ -69,6 +69,20 @@
   // here verbatim from the top level.
   "env": {
     "e2e": {
+      "secrets": {
+        "required": [
+          "BETTER_AUTH_SECRET",
+          "REALTIME_APP_ID",
+          "REALTIME_APP_SECRET",
+          "TURN_KEY_ID",
+          "TURN_KEY_API_TOKEN",
+          "CLOUDFLARE_ANALYTICS_TOKEN",
+          "KLIPY_API_KEY",
+          "TAVERN_SFU_MOCK",
+          "TAVERN_TEST_FAST_ALARM",
+          "TAVERN_TEST"
+        ]
+      },
       "vars": {
         "BETTER_AUTH_URL": "http://localhost:8787",
         "SFU_ADAPTATION_MODE": "adaptive",

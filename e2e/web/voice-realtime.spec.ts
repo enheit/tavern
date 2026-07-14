@@ -1,6 +1,6 @@
 /* oxlint-disable no-underscore-dangle -- reads the pinned §10 e2e hook global window.__tavernTestRtc */
 import type { Browser, BrowserContext, Page } from "@playwright/test";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectServerReady, test } from "../harness/fixtures";
 import type { Api, SeededUser } from "../harness/fixtures";
 import { REALTIME_URL } from "../playwright.config";
 
@@ -52,7 +52,7 @@ async function seedMany(
       // Boot via "/" (single-server member lands on /s/:id); `?e2e=1` sets platform.isE2E at load.
       await page.goto(`/?e2e=1`);
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId("controls-bar")).toBeVisible();
+      await expectServerReady(page);
       return { user, context, page };
     }),
   );

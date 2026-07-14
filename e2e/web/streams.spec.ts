@@ -1,7 +1,7 @@
 /* oxlint-disable no-underscore-dangle -- reads the pinned §10 e2e hook globals window.__tavernTest* */
 import type { Browser, BrowserContext, Page } from "@playwright/test";
 import type { PresetId } from "@tavern/shared";
-import { expect, test } from "../harness/fixtures";
+import { expect, expectServerReady, test } from "../harness/fixtures";
 import type { Api, SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -571,7 +571,7 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
       // Persisted (settings.volumes.streams) → survives a fresh boot and re-watch into the slider.
       await b.page.goto(`/?e2e=1`);
       await expect(b.page).toHaveURL(new RegExp(`/s/${serverId}$`));
-      await expect(b.page.getByTestId("controls-bar")).toBeVisible();
+      await expectServerReady(b.page);
       await expect.poll(() => readStreamVolume(b.page, streamKey)).toBe(0.2);
       await b.page.getByTestId(`stream-watch-${track}`).click();
       await expect(b.page.getByTestId(`stream-video-${track}`)).toBeVisible({ timeout: 20_000 });
@@ -609,7 +609,7 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
     }
   });
 
-  test("Dashboard stays available during a stream and the center view follows stream lifecycle", async ({
+  test("Dashboard stays available while the live canvas follows stream and voice lifecycle", async ({
     browser,
     baseURL,
     api,
@@ -637,12 +637,15 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
 
       await a.page.getByTestId("controls-screen").click();
       await expect(a.page.getByTestId(`stream-tile-${track}`)).toHaveCount(0, { timeout: 15_000 });
-      await expect(a.page.getByTestId("tavern-home")).toBeVisible({ timeout: 10_000 });
-      await expect(a.page.getByTestId("workspace-tab-dashboard")).toHaveAttribute(
+      // Stopping the screen removes only that tile. A is still in voice, so the redesigned canvas
+      // remains the active center view with A's voice avatar and Dashboard remains selectable.
+      await expect(a.page.getByTestId(`voice-avatar-tile-${a.user.userId}`)).toBeVisible();
+      await expect(a.page.getByTestId("workspace-tab-stream")).toHaveAttribute(
         "aria-selected",
         "true",
       );
-      await expect(a.page.getByTestId("workspace-tab-stream")).toHaveCount(0);
+      await a.page.getByTestId("workspace-tab-dashboard").click();
+      await expect(a.page.getByTestId("tavern-home")).toBeVisible();
     } finally {
       await closeClients(clients);
     }
@@ -664,6 +667,8 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
       expect(await seed.json()).toEqual({ screens: 4 });
 
       await a.page.getByTestId("controls-screen").click();
+      await expect(a.page.getByTestId("share-preset")).toBeVisible();
+      await a.page.getByTestId("share-start").click();
 
       // The publish is rejected with error.share_cap → an i18n toast; no tile appears.
       await expect(a.page.getByText("Too many screens are being shared")).toBeVisible({

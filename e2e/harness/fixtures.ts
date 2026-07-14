@@ -23,6 +23,15 @@ export async function expectMemberAbsent(page: Page, userId: string): Promise<vo
   );
 }
 
+// The shell renders before its WebSocket handshake finishes. Commands sent in that short window are
+// intentionally dropped, so tests that interact with live room state must gate on both milestones.
+export async function expectServerReady(page: Page, timeout = 20_000): Promise<void> {
+  await expect(page.getByTestId("app-shell")).toBeVisible({ timeout });
+  await expect(page.getByTestId("connection-dot")).toHaveAttribute("data-status", "open", {
+    timeout,
+  });
+}
+
 // The frozen harness surface every later e2e step reuses (PLAN §10). Fixtures `api` and
 // `twoContexts` are pinned by name — later steps EXTEND them, never rename. Everything talks to the
 // active target (the project `baseURL`): for the `web` project that is the Vite dev server, which

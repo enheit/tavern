@@ -1,7 +1,7 @@
 /* oxlint-disable no-underscore-dangle -- reads the pinned §10 e2e hook global window.__tavernTestRtc */
 import { randomBytes } from "node:crypto";
 import type { Browser, BrowserContext, Page } from "@playwright/test";
-import { expect, expectMemberVisible, test } from "../harness/fixtures";
+import { expect, expectMemberVisible, expectServerReady, test } from "../harness/fixtures";
 import type { SeededUser } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
@@ -32,7 +32,7 @@ async function pageFor(
 
 async function bootOnto(opened: Opened, serverId: string): Promise<void> {
   await expect(opened.page).toHaveURL(new RegExp(`/s/${serverId}$`));
-  await expect(opened.page.getByTestId("controls-bar")).toBeVisible();
+  await expectServerReady(opened.page);
 }
 
 // Joins voice and waits until FULLY wired (publish + voice pull connected) — a premature
