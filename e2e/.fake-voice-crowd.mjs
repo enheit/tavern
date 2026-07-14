@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { chromium, request as playwrightRequest } from "@playwright/test";
 
-const ROOT = "/Users/roman/Developer/Personal/tavern";
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BASE_URL = "http://localhost:5173";
 const SERVER_ID = "8b058d8e-50e0-444f-821c-bba6abec3bd5";
 const SCREENSHOT_PATH = "/tmp/tavern-fake-voice-crowd.png";
@@ -81,7 +82,7 @@ const activeLooks = looks.slice(0, Math.max(1, Math.min(looks.length, requestedC
 
 const apiContexts = [];
 const browserContexts = [];
-const users = [];
+let users = [];
 let browser;
 
 function readUserId(body) {
@@ -112,7 +113,7 @@ function runLocalSql(sql) {
 async function waitForRtc(page) {
   await page.waitForFunction(
     () => {
-      const rtc = window.__tavernTestRtc;
+      const rtc = window["__tavernTestRtc"];
       return rtc?.publishState === "connected" && rtc.pullStates.voice === "connected";
     },
     undefined,
@@ -146,30 +147,51 @@ async function cleanup() {
   await Promise.allSettled(apiContexts.map((context) => context.dispose()));
 }
 
-try {
-  for (const [index, look] of activeLooks.entries()) {
-    const api = await playwrightRequest.newContext({ baseURL: BASE_URL });
-    apiContexts.push(api);
-    const username = `voice_guest_${index + 1}_${suffix}`;
-    const password = `pw-fake-${suffix}-${index + 1}`;
-    const register = await api.post("/api/auth-wrap/register", {
-      data: { username, password, repeatPassword: password },
-    });
-    if (!register.ok()) {
-      throw new Error(
-        `Register ${index + 1} failed: ${register.status()} ${await register.text()}`,
-      );
-    }
-    const userId = readUserId(await register.json());
-    const displayName = `Voice Guest ${index + 1}`;
-    const profile = await api.patch("/api/me/profile", {
-      data: { displayName, voiceAvatar: { version: 2, ...look } },
-    });
-    if (!profile.ok()) {
-      throw new Error(`Profile ${index + 1} failed: ${profile.status()} ${await profile.text()}`);
-    }
-    users.push({ userId, displayName, storageState: await api.storageState() });
+async function createUser(look, index) {
+  const api = await playwrightRequest.newContext({ baseURL: BASE_URL });
+  apiContexts.push(api);
+  const username = `voice_guest_${index + 1}_${suffix}`;
+  const password = `pw-fake-${suffix}-${index + 1}`;
+  const register = await api.post("/api/auth-wrap/register", {
+    data: { username, password, repeatPassword: password },
+  });
+  if (!register.ok()) {
+    throw new Error(`Register ${index + 1} failed: ${register.status()} ${await register.text()}`);
   }
+  const userId = readUserId(await register.json());
+  const displayName = `Voice Guest ${index + 1}`;
+  const profile = await api.patch("/api/me/profile", {
+    data: { displayName, voiceAvatar: { version: 2, ...look } },
+  });
+  if (!profile.ok()) {
+    throw new Error(`Profile ${index + 1} failed: ${profile.status()} ${await profile.text()}`);
+  }
+  return { userId, displayName, storageState: await api.storageState() };
+}
+
+async function joinUser(user) {
+  const context = await browser.newContext({
+    baseURL: BASE_URL,
+    storageState: user.storageState,
+    permissions: ["microphone", "camera"],
+    viewport: { width: 1440, height: 1100 },
+  });
+  browserContexts.push(context);
+  const page = await context.newPage();
+  await page.goto(`/s/${SERVER_ID}?e2e=1`);
+  await page.getByTestId("app-shell").waitFor({ state: "visible", timeout: 20_000 });
+  await page.getByTestId("channel-voice").click();
+  await page.getByTestId(`voice-chip-${user.userId}`).waitFor({
+    state: "visible",
+    timeout: 20_000,
+  });
+  await waitForRtc(page);
+  console.log(`JOINED ${user.displayName}`);
+  return { ...user, page };
+}
+
+try {
+  users = await Promise.all(activeLooks.map((look, index) => createUser(look, index)));
 
   const joinedAt = Date.now();
   const membershipValues = users
@@ -189,26 +211,7 @@ try {
     ],
   });
 
-  for (const user of users) {
-    const context = await browser.newContext({
-      baseURL: BASE_URL,
-      storageState: user.storageState,
-      permissions: ["microphone", "camera"],
-      viewport: { width: 1440, height: 1100 },
-    });
-    browserContexts.push(context);
-    const page = await context.newPage();
-    user.page = page;
-    await page.goto(`/s/${SERVER_ID}?e2e=1`);
-    await page.getByTestId("app-shell").waitFor({ state: "visible", timeout: 20_000 });
-    await page.getByTestId("channel-voice").click();
-    await page.getByTestId(`voice-chip-${user.userId}`).waitFor({
-      state: "visible",
-      timeout: 20_000,
-    });
-    await waitForRtc(page);
-    console.log(`JOINED ${user.displayName}`);
-  }
+  users = await Promise.all(users.map((user) => joinUser(user)));
 
   const viewer = users[0].page;
   await viewer.waitForFunction(
