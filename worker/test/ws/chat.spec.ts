@@ -288,25 +288,56 @@ describe("FR-14 chat send/receive", () => {
     });
   });
 
-  it("11 sends in one tick → the 11th is rate_limited; the socket stays usable", async () => {
+  it("ChatModule rate-limits the 11th send at a fixed timestamp", async () => {
     const stub = freshRoom();
-    const a = memberInit();
-    await seed(stub, a, { id: crypto.randomUUID(), nickname: "r", adminUserId: a.userId });
+    const actor = fullMember("alice");
+    await runInDurableObject(stub, (_instance, state) => {
+      const chat = new ChatModule(state.storage.sql);
+      const results = Array.from({ length: 11 }, (_, index) =>
+        chat.send({
+          userId: actor.userId,
+          body: `burst ${index}`,
+          nonce: crypto.randomUUID(),
+          members: [actor],
+          now: 100,
+        }),
+      );
 
-    const { ws, col } = await connect(stub, a.userId);
-    // Burst of 11 within one tick: capacity is 10 (refill 5/s can add <1 token over the few ms this
-    // takes), so exactly 10 persist + echo and the 11th is rejected on this socket.
-    for (let i = 0; i < 11; i += 1) sendChat(ws, `burst ${i}`);
+      expect(results.slice(0, 10).every((result) => result.ok)).toBe(true);
+      expect(results[10]).toEqual({ ok: false, code: "rate_limited" });
+      const row = state.storage.sql
+        .exec<Record<string, SqlStorageValue>>(`SELECT COUNT(*) AS count FROM messages`)
+        .one();
+      expect(Number(row["count"])).toBe(10);
+    });
+  });
 
-    await col.waitForCount("chat.new", 10);
+  it("a rejected chat send leaves the socket usable", async () => {
+    const stub = freshRoom();
+    const actor = memberInit();
+    await seed(stub, actor, {
+      id: crypto.randomUUID(),
+      nickname: "r",
+      adminUserId: actor.userId,
+    });
+
+    const { ws, col } = await connect(stub, actor.userId);
+    ws.send(
+      JSON.stringify({
+        t: "chat.send",
+        body: "missing reply target",
+        nonce: crypto.randomUUID(),
+        replyToId: 999_999,
+      }),
+    );
     const err = await col.waitForType("error");
-    expect(err.code).toBe("rate_limited");
-    expect(col.count("chat.new")).toBe(10);
+    expect(err.code).toBe("not_found");
+    expect(col.count("chat.new")).toBe(0);
 
     // Socket stays open: a follow-up request is still served.
     requestHistory(ws, "latest");
     const page = await col.waitForType("chat.page");
-    expect(page.messages).toHaveLength(10);
+    expect(page.messages).toHaveLength(0);
     ws.close();
   });
 });
