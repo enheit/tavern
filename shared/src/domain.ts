@@ -11,22 +11,191 @@ export type Theme = z.infer<typeof Theme>;
 export const Locale = z.enum(["en", "uk"]);
 export type Locale = z.infer<typeof Locale>;
 
+export const VOICE_AVATAR_LEGACY_SKIN_TONES = [
+  "light",
+  "light-medium",
+  "medium",
+  "medium-deep",
+  "deep",
+] as const;
+export const VOICE_AVATAR_SKIN_TONES = [
+  "porcelain",
+  "light",
+  "light-medium",
+  "warm-medium",
+  "medium",
+  "tan",
+  "medium-deep",
+  "deep",
+  "rich",
+  "ebony",
+] as const;
+export const VOICE_AVATAR_LEGACY_HAIR_COLORS = [
+  "black",
+  "dark-brown",
+  "brown",
+  "golden-brown",
+  "blonde",
+  "violet",
+] as const;
+export const VOICE_AVATAR_HAIR_COLORS = [
+  "black",
+  "dark-brown",
+  "brown",
+  "chestnut",
+  "auburn",
+  "ginger",
+  "golden-brown",
+  "blonde",
+  "platinum",
+  "gray",
+  "white",
+  "violet",
+] as const;
+export const VOICE_AVATAR_LEGACY_HAIR_STYLES = ["short", "spiked", "curly", "bun"] as const;
+export const VOICE_AVATAR_HAIR_STYLES = [
+  "short",
+  "spiked",
+  "curly",
+  "bun",
+  "bald",
+  "buzz",
+  "wavy",
+  "coily",
+  "locs",
+  "ponytail",
+] as const;
+export const VOICE_AVATAR_EYE_COLORS = [
+  "dark-brown",
+  "brown",
+  "hazel",
+  "amber",
+  "green",
+  "blue",
+  "gray",
+] as const;
+export const VOICE_AVATAR_GLASSES_STYLES = [
+  "none",
+  "round",
+  "square",
+  "aviator",
+  "sunglasses",
+] as const;
+export const VOICE_AVATAR_FACIAL_HAIR_STYLES = [
+  "none",
+  "stubble",
+  "mustache",
+  "goatee",
+  "short-beard",
+  "full-beard",
+] as const;
+export type VoiceAvatarSkinTone = (typeof VOICE_AVATAR_SKIN_TONES)[number];
+export type VoiceAvatarHairColor = (typeof VOICE_AVATAR_HAIR_COLORS)[number];
+export type VoiceAvatarHairStyle = (typeof VOICE_AVATAR_HAIR_STYLES)[number];
+export type VoiceAvatarEyeColor = (typeof VOICE_AVATAR_EYE_COLORS)[number];
+export type VoiceAvatarGlassesStyle = (typeof VOICE_AVATAR_GLASSES_STYLES)[number];
+export type VoiceAvatarFacialHairStyle = (typeof VOICE_AVATAR_FACIAL_HAIR_STYLES)[number];
+
+// A complete, versioned recipe rather than renderer colors/geometry indexes. Storing semantic tokens
+// keeps persisted profiles stable when the low-poly implementation changes in a future release.
+export const VoiceAvatarConfigV1 = z
+  .object({
+    version: z.literal(1),
+    skinTone: z.enum(VOICE_AVATAR_LEGACY_SKIN_TONES),
+    hairColor: z.enum(VOICE_AVATAR_LEGACY_HAIR_COLORS),
+    hairStyle: z.enum(VOICE_AVATAR_LEGACY_HAIR_STYLES),
+    glasses: z.boolean(),
+    beard: z.boolean(),
+    outfitColor: z.string().regex(LIMITS.colorRe),
+  })
+  .strict();
+export type VoiceAvatarConfigV1 = z.infer<typeof VoiceAvatarConfigV1>;
+
+export const VoiceAvatarConfig = z
+  .object({
+    version: z.literal(2),
+    skinTone: z.enum(VOICE_AVATAR_SKIN_TONES),
+    hairColor: z.enum(VOICE_AVATAR_HAIR_COLORS),
+    hairStyle: z.enum(VOICE_AVATAR_HAIR_STYLES),
+    eyeColor: z.enum(VOICE_AVATAR_EYE_COLORS),
+    glassesStyle: z.enum(VOICE_AVATAR_GLASSES_STYLES),
+    facialHairStyle: z.enum(VOICE_AVATAR_FACIAL_HAIR_STYLES),
+    outfitColor: z.string().regex(LIMITS.colorRe),
+  })
+  .strict();
+export type VoiceAvatarConfig = z.infer<typeof VoiceAvatarConfig>;
+
+export function upgradeVoiceAvatarConfig(config: VoiceAvatarConfigV1): VoiceAvatarConfig {
+  return {
+    version: 2,
+    skinTone: config.skinTone,
+    hairColor: config.hairColor,
+    hairStyle: config.hairStyle,
+    eyeColor: "dark-brown",
+    glassesStyle: config.glasses ? "round" : "none",
+    facialHairStyle: config.beard ? "full-beard" : "none",
+    outfitColor: config.outfitColor,
+  };
+}
+
+// Accept legacy recipes at network/storage boundaries, then expose only the current complete shape.
+export const VoiceAvatarConfigInput = z
+  .union([VoiceAvatarConfig, VoiceAvatarConfigV1])
+  .transform((config) => (config.version === 1 ? upgradeVoiceAvatarConfig(config) : config));
+
 export const UserProfile = z.object({
   userId: z.uuid(),
   username: z.string().regex(LIMITS.usernameRe),
   displayName: z.string().min(LIMITS.displayNameMin).max(LIMITS.displayNameMax),
   color: z.string().regex(LIMITS.colorRe),
   avatarKey: z.string().optional(),
+  voiceAvatar: VoiceAvatarConfig.optional(),
 });
 export type UserProfile = z.infer<typeof UserProfile>;
 
 export const Presence = z.enum(["offline", "online", "in-voice"]);
 export type Presence = z.infer<typeof Presence>;
 
+// V1 market inventory is icon-only, but the explicit kind keeps persisted/API rows extensible when
+// a later market category is added. Asset URLs are derived from serverId + itemId and are never
+// accepted from clients.
+export const MarketItemKind = z.literal("icon");
+export type MarketItemKind = z.infer<typeof MarketItemKind>;
+
+export const MarketPurchase = z.object({
+  buyerId: z.uuid(),
+  buyerDisplayName: z.string().min(1).max(LIMITS.displayNameMax),
+  pricePaid: z.number().int().positive().max(LIMITS.marketPriceMax),
+  purchasedAt: z.number().int().nonnegative(),
+});
+export type MarketPurchase = z.infer<typeof MarketPurchase>;
+
+export const EquippedMarketIcon = z.object({
+  itemId: z.uuid(),
+  name: z.string().trim().min(1).max(LIMITS.marketItemNameMax),
+  pricePaid: z.number().int().positive().max(LIMITS.marketPriceMax),
+  purchasedAt: z.number().int().nonnegative(),
+});
+export type EquippedMarketIcon = z.infer<typeof EquippedMarketIcon>;
+
+export const MarketItem = z.object({
+  id: z.uuid(),
+  kind: MarketItemKind,
+  name: z.string().trim().min(1).max(LIMITS.marketItemNameMax),
+  price: z.number().int().positive().max(LIMITS.marketPriceMax),
+  revision: z.number().int().positive(),
+  createdBy: z.uuid(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  purchase: MarketPurchase.nullable(),
+});
+export type MarketItem = z.infer<typeof MarketItem>;
+
 export const Member = UserProfile.extend({
   presence: Presence,
   isAdmin: z.boolean(),
   joinedAt: z.number(),
+  marketIcon: EquippedMarketIcon.optional(),
 });
 export type Member = z.infer<typeof Member>;
 
@@ -37,12 +206,21 @@ export const MemberInit = UserProfile.extend({
 });
 export type MemberInit = z.infer<typeof MemberInit>;
 
+// The preview id is the opaque RTC publication id. `version` changes whenever the publisher replaces
+// the stable R2 object, allowing idle tiles to refresh without exposing an R2 key or public URL.
+export const StreamPreview = z.object({
+  id: z.uuid(),
+  version: z.string().min(1).max(128),
+});
+export type StreamPreview = z.infer<typeof StreamPreview>;
+
 export const StreamInfo = z.object({
   trackName: z.string().min(1).max(128),
   kind: z.enum(["screen", "webcam"]),
   userId: z.uuid(),
   hasAudio: z.boolean(),
   preset: PresetIdSchema,
+  preview: StreamPreview.optional(),
 });
 export type StreamInfo = z.infer<typeof StreamInfo>;
 
@@ -50,11 +228,10 @@ export const VoiceMember = z.object({
   userId: z.uuid(),
   muted: z.boolean(),
   deafened: z.boolean(),
-  // Bumped by the DO each time this member's mic track (re)registers on a publish (a rejoin or a
-  // transport recovery creates a NEW SFU session under the SAME mic:{uid} name — invisible in the
-  // roster otherwise). Peers re-pull when it changes; absent (old worker) reads as 0. Additive:
-  // clients on the previous schema strip the key on parse.
+  // `0` means the person is visibly in voice but their mic is not pullable yet. The DO increments it
+  // only after the publisher confirms its browser PeerConnection reached `connected`.
   micSeq: z.number().int().nonnegative().optional(),
+  mediaReadyVersion: z.literal(2).optional(),
 });
 export type VoiceMember = z.infer<typeof VoiceMember>;
 
@@ -193,12 +370,14 @@ export const UserSettings = z.object({
 });
 export type UserSettings = z.infer<typeof UserSettings>;
 
-// The one authoritative localStorage volumes shape (PLAN §5.4); all numbers are gain floats 0..2.
+// The one authoritative localStorage volumes shape (PLAN §5.4). Values are 0..2 control levels:
+// users/soundboard currently apply them as direct gains; streams apply an audio taper below unity.
 export const VolumesV1 = z.object({
   v: z.literal(1),
   users: z.record(z.string(), z.number()),
   streams: z.record(z.string(), z.number()),
   soundboard: z.number(),
+  soundboardMuted: z.boolean().optional(),
   mutedUsers: z.array(z.string()),
 });
 export type VolumesV1 = z.infer<typeof VolumesV1>;

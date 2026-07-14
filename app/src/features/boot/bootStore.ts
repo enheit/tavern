@@ -1,6 +1,5 @@
 import { MeResponse } from "@tavern/shared";
 import { create } from "zustand";
-import { clearVoiceSession } from "@/features/voice/voiceSession";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { authTransport } from "@/lib/authTransport";
 import { closeAllRooms, connectRoom } from "@/lib/wsClient";
@@ -125,9 +124,6 @@ export const useBootStore = create<BootStoreState>((set, get) => ({
   reset: () => {
     running = false;
     closeAllRooms();
-    // Logout kills the voice session snapshot — the next login in this tab may be a DIFFERENT
-    // user, who must never inherit an auto-rejoin.
-    clearVoiceSession();
     useSessionStore.getState().setUnauthed();
     useServersStore.getState().setServers([]);
     useServersStore.getState().setActiveServer(null);

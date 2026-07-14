@@ -85,6 +85,8 @@ async function joinVoice(client: Client): Promise<void> {
 
 async function startScreenShare(client: Client): Promise<string> {
   await client.page.getByTestId("controls-screen").click();
+  await expect(client.page.getByTestId("share-preset")).toBeVisible();
+  await client.page.getByTestId("share-start").click();
   const trackName = `screen:${client.user.userId}:1`;
   await expect(client.page.getByTestId(`stream-tile-${trackName}`)).toBeVisible({
     timeout: 20_000,

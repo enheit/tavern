@@ -63,7 +63,13 @@ function roomStub(serverId: string): RoomStub {
 async function seedVoice(serverId: string, userIds: string[]): Promise<void> {
   await runInDurableObject(roomStub(serverId), async (_i, state) => {
     await state.storage.put("voice", {
-      members: userIds.map((userId) => ({ userId, muted: false, deafened: false })),
+      members: userIds.map((userId) => ({
+        userId,
+        muted: false,
+        deafened: false,
+        micSeq: 0,
+        mediaReadyVersion: 2,
+      })),
       sessionStartedAt: Date.now(),
     });
   });
@@ -96,7 +102,7 @@ function rtcPost(token: string, serverId: string, sub: string, body: unknown): P
 }
 
 async function newSession(token: string, serverId: string): Promise<string> {
-  const res = await rtcPost(token, serverId, "session", {});
+  const res = await rtcPost(token, serverId, "session", { mediaReadyVersion: 2 });
   if (res.status !== 200) throw new Error(`session failed: ${res.status} ${await res.text()}`);
   const body: { sessionId: string } = await res.json();
   return body.sessionId;
@@ -112,7 +118,7 @@ describe("FR-19 rtc proxy auth", () => {
     const serverId = await createServer(owner, "rtc-auth-a");
     const outsider = await register("rtc_outsider_a");
 
-    const res = await rtcPost(outsider, serverId, "session", {});
+    const res = await rtcPost(outsider, serverId, "session", { mediaReadyVersion: 2 });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: "forbidden" });
   });
@@ -121,7 +127,7 @@ describe("FR-19 rtc proxy auth", () => {
     const owner = await register("rtc_owner_b");
     const serverId = await createServer(owner, "rtc-auth-b");
 
-    const res = await rtcPost(owner, serverId, "session", {});
+    const res = await rtcPost(owner, serverId, "session", { mediaReadyVersion: 2 });
     expect(res.status).toBe(403);
     expect(await res.json()).toEqual({ error: "not_in_voice" });
   });
@@ -132,19 +138,47 @@ describe("FR-19 rtc proxy auth", () => {
     const serverId = await createServer(owner, "rtc-auth-c");
     await seedVoice(serverId, [uid]);
 
-    const res = await rtcPost(owner, serverId, "session", {});
+    const res = await rtcPost(owner, serverId, "session", { mediaReadyVersion: 2 });
     expect(res.status).toBe(200);
     const body: { sessionId: string } = await res.json();
     expect(body.sessionId).toMatch(/^mock-sess-\d+$/);
     // The SFU session was created (POST) and the DO registered it to the caller.
     expect(sfuMockCalls.some((c) => c.op === "newSession" && c.method === "POST")).toBe(true);
     const reg = await readRegistry(serverId);
-    expect(reg.sessions[body.sessionId]).toBe(uid);
+    expect(reg.sessions[body.sessionId]).toEqual({ userId: uid, mediaReadyVersion: 2 });
   });
 });
 
 describe("FR-19 publish registry", () => {
-  it("publish mic:{uid} → the DO registry contains it (userId + sessionId + kind)", async () => {
+  it("readiness protocol keeps a newly published mic unpullable until browser confirmation", async () => {
+    const owner = await register("rtc_ready_owner");
+    const uid = await meUserId(owner);
+    const serverId = await createServer(owner, "rtc-ready");
+    await seedVoice(serverId, [uid]);
+    const sessionId = await newSession(owner, serverId);
+
+    const published = await authed(owner, `/api/rtc/${serverId}/tracks?session=${sessionId}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(publishBody("0", `mic:${uid}`)),
+    });
+    expect(published.status).toBe(200);
+    const { publicationId } = (await published.json()) as { publicationId: string };
+    expect(publicationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect((await readRegistry(serverId)).tracks[`mic:${uid}`]).toBeUndefined();
+
+    const ready = await rtcPost(owner, serverId, `tracks/ready?session=${sessionId}`, {
+      publicationId,
+    });
+    expect(ready.status).toBe(200);
+    expect((await readRegistry(serverId)).tracks[`mic:${uid}`]).toMatchObject({
+      userId: uid,
+      sessionId,
+      kind: "mic",
+    });
+  });
+
+  it("confirmed mic:{uid} publish → the DO registry contains it", async () => {
     const owner = await register("rtc_pub_a");
     const uid = await meUserId(owner);
     const serverId = await createServer(owner, "rtc-pub-a");
@@ -157,9 +191,61 @@ describe("FR-19 publish registry", () => {
       body: JSON.stringify(publishBody("0", `mic:${uid}`)),
     });
     expect(res.status).toBe(200);
+    const { publicationId } = (await res.json()) as { publicationId: string };
+    const ready = await rtcPost(owner, serverId, `tracks/ready?session=${sessionId}`, {
+      publicationId,
+    });
+    expect(ready.status).toBe(200);
 
     const reg = await readRegistry(serverId);
     expect(reg.tracks[`mic:${uid}`]).toMatchObject({ userId: uid, sessionId, kind: "mic" });
+  });
+
+  it("registers the v2 screen profile but sends only the SFU track contract upstream", async () => {
+    const owner = await register("rtc_pub_profile");
+    const uid = await meUserId(owner);
+    const serverId = await createServer(owner, "rtc-pub-profile");
+    await seedVoice(serverId, [uid]);
+    const sessionId = await newSession(owner, serverId);
+    resetSfuMock();
+    const trackName = `screen:${uid}:1`;
+
+    const res = await authed(owner, `/api/rtc/${serverId}/tracks?session=${sessionId}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionDescription: OFFER,
+        tracks: [
+          {
+            location: "local",
+            mid: "0",
+            trackName,
+            preset: "1080p60",
+            simulcastProfile: "h_i_l_v2",
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const { publicationId } = (await res.json()) as { publicationId: string };
+    const ready = await rtcPost(owner, serverId, `tracks/ready?session=${sessionId}`, {
+      publicationId,
+    });
+    expect(ready.status).toBe(200);
+    expect((await readRegistry(serverId)).tracks[trackName]).toMatchObject({
+      preset: "1080p60",
+      simulcastProfile: "h_i_l_v2",
+    });
+    const call = must(
+      sfuMockCalls.find((candidate) => candidate.op === "newLocalTracks"),
+      "SFU publish call",
+    );
+    expect(call.payload).toMatchObject({
+      tracks: [{ location: "local", mid: "0", trackName }],
+    });
+    expect(JSON.stringify(call.payload)).not.toContain("simulcastProfile");
+    expect(JSON.stringify(call.payload)).not.toContain("1080p60");
   });
 
   it("bad track-name grammar → 400 bad_request (never reaches the SFU)", async () => {
@@ -232,7 +318,7 @@ describe("FR-30 pull grants", () => {
     const screenTrack = `screen:${publisherId}:1`;
     const micTrack = `mic:${publisherId}`;
     await seedRegistry(serverId, {
-      sessions: { [pubSession]: publisherId },
+      sessions: { [pubSession]: { userId: publisherId, mediaReadyVersion: 2 } },
       tracks: {
         [screenTrack]: {
           userId: publisherId,
@@ -242,17 +328,32 @@ describe("FR-30 pull grants", () => {
         },
         [micTrack]: { userId: publisherId, sessionId: pubSession, kind: "mic" },
       },
+      pending: {},
       grants: {},
+      deliveries: {},
     });
     await seedVoice(serverId, [viewerId, publisherId]);
     return { screenTrack, micTrack, pubSession };
   }
 
-  function pull(token: string, serverId: string, trackName: string): Promise<Response> {
+  function pull(
+    token: string,
+    serverId: string,
+    trackName: string,
+    preferredRid?: "h" | "i" | "l",
+  ): Promise<Response> {
     return authed(token, `/api/rtc/${serverId}/tracks?session=viewer-sess`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tracks: [{ location: "remote", trackName }] }),
+      body: JSON.stringify({
+        tracks: [
+          {
+            location: "remote",
+            trackName,
+            ...(preferredRid === undefined ? {} : { simulcast: { preferredRid } }),
+          },
+        ],
+      }),
     });
   }
 
@@ -275,6 +376,7 @@ describe("FR-30 pull grants", () => {
     await runInDurableObject(roomStub(serverId), async (_i, state) => {
       await new RoomState(state, env).rtcAddGrant(viewerId, screenTrack, "h");
     });
+    expect((await readRegistry(serverId)).deliveries[viewerId]?.[screenTrack]).toBe("video");
     resetSfuMock();
 
     const res = await pull(owner, serverId, screenTrack);
@@ -286,6 +388,58 @@ describe("FR-30 pull grants", () => {
     // publisherSessions resolved the trackName → the publisher's sessionId (the client never sent it).
     expect(remote.payload).toMatchObject({
       tracks: [{ trackName: screenTrack, sessionId: pubSession }],
+    });
+  });
+
+  it("v2 h/i/l publishers use adaptive ordered fallback while legacy tracks stay pinned", async () => {
+    const owner = await register("rtc_pull_adapt");
+    const viewerId = await meUserId(owner);
+    const publisherId = crypto.randomUUID();
+    const serverId = await createServer(owner, "rtc-pull-adapt");
+    const { screenTrack } = await setupPull(serverId, viewerId, publisherId);
+    await runInDurableObject(roomStub(serverId), async (_i, state) => {
+      await new RoomState(state, env).rtcAddGrant(viewerId, screenTrack, "h");
+    });
+    resetSfuMock();
+
+    expect((await pull(owner, serverId, screenTrack, "h")).status).toBe(200);
+    const legacy = must(
+      sfuMockCalls.find((call) => call.op === "newRemoteTracks"),
+      "legacy pull",
+    );
+    expect(legacy.payload).toMatchObject({
+      tracks: [
+        {
+          simulcast: {
+            preferredRid: "h",
+            priorityOrdering: "none",
+            ridNotAvailable: "none",
+          },
+        },
+      ],
+    });
+
+    const reg = await readRegistry(serverId);
+    const registered = reg.tracks[screenTrack];
+    if (registered === undefined) throw new Error("seeded screen missing");
+    reg.tracks[screenTrack] = { ...registered, simulcastProfile: "h_i_l_v2" };
+    await seedRegistry(serverId, reg);
+    resetSfuMock();
+    expect((await pull(owner, serverId, screenTrack, "h")).status).toBe(200);
+    const adaptive = must(
+      sfuMockCalls.find((call) => call.op === "newRemoteTracks"),
+      "adaptive pull",
+    );
+    expect(adaptive.payload).toMatchObject({
+      tracks: [
+        {
+          simulcast: {
+            preferredRid: "h",
+            priorityOrdering: "asciibetical",
+            ridNotAvailable: "asciibetical",
+          },
+        },
+      ],
     });
   });
 
@@ -355,7 +509,7 @@ describe("FR-19 sdp ops (passthrough)", () => {
     const screenTrack = `screen:${publisherId}:1`;
     // Seed a published screen + the viewer's watch grant at the high layer.
     await seedRegistry(serverId, {
-      sessions: { "pub-sess": publisherId },
+      sessions: { "pub-sess": { userId: publisherId, mediaReadyVersion: 2 } },
       tracks: {
         [screenTrack]: {
           userId: publisherId,
@@ -364,7 +518,9 @@ describe("FR-19 sdp ops (passthrough)", () => {
           preset: "1080p30",
         },
       },
+      pending: {},
       grants: { [viewerId]: { [screenTrack]: "h" } },
+      deliveries: { [viewerId]: { [screenTrack]: "video" } },
     });
     resetSfuMock();
 
@@ -382,6 +538,41 @@ describe("FR-19 sdp ops (passthrough)", () => {
     // ...and the DO grant was repriced h → l.
     const reg = await readRegistry(serverId);
     expect(reg.grants[viewerId]?.[screenTrack]).toBe("l");
+  });
+
+  it("watch/delivery keeps the grant while persisting audio-only saver mode", async () => {
+    const owner = await register("rtc_watch_delivery");
+    const viewerId = await meUserId(owner);
+    const serverId = await createServer(owner, "rtc-watch-delivery");
+    const publisherId = crypto.randomUUID();
+    const screenTrack = `screen:${publisherId}:1`;
+    await seedRegistry(serverId, {
+      sessions: { "pub-sess": { userId: publisherId, mediaReadyVersion: 2 } },
+      tracks: {
+        [screenTrack]: {
+          userId: publisherId,
+          sessionId: "pub-sess",
+          kind: "screen",
+          preset: "1080p30",
+          hasAudio: true,
+        },
+      },
+      pending: {},
+      grants: { [viewerId]: { [screenTrack]: "h" } },
+      deliveries: { [viewerId]: { [screenTrack]: "video" } },
+    });
+
+    const res = await authed(owner, `/api/rtc/${serverId}/watch/delivery`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ trackName: screenTrack, delivery: "audio" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ trackName: screenTrack, delivery: "audio" });
+    const reg = await readRegistry(serverId);
+    expect(reg.grants[viewerId]?.[screenTrack]).toBe("h");
+    expect(reg.deliveries[viewerId]?.[screenTrack]).toBe("audio");
   });
 
   it("close forwards the mids + force flag to the SFU tracks/close (PUT)", async () => {
@@ -493,6 +684,15 @@ describe("realtime SFU client (real, fetch-stubbed)", () => {
       method: "PUT",
     });
     expect(seen[5]).toMatchObject({ url: expect.stringContaining("/tracks/close"), method: "PUT" });
+  });
+
+  it("keeps mock mode credential-free and rejects an unconfigured real SFU client", async () => {
+    const mockClient = createRealtimeClient({ TAVERN_SFU_MOCK: "1" });
+    await expect(mockClient.newSession()).resolves.toMatchObject({ sessionId: expect.any(String) });
+
+    expect(() => createRealtimeClient({})).toThrow(
+      "Missing required environment binding: REALTIME_APP_ID",
+    );
   });
 
   // The bounded transient retry (S12.4 soak finding — realtime.ts header). 5xx/thrown fetch =

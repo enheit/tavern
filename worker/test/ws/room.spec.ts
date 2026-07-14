@@ -53,6 +53,7 @@ function profileOf(member: MemberInit): UserProfile {
     displayName: member.displayName,
     color: member.color,
     ...(member.avatarKey === undefined ? {} : { avatarKey: member.avatarKey }),
+    ...(member.voiceAvatar === undefined ? {} : { voiceAvatar: member.voiceAvatar }),
   };
 }
 
@@ -257,7 +258,7 @@ describe("FR-45 presence & room lifecycle", () => {
 
     const ws = await openSocket(stub, await mintTicket(stub, a.userId));
     const col = new Collector(ws);
-    ws.send(JSON.stringify({ t: "voice.join" }));
+    ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     const err = await col.waitForType("error");
     expect(err.code).toBe("bad_message");
     expect((await col.waitForClose()).code).toBe(CLOSE_PROTOCOL_VIOLATION);
@@ -337,11 +338,25 @@ describe("FR-45 presence & room lifecycle", () => {
     wsB.send(HELLO);
     await colB.waitForType("hello.ok");
 
+    const voiceAvatar = {
+      version: 2,
+      skinTone: "deep",
+      hairColor: "ginger",
+      hairStyle: "locs",
+      eyeColor: "green",
+      glassesStyle: "aviator",
+      facialHairStyle: "mustache",
+      outfitColor: "#f87171",
+    } as const;
     await internalPost(stub, "/internal/member-update", {
-      profile: { ...profileOf(a), displayName: "Renamed" },
+      profile: { ...profileOf(a), displayName: "Renamed", voiceAvatar },
     });
     const update = await colB.waitForType("member.update");
-    expect(update.profile).toMatchObject({ userId: a.userId, displayName: "Renamed" });
+    expect(update.profile).toMatchObject({
+      userId: a.userId,
+      displayName: "Renamed",
+      voiceAvatar,
+    });
 
     // S2.2 changed the /internal/kick body to `{ userId, by }` (by = acting admin) + a 200 response.
     await internalPost(stub, "/internal/kick", { userId: a.userId, by: b.userId });

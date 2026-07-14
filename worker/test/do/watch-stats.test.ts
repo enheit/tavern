@@ -64,6 +64,25 @@ async function createServer(token: string, nickname: string): Promise<string> {
 const T0 = 1_700_000_000_000;
 
 describe("FR-40 watch/stream seconds", () => {
+  it("projects an open interval into snapshots without banking a recurring SQL row", async () => {
+    const streamer = crypto.randomUUID();
+    await runInDurableObject(freshRoom(), async (_i, state) => {
+      const stats = new StatsModule(state);
+      await stats.noteStreamStart(streamer, T0);
+
+      const snapshot = await stats.snapshot(new Map(), [], T0 + 45_000);
+      const persisted = state.storage.sql
+        .exec<{ count: number }>(`SELECT COUNT(*) AS count FROM stat_stream_seconds`)
+        .one();
+      expect(snapshot.perUser).toContainEqual({
+        userId: streamer,
+        messages: 0,
+        streamSeconds: 45,
+      });
+      expect(persisted.count).toBe(0);
+    });
+  });
+
   it("grant→release accrues pair seconds server-side", async () => {
     const viewer = crypto.randomUUID();
     const streamer = crypto.randomUUID();
@@ -72,7 +91,7 @@ describe("FR-40 watch/stream seconds", () => {
       // watch.start → watch.stop, 90 s apart (injected clock).
       await stats.noteWatchStart(viewer, streamer, T0);
       await stats.noteWatchStop(viewer, streamer, T0 + 90_000);
-      const snap = stats.snapshot(new Map(), []);
+      const snap = await stats.snapshot(new Map(), [], T0 + 90_000);
       expect(snap.watchPairs).toContainEqual({
         viewerId: viewer,
         streamerId: streamer,
@@ -97,7 +116,7 @@ describe("FR-40 watch/stream seconds", () => {
 
       // No open intervals remain; the 30 s watch was banked to the pair.
       expect(await stats.hasOpenIntervals()).toBe(false);
-      const snap = stats.snapshot(new Map(), []);
+      const snap = await stats.snapshot(new Map(), [], T0 + 30_000);
       expect(snap.watchPairs).toContainEqual({
         viewerId: viewer,
         streamerId: streamer,
@@ -112,7 +131,7 @@ describe("FR-40 watch/stream seconds", () => {
       const stats = new StatsModule(state);
       await stats.noteStreamStart(streamer, T0);
       await stats.noteStreamStop(streamer, T0 + 45_000);
-      const snap = stats.snapshot(new Map(), []);
+      const snap = await stats.snapshot(new Map(), [], T0 + 45_000);
       expect(snap.perUser).toContainEqual({ userId: streamer, messages: 0, streamSeconds: 45 });
     });
   });

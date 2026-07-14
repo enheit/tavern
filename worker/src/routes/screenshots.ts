@@ -9,6 +9,11 @@ import {
 import type { ErrorCode } from "@tavern/shared";
 import { requireMember } from "../middleware";
 import type { MemberVars } from "../middleware";
+import {
+  recordMediaObject,
+  removeMediaObject,
+  trackMediaInventory,
+} from "../lib/mediaUsageInventory";
 
 // § screenshots routes (§6.1). A screenshot is a single still frame a member captured from the focused
 // stream. The image bytes are a small single PUT (no multipart, unlike recordings): the Worker streams
@@ -72,8 +77,18 @@ export const screenshotsRoute = new Hono<{ Bindings: Env; Variables: MemberVars 
 
 // GET /api/servers/:id/screenshots (§ screenshots tab): member-gated list, newest first.
 screenshotsRoute.get("/:id/screenshots", requireMember, async (c) => {
+  const query = z
+    .object({
+      offset: z.coerce.number().int().min(0).optional(),
+      limit: z.coerce.number().int().positive().optional(),
+    })
+    .safeParse({ offset: c.req.query("offset"), limit: c.req.query("limit") });
+  if (!query.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  const params = new URLSearchParams();
+  if (query.data.offset !== undefined) params.set("offset", String(query.data.offset));
+  if (query.data.limit !== undefined) params.set("limit", String(query.data.limit));
   const res = await doStub(c.env, c.var.serverId).fetch(
-    "https://do.internal/internal/screenshots",
+    `https://do.internal/internal/screenshots?${params.toString()}`,
     { headers: { "X-Tavern-Internal": "1" } },
   );
   return c.json(ScreenshotsResponse.parse(await res.json()));
@@ -99,7 +114,8 @@ screenshotsRoute.post("/:id/screenshots", requireMember, async (c) => {
 
   const screenshotId = crypto.randomUUID();
   const key = r2Key(serverId, screenshotId);
-  await c.env.MEDIA.put(key, bytes, { httpMetadata: { contentType: "image/webp" } });
+  const object = await c.env.MEDIA.put(key, bytes, { httpMetadata: { contentType: "image/webp" } });
+  c.executionCtx.waitUntil(trackMediaInventory(recordMediaObject(c.env.DB, object), "put", key));
 
   const res = await internalPost(c.env, serverId, "/internal/screenshots/create", {
     userId,
@@ -111,6 +127,7 @@ screenshotsRoute.post("/:id/screenshots", requireMember, async (c) => {
   if (!ok.success) {
     // The DO refused the row (rate limit) — drop the orphaned object so R2 doesn't accrue dead bytes.
     await c.env.MEDIA.delete(key);
+    c.executionCtx.waitUntil(trackMediaInventory(removeMediaObject(c.env.DB, key), "delete", key));
     const code = failureCode(body);
     return c.json({ error: code }, statusFor(code));
   }
@@ -135,5 +152,8 @@ screenshotsRoute.delete("/:id/screenshots/:sid", requireMember, async (c) => {
     return c.json({ error: code }, statusFor(code));
   }
   await c.env.MEDIA.delete(ok.data.r2Key);
+  c.executionCtx.waitUntil(
+    trackMediaInventory(removeMediaObject(c.env.DB, ok.data.r2Key), "delete", ok.data.r2Key),
+  );
   return c.body(null, 204);
 });

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { ErrorCode, MemberInit } from "@tavern/shared";
 import { requireAuth, zodJson } from "../middleware";
 import type { AuthVars } from "../middleware";
+import { voiceAvatarFromStorage } from "../lib/voiceAvatar";
 
 // Non-null narrow without `!` (§9.1).
 function invariant<T>(value: T | null | undefined, message: string): T {
@@ -43,7 +44,7 @@ wsTicketRoute.post("/ws-ticket", requireAuth, zodJson(WsTicketRequest), async (c
   );
   const profile = invariant(
     await c.env.DB.prepare(
-      "SELECT username, display_name, color, avatar_key FROM user WHERE id = ?",
+      "SELECT username, display_name, color, avatar_key, voice_avatar FROM user WHERE id = ?",
     )
       .bind(userId)
       .first<{
@@ -51,6 +52,7 @@ wsTicketRoute.post("/ws-ticket", requireAuth, zodJson(WsTicketRequest), async (c
         display_name: string;
         color: string;
         avatar_key: string | null;
+        voice_avatar: string | null;
       }>(),
     "session implies user row",
   );
@@ -60,6 +62,9 @@ wsTicketRoute.post("/ws-ticket", requireAuth, zodJson(WsTicketRequest), async (c
     displayName: profile.display_name,
     color: profile.color,
     ...(profile.avatar_key !== null ? { avatarKey: profile.avatar_key } : {}),
+    ...(profile.voice_avatar !== null
+      ? { voiceAvatar: voiceAvatarFromStorage(profile.voice_avatar) }
+      : {}),
     isAdmin: server.admin_user_id === userId,
     joinedAt: membership.joined_at,
   };

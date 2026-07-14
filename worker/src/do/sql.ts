@@ -1,5 +1,6 @@
 import { DEFAULT_POINT_CONFIG } from "@tavern/shared";
 import type { Member, Presence } from "@tavern/shared";
+import { voiceAvatarFromStorage } from "../lib/voiceAvatar";
 
 // ServerRoom DO SQLite schema (PLAN §5.2) + the member-profile cache table (the DO resolves
 // usernames/colors/mentions without D1 access; profiles are pushed via the Worker internal routes).
@@ -11,6 +12,7 @@ export function migrate(sql: SqlStorage): void {
        display_name TEXT NOT NULL, color TEXT NOT NULL, avatar_key TEXT,
        is_admin INTEGER NOT NULL DEFAULT 0, joined_at INTEGER NOT NULL)`,
   );
+  addColumnIfMissing(sql, "members", "voice_avatar", "TEXT");
   sql.exec(
     `CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,
        channel_id TEXT NOT NULL DEFAULT 'main',
@@ -52,15 +54,26 @@ export function migrate(sql: SqlStorage): void {
        user_id TEXT NOT NULL, meta TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL)`,
   );
   sql.exec(
-    `CREATE TABLE IF NOT EXISTS sounds(id TEXT PRIMARY KEY, name TEXT NOT NULL, uploader_id TEXT NOT NULL,
+    `CREATE TABLE IF NOT EXISTS sounds(id TEXT PRIMARY KEY, name TEXT NOT NULL, emoji TEXT NOT NULL,
+       gain REAL NOT NULL, source_file_name TEXT NOT NULL, uploader_id TEXT NOT NULL,
        r2_key TEXT NOT NULL, duration_ms INTEGER NOT NULL,
        trim_start_ms INTEGER NOT NULL DEFAULT 0, trim_end_ms INTEGER NOT NULL,
        created_at INTEGER NOT NULL)`,
   );
+  addColumnIfMissing(sql, "sounds", "emoji", "TEXT");
+  addColumnIfMissing(sql, "sounds", "gain", "REAL");
+  addColumnIfMissing(sql, "sounds", "source_file_name", "TEXT");
+  sql.exec(`UPDATE sounds SET emoji = '🔊' WHERE emoji IS NULL`);
+  sql.exec(`UPDATE sounds SET gain = 1 WHERE gain IS NULL`);
+  sql.exec(`UPDATE sounds SET source_file_name = name || '.mp3' WHERE source_file_name IS NULL`);
   sql.exec(
     `CREATE TABLE IF NOT EXISTS sound_plays(id INTEGER PRIMARY KEY AUTOINCREMENT, sound_id TEXT NOT NULL,
        user_id TEXT NOT NULL, created_at INTEGER NOT NULL)`,
   );
+  sql.exec(
+    `CREATE TABLE IF NOT EXISTS active_sound_plays(sound_id TEXT PRIMARY KEY, ends_at INTEGER NOT NULL)`,
+  );
+  sql.exec(`CREATE TABLE IF NOT EXISTS sound_asset_cleanup(r2_key TEXT PRIMARY KEY)`);
   sql.exec(
     `CREATE TABLE IF NOT EXISTS recordings(id TEXT PRIMARY KEY, started_by TEXT NOT NULL, r2_key TEXT NOT NULL,
        upload_id TEXT,
@@ -178,6 +191,28 @@ export function migrate(sql: SqlStorage): void {
        kind TEXT NOT NULL CHECK(kind IN ('poll_stake','poll_refund','poll_payout')),
        delta INTEGER NOT NULL, created_at INTEGER NOT NULL)`,
   );
+  sql.exec(
+    `CREATE TABLE IF NOT EXISTS market_items(
+       id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind = 'icon'),
+       name TEXT NOT NULL, price INTEGER NOT NULL CHECK(price > 0),
+       revision INTEGER NOT NULL DEFAULT 1, created_by TEXT NOT NULL,
+       r2_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
+  );
+  sql.exec(`CREATE INDEX IF NOT EXISTS market_items_created_idx ON market_items(created_at DESC)`);
+  sql.exec(
+    `CREATE TABLE IF NOT EXISTS market_purchases(
+       item_id TEXT PRIMARY KEY, buyer_id TEXT NOT NULL, buyer_display_name TEXT NOT NULL,
+       price_paid INTEGER NOT NULL, purchased_at INTEGER NOT NULL)`,
+  );
+  sql.exec(
+    `CREATE INDEX IF NOT EXISTS market_purchases_buyer_idx
+       ON market_purchases(buyer_id, purchased_at DESC)`,
+  );
+  sql.exec(
+    `CREATE TABLE IF NOT EXISTS market_equipped_icons(
+       user_id TEXT PRIMARY KEY, item_id TEXT NOT NULL UNIQUE)`,
+  );
+  sql.exec(`CREATE TABLE IF NOT EXISTS market_asset_cleanup(r2_key TEXT PRIMARY KEY)`);
 }
 
 // Idempotent single-column `ALTER TABLE … ADD COLUMN`: a no-op when the column already exists (SQLite
@@ -196,12 +231,37 @@ function addColumnIfMissing(sql: SqlStorage, table: string, column: string, type
 // omitted when NULL to satisfy exactOptionalPropertyTypes on the optional `avatarKey`.
 export function rowToMember(row: Record<string, SqlStorageValue>, presence: Presence): Member {
   const avatarKey = row["avatar_key"];
+  const voiceAvatar = row["voice_avatar"];
+  const marketItemId = row["market_item_id"];
+  const marketItemName = row["market_item_name"];
+  const marketPricePaid = row["market_price_paid"];
+  const marketPurchasedAt = row["market_purchased_at"];
   return {
     userId: String(row["user_id"]),
     username: String(row["username"]),
     displayName: String(row["display_name"]),
     color: String(row["color"]),
     ...(avatarKey === null || avatarKey === undefined ? {} : { avatarKey: String(avatarKey) }),
+    ...(voiceAvatar === null || voiceAvatar === undefined
+      ? {}
+      : { voiceAvatar: voiceAvatarFromStorage(String(voiceAvatar)) }),
+    ...(marketItemId === null ||
+    marketItemId === undefined ||
+    marketItemName === null ||
+    marketItemName === undefined ||
+    marketPricePaid === null ||
+    marketPricePaid === undefined ||
+    marketPurchasedAt === null ||
+    marketPurchasedAt === undefined
+      ? {}
+      : {
+          marketIcon: {
+            itemId: String(marketItemId),
+            name: String(marketItemName),
+            pricePaid: Number(marketPricePaid),
+            purchasedAt: Number(marketPurchasedAt),
+          },
+        }),
     presence,
     isAdmin: row["is_admin"] === 1,
     joinedAt: Number(row["joined_at"]),

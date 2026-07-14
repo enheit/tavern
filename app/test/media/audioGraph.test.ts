@@ -14,11 +14,12 @@ class FakeMediaStream {
 let port: FakeAudioPort;
 let graph: AudioGraph;
 
-// init() creates master (gains[0]), deafen (gains[1]), sb (gains[2]) in that fixed order.
+// init() creates master, deafen, shared soundboard, and local-preview gains in that fixed order.
 const MASTER = 0;
 const DEAFEN = 1;
 const SB = 2;
-const FIRST_USER = 3;
+const PREVIEW = 3;
+const FIRST_USER = 4;
 
 beforeEach(async () => {
   vi.stubGlobal("MediaStream", FakeMediaStream);
@@ -37,6 +38,7 @@ describe("FR-20 gain routing", () => {
     expect(ctx.gains[DEAFEN]?.outputs).toContain(ctx.gains[MASTER]);
     expect(ctx.gains[MASTER]?.outputs).toContain(ctx.destination);
     expect(ctx.gains[SB]?.outputs).toContain(ctx.gains[DEAFEN]);
+    expect(ctx.gains[PREVIEW]?.outputs).toContain(ctx.gains[MASTER]);
   });
 
   it("setUserGain(1.5) → per-user gain node 1.5, routed through deafenGain", () => {
@@ -68,17 +70,36 @@ describe("FR-20 gain routing", () => {
     expect(port.last().gains[FIRST_USER]?.gain.value).toBe(0.25);
   });
 
-  it("stream audio gets its own gain node and detaches cleanly", () => {
+  it("stream audio applies an audio-tapered volume level and detaches cleanly", () => {
     graph.attachStreamAudio("screen:u1:1", fakeStream());
-    graph.setStreamGain("screen:u1:1", 0.5);
+    graph.setStreamVolume("screen:u1:1", 0.5);
     const ctx = port.last();
     const streamGain = ctx.gains[FIRST_USER];
-    expect(streamGain?.gain.value).toBe(0.5);
+    expect(streamGain?.gain.value).toBe(0.25);
     expect(streamGain?.outputs).toContain(ctx.gains[DEAFEN]);
 
     graph.detachStreamAudio("screen:u1:1");
     expect(streamGain?.disconnected).toBe(true);
     expect(port.elements[0]?.paused).toBe(true);
+  });
+
+  it.each([
+    [0, 0],
+    [0.05, 0.0025],
+    [0.15, 0.0225],
+    [0.3, 0.09],
+    [1, 1],
+    [2, 2],
+  ])("maps stream volume level %s to linear gain %s", (level, expectedGain) => {
+    graph.attachStreamAudio("u1:screen", fakeStream());
+    graph.setStreamVolume("u1:screen", level);
+    expect(port.last().gains[FIRST_USER]?.gain.value).toBeCloseTo(expectedGain);
+  });
+
+  it("remembers an audio-tapered stream volume set before attachment", () => {
+    graph.setStreamVolume("u9:screen", 0.15);
+    graph.attachStreamAudio("u9:screen", fakeStream());
+    expect(port.last().gains[FIRST_USER]?.gain.value).toBeCloseTo(0.0225);
   });
 });
 
@@ -111,6 +132,7 @@ describe("FR-26 deafen", () => {
     graph.setSoundboardGain(1.2);
     const ctx = port.last();
     expect(ctx.gains[SB]?.gain.value).toBe(1.2);
+    expect(ctx.gains[PREVIEW]?.gain.value).toBe(1.2);
     expect(ctx.gains[DEAFEN]?.gain.value).toBe(1);
     expect(ctx.gains[FIRST_USER]?.gain.value).toBe(1.5);
   });
@@ -152,14 +174,56 @@ describe("AudioGraph lifecycle", () => {
     expect(port.last().resumed).toBe(true);
   });
 
-  it("playSoundboard slices [trimStart,trimEnd] through the soundboard gain and resolves on end", async () => {
+  it("playSoundboard slices the trim and multiplies the per-sound gain", async () => {
     const buffer = {} as unknown as AudioBuffer;
-    await graph.playSoundboard(buffer, 500, 2500);
+    const onStarted = vi.fn();
+    const playing = graph.playSoundboard(buffer, 500, 2500, 1.4, "shared", undefined, onStarted);
     const ctx = port.last();
     const src = ctx.bufferSources[0];
+    const clipGain = ctx.gains[4];
     expect(src?.buffer).toBe(buffer);
-    expect(src?.outputs).toContain(ctx.gains[SB]);
+    expect(src?.outputs).toContain(clipGain);
+    expect(clipGain?.gain.value).toBe(1.4);
+    expect(clipGain?.outputs).toContain(ctx.gains[SB]);
     expect(src?.startArgs[0]).toEqual([0, 0.5, 2]); // offset 0.5s, duration 2s
+    expect(onStarted).toHaveBeenCalledOnce();
+    await playing;
+  });
+
+  it("plays one source per sound ID while allowing different sounds to overlap", async () => {
+    const buffer = {} as unknown as AudioBuffer;
+    const first = graph.playSoundboard(buffer, 0, 500, 1, "shared", "same");
+    const duplicate = graph.playSoundboard(buffer, 0, 500, 1, "shared", "same");
+    const different = graph.playSoundboard(buffer, 0, 500, 1, "shared", "other");
+    const ctx = port.last();
+
+    expect(ctx.bufferSources).toHaveLength(2);
+    await Promise.all([first, duplicate, different]);
+  });
+
+  it("stops one local preview without interrupting a different preview", async () => {
+    const buffer = {} as unknown as AudioBuffer;
+    const first = graph.playSoundboard(buffer, 0, 500, 1, "local-preview", "first");
+    const second = graph.playSoundboard(buffer, 0, 500, 1, "local-preview", "second");
+    const ctx = port.last();
+    const firstSource = ctx.bufferSources[0];
+    const secondSource = ctx.bufferSources[1];
+
+    graph.stopSoundboardPreview("first");
+    expect(firstSource?.stopped).toBe(1);
+    expect(secondSource?.stopped).toBe(0);
+    await Promise.all([first, second]);
+  });
+
+  it("routes local previews through personal volume and editor previews at neutral volume", async () => {
+    const buffer = {} as unknown as AudioBuffer;
+    const localPreview = graph.playSoundboard(buffer, 0, 500, 0.8, "local-preview");
+    const ctx = port.last();
+    expect(ctx.gains[4]?.outputs).toContain(ctx.gains[PREVIEW]);
+    await localPreview;
+    const editorPreview = graph.playSoundboard(buffer, 0, 500, 0.8, "editor-preview");
+    expect(ctx.gains[5]?.outputs).toContain(ctx.gains[MASTER]);
+    await editorPreview;
   });
 
   it("decode() decodes fetched bytes through the single app context", async () => {

@@ -15,6 +15,7 @@ import type { ErrorCode, MemberInit, ServerSummary, UserProfile } from "@tavern/
 import { requireAdmin, requireAuth, requireMember, zodJson } from "../middleware";
 import type { MemberVars } from "../middleware";
 import { hashServerPassword, verifyServerPassword } from "../lib/passwords";
+import { voiceAvatarFromStorage } from "../lib/voiceAvatar";
 
 // Non-null narrow without `!` (§9.1): mirrors the helper in routes/me.ts.
 function invariant<T>(value: T | null | undefined, message: string): T {
@@ -40,6 +41,7 @@ type MemberRow = {
   display_name: string;
   color: string;
   avatar_key: string | null;
+  voice_avatar: string | null;
 };
 
 // Builds the wire ServerSummary from a stored row + the caller's membership timestamp. hasPassword
@@ -63,6 +65,7 @@ function toProfile(row: MemberRow): UserProfile {
     displayName: row.display_name,
     color: row.color,
     ...(row.avatar_key !== null ? { avatarKey: row.avatar_key } : {}),
+    ...(row.voice_avatar !== null ? { voiceAvatar: voiceAvatarFromStorage(row.voice_avatar) } : {}),
   };
 }
 
@@ -91,7 +94,7 @@ async function readMemberInit(
 ): Promise<MemberInit> {
   const row = invariant(
     await env.DB.prepare(
-      "SELECT id, username, display_name, color, avatar_key FROM user WHERE id = ?",
+      "SELECT id, username, display_name, color, avatar_key, voice_avatar FROM user WHERE id = ?",
     )
       .bind(userId)
       .first<MemberRow>(),
@@ -103,6 +106,7 @@ async function readMemberInit(
     displayName: row.display_name,
     color: row.color,
     ...(row.avatar_key !== null ? { avatarKey: row.avatar_key } : {}),
+    ...(row.voice_avatar !== null ? { voiceAvatar: voiceAvatarFromStorage(row.voice_avatar) } : {}),
     isAdmin,
     joinedAt,
   };
@@ -324,7 +328,7 @@ serversRoute.post("/join", requireAuth, zodJson(JoinServerRequest), async (c) =>
 // GET /api/servers/:id/members: member profiles (presence is pushed over WS by the DO, not here).
 serversRoute.get("/:id/members", requireMember, async (c) => {
   const rows = await c.env.DB.prepare(
-    `SELECT u.id, u.username, u.display_name, u.color, u.avatar_key
+    `SELECT u.id, u.username, u.display_name, u.color, u.avatar_key, u.voice_avatar
      FROM memberships m JOIN user u ON u.id = m.user_id
      WHERE m.server_id = ?
      ORDER BY m.joined_at ASC`,

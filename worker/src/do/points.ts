@@ -31,6 +31,11 @@ type DailyRow = {
   watching: number;
 };
 
+type ProjectedLedger = {
+  balance: number;
+  daily: Map<string, DailyRow>;
+};
+
 function dayKey(at: number): string {
   return new Date(at).toISOString().slice(0, 10);
 }
@@ -82,10 +87,38 @@ export class PointsModule {
   }
 
   replaceSources(eligibility: PointEligibility, now: number): void {
-    this.settle(now);
-    this.sql.exec(`UPDATE point_sources SET active = 0, started_at = NULL WHERE active = 1`);
+    const desired = new Map<PointSource, Set<string>>(
+      POINT_SOURCES.map((source) => [source, new Set(eligibility[source])]),
+    );
+    const activeRows = this.sourceRows();
+    const active = new Set(activeRows.map((row) => `${row.source}:${row.user_id}`));
+    const affectedUsers = new Set<string>();
+
+    for (const row of activeRows) {
+      if (!desired.get(row.source)?.has(row.user_id)) affectedUsers.add(row.user_id);
+    }
     for (const source of POINT_SOURCES) {
-      for (const userId of new Set(eligibility[source])) {
+      for (const userId of desired.get(source) ?? []) {
+        if (!active.has(`${source}:${userId}`)) affectedUsers.add(userId);
+      }
+    }
+
+    if (affectedUsers.size === 0) return;
+
+    this.settleUsers(affectedUsers, now);
+    for (const row of activeRows) {
+      if (!desired.get(row.source)?.has(row.user_id)) {
+        this.sql.exec(
+          `UPDATE point_sources SET active = 0, started_at = NULL
+           WHERE user_id = ? AND source = ? AND active = 1`,
+          row.user_id,
+          row.source,
+        );
+      }
+    }
+    for (const source of POINT_SOURCES) {
+      for (const userId of desired.get(source) ?? []) {
+        if (active.has(`${source}:${userId}`)) continue;
         this.sql.exec(
           `INSERT INTO point_sources(user_id, source, active, started_at, remainder)
            VALUES (?, ?, 1, ?, 0)
@@ -99,14 +132,19 @@ export class PointsModule {
   }
 
   settle(now: number): void {
-    const config = this.config();
-    const rows = this.sql
-      .exec<SourceRow>(
-        `SELECT user_id, source, started_at, remainder
-         FROM point_sources WHERE active = 1 AND started_at IS NOT NULL
-         ORDER BY user_id, source`,
-      )
-      .toArray();
+    this.settleRows(this.sourceRows(), now, this.config());
+  }
+
+  settleUser(userId: string, now: number): void {
+    this.settleRows(this.sourceRows(userId), now, this.config());
+  }
+
+  private settleUsers(userIds: ReadonlySet<string>, now: number): void {
+    const rows = this.sourceRows().filter((row) => userIds.has(row.user_id));
+    this.settleRows(rows, now, this.config());
+  }
+
+  private settleRows(rows: readonly SourceRow[], now: number, config: PointConfig): void {
     for (const row of rows) {
       const start = Math.min(row.started_at, now);
       const remainder = this.settleSource(
@@ -129,25 +167,15 @@ export class PointsModule {
 
   snapshot(userId: string, now: number): PointSnapshotValue {
     const config = this.config();
-    const balance =
-      this.sql
-        .exec<{ balance: number }>(`SELECT balance FROM point_accounts WHERE user_id = ?`, userId)
-        .toArray()[0]?.balance ?? 0;
+    const projected = this.project(userId, now, config);
     const today = dayKey(now);
-    const daily = this.daily(userId, today);
-    const activeSources = this.sql
-      .exec<{ source: PointSource }>(
-        `SELECT source FROM point_sources
-         WHERE user_id = ? AND active = 1 ORDER BY source`,
-        userId,
-      )
-      .toArray()
-      .map((row) => row.source);
+    const daily = projected.daily.get(today) ?? this.daily(userId, today);
+    const activeSources = this.sourceRows(userId).map((row) => row.source);
     const currentRatePerMinute = config.enabled
       ? activeSources.reduce((sum, source) => sum + this.rateFor(source, config), 0)
       : 0;
     return PointSnapshot.parse({
-      balance,
+      balance: projected.balance,
       pendingPollWinnings: this.pendingPollWinnings(userId),
       currentRatePerMinute,
       activeSources,
@@ -187,6 +215,26 @@ export class PointsModule {
       now,
     );
     return true;
+  }
+
+  debitForMarket(userId: string, amount: number, now: number): boolean {
+    this.sql.exec(
+      `INSERT OR IGNORE INTO point_accounts(user_id, balance, updated_at) VALUES (?, 0, ?)`,
+      userId,
+      now,
+    );
+    return (
+      this.sql
+        .exec(
+          `UPDATE point_accounts SET balance = balance - ?, updated_at = ?
+           WHERE user_id = ? AND balance >= ? RETURNING balance`,
+          amount,
+          now,
+          userId,
+          amount,
+        )
+        .toArray().length === 1
+    );
   }
 
   creditPoll(
@@ -232,18 +280,71 @@ export class PointsModule {
   }
 
   leaderboard(userIds: readonly string[], now: number): Array<{ userId: string; balance: number }> {
-    this.settle(now);
-    const balances = new Map(
-      this.sql
-        .exec<{ user_id: string; balance: number }>(
-          `SELECT user_id, balance FROM point_accounts ORDER BY user_id`,
-        )
-        .toArray()
-        .map((row) => [row.user_id, row.balance]),
-    );
+    const config = this.config();
     return [...new Set(userIds)]
-      .map((userId) => ({ userId, balance: balances.get(userId) ?? 0 }))
+      .map((userId) => ({ userId, balance: this.project(userId, now, config).balance }))
       .toSorted((a, b) => b.balance - a.balance || a.userId.localeCompare(b.userId));
+  }
+
+  private project(userId: string, now: number, config: PointConfig): ProjectedLedger {
+    const balance =
+      this.sql
+        .exec<{ balance: number }>(`SELECT balance FROM point_accounts WHERE user_id = ?`, userId)
+        .toArray()[0]?.balance ?? 0;
+    const projectedDaily = new Map<string, DailyRow>();
+    let projectedBalance = balance;
+
+    for (const row of this.sourceRows(userId)) {
+      const rate = config.enabled ? this.rateFor(row.source, config) : 0;
+      if (rate === 0 || now <= row.started_at) continue;
+      let cursor = Math.min(row.started_at, now);
+      let remainder = row.remainder;
+      while (cursor < now) {
+        const segmentEnd = Math.min(now, nextUtcDay(cursor));
+        const numerator = remainder + (segmentEnd - cursor) * rate;
+        const points = Math.floor(numerator / MILLIS_PER_MINUTE);
+        remainder = numerator % MILLIS_PER_MINUTE;
+        if (points > 0) {
+          const day = dayKey(cursor);
+          const daily = projectedDaily.get(day) ?? this.daily(userId, day);
+          const earned = daily.conversation + daily.streaming + daily.watching;
+          const allowed =
+            config.dailyCap === null
+              ? points
+              : Math.max(0, Math.min(points, config.dailyCap - earned));
+          if (allowed > 0) {
+            const next = { ...daily, [row.source]: daily[row.source] + allowed };
+            projectedDaily.set(day, next);
+            projectedBalance += allowed;
+          } else if (!projectedDaily.has(day)) {
+            projectedDaily.set(day, daily);
+          }
+        }
+        cursor = segmentEnd;
+      }
+    }
+
+    return { balance: projectedBalance, daily: projectedDaily };
+  }
+
+  private sourceRows(userId?: string): SourceRow[] {
+    return userId === undefined
+      ? this.sql
+          .exec<SourceRow>(
+            `SELECT user_id, source, started_at, remainder
+             FROM point_sources WHERE active = 1 AND started_at IS NOT NULL
+             ORDER BY user_id, source`,
+          )
+          .toArray()
+      : this.sql
+          .exec<SourceRow>(
+            `SELECT user_id, source, started_at, remainder
+             FROM point_sources
+             WHERE user_id = ? AND active = 1 AND started_at IS NOT NULL
+             ORDER BY source`,
+            userId,
+          )
+          .toArray();
   }
 
   private settleSource(

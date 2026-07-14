@@ -20,7 +20,14 @@ declare global {
       deafened: boolean;
       userGains: Record<string, number>;
       speakingUserIds: string[];
-      soundboardPlays: Array<{ soundId: string; at: number }>;
+      soundboardPlays: Array<{
+        soundId: string;
+        at: number;
+        mode: "shared" | "local-preview" | "editor-preview";
+        trimStartMs: number;
+        trimEndMs: number;
+        gain: number;
+      }>;
       // userIds whose remote mic is attached to the live audio graph — the mock suite's pairwise
       // "can hear" truth (§ Task-1 regression: every member wired to every other member).
       remoteMicUserIds: string[];
@@ -124,7 +131,8 @@ async function seedRoom(
       // client-side redirect preserves it), so the test hooks install.
       await page.goto(`/?e2e=1`);
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId("controls-bar")).toBeVisible();
+      // The controls row mounts only after joining voice; the Dashboard is the idle boot surface.
+      await expect(page.getByTestId("tavern-home")).toBeVisible();
       return { user, context, page, consoleTail };
     }),
   );
@@ -182,6 +190,41 @@ async function wiredTo(viewer: Client, subjects: Client[]): Promise<void> {
 }
 
 test.describe("FR-18 FR-19 voice (mock SFU)", () => {
+  test("three voice members render as distinct WebGL avatars on the Dashboard", async ({
+    browser,
+    baseURL,
+    api,
+  }, testInfo) => {
+    test.setTimeout(45_000);
+    const { clients } = await seedRoom(browser, baseURL, api, ["a", "b", "c", "observer"]);
+    const [a, b, c, observer] = clients;
+    if (!a || !b || !c || !observer) throw new Error("expected four clients");
+    try {
+      // voice.join updates the shared roster immediately. The mock SFU intentionally has no media
+      // plane, so this visual smoke check does not wait for its PeerConnections to become connected.
+      await Promise.all(
+        [a, b, c].map((client) => client.page.getByTestId("channel-voice").click()),
+      );
+      await Promise.all(
+        [a, b, c].map((member) =>
+          expect(
+            observer.page.getByTestId(`voice-lounge-avatar-${member.user.userId}`),
+          ).toBeVisible({ timeout: 10_000 }),
+        ),
+      );
+      await expect(observer.page.getByTestId("voice-lounge")).toHaveAttribute(
+        "data-renderer",
+        "ready",
+        { timeout: 10_000 },
+      );
+      const screenshotPath = testInfo.outputPath("voice-lounge.png");
+      await observer.page.screenshot({ path: screenshotPath, fullPage: true });
+      await testInfo.attach("voice-lounge", { path: screenshotPath, contentType: "image/png" });
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
   test("A and B join → both see 2 voice members; observer C sees both chips and the timer (FR-24)", async ({
     browser,
     baseURL,
@@ -204,6 +247,12 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
           await expect(viewer.page.getByTestId(`voice-chip-${b.user.userId}`)).toBeVisible({
             timeout: 10_000,
           });
+          await expect(viewer.page.getByTestId(`voice-lounge-avatar-${a.user.userId}`)).toBeVisible(
+            { timeout: 10_000 },
+          );
+          await expect(viewer.page.getByTestId(`voice-lounge-avatar-${b.user.userId}`)).toBeVisible(
+            { timeout: 10_000 },
+          );
         }),
       );
       await expect(a.page.getByTestId("voice-members").getByRole("listitem")).toHaveCount(2);
@@ -258,6 +307,11 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
         "true",
         { timeout: 2_500 },
       );
+      await expect(a.page.getByTestId("voice-lounge")).toHaveAttribute("data-renderer", "ready");
+      await expect(a.page.getByTestId(`voice-lounge-avatar-${a.user.userId}`)).toHaveAttribute(
+        "data-speaking",
+        "true",
+      );
     } finally {
       await closeClients(clients);
     }
@@ -272,6 +326,31 @@ test.describe("FR-18 FR-19 voice (mock SFU)", () => {
       await joinVoice(a);
       await joinVoice(b);
       await a.page.getByTestId("controls-mute").click();
+      await expect(b.page.getByTestId(`voice-muted-${a.user.userId}`)).toBeVisible({
+        timeout: 1_000,
+      });
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
+  test("sidebar mute works away from the stream workspace and mirrors the controls bar", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    test.setTimeout(90_000);
+    const { clients } = await seedRoom(browser, baseURL, api, ["a", "b"]);
+    const [a, b] = clients;
+    if (!a || !b) throw new Error("expected two clients");
+    try {
+      await joinVoice(a);
+      await joinVoice(b);
+      await a.page.getByTestId("workspace-tab-dashboard").click();
+      await a.page.getByTestId("sidebar-mute").click();
+
+      await expect(a.page.getByTestId("sidebar-mute")).toHaveAttribute("aria-pressed", "true");
+      await expect(a.page.getByTestId("controls-mute")).toHaveAttribute("aria-pressed", "true");
       await expect(b.page.getByTestId(`voice-muted-${a.user.userId}`)).toBeVisible({
         timeout: 1_000,
       });

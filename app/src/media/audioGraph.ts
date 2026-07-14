@@ -20,19 +20,29 @@ interface StreamAudio {
   element: HTMLAudioElement;
 }
 
+// Stream volume is stored as the user-facing 0..2 control level: 1 = the source's regular volume and
+// 2 = a 2x boost. GainNode amplitude is linear while hearing is not, so sending the level straight to
+// the node makes almost the entire useful quiet range collapse below ~15%. An audio-taper below unity
+// spreads that range across the control; the boost half stays linear so 200% remains exactly gain 2.
+export function streamVolumeLevelToGain(level: number): number {
+  return level <= 1 ? level * level : level;
+}
+
 // One AudioContext for the whole app (PLAN §7.3):
 //   remote mic tracks ─► userGain[uid] ─┐
 //   stream audio ──────► streamGain[t] ─┼─► deafenGain ─► masterGain ─► destination (chosen sink)
 //   soundboard buffers ► sbGain ────────┘
 //   local mic ─► Analyser (speaking meter, never routed to output)
-// Sliders 0..200% map to gain 0..2 (GainNode, not element.volume which caps at 1.0). Deafen zeroes
-// deafenGain only; per-user gains and the pre-deafen recording tap are untouched.
+// Voice/soundboard controls remain direct gains 0..2. Stream controls are volume levels 0..2 converted
+// through streamVolumeLevelToGain. Deafen zeroes deafenGain only; per-source state and the pre-deafen
+// recording tap are untouched.
 export class AudioGraph {
   private readonly port: AudioPort;
   private ctx: AudioContext | null = null;
   private deafenGain: GainNode | null = null;
   private masterGain: GainNode | null = null;
   private sbGain: GainNode | null = null;
+  private previewGain: GainNode | null = null;
   private localSource: MediaStreamAudioSourceNode | null = null;
   private localAnalyser: AnalyserNode | null = null;
   // FR-25 recording tap: the nodes fanned into the recording destination (per-user gains + sbGain +
@@ -44,29 +54,40 @@ export class AudioGraph {
   private readonly remotes = new Map<string, RemoteMic>();
   private readonly streams = new Map<string, StreamAudio>();
   private readonly userGains = new Map<string, number>();
-  private readonly streamGains = new Map<string, number>();
+  private readonly streamVolumes = new Map<string, number>();
   private soundboardGain = 1;
-  // Live soundboard BufferSourceNodes (FR-36: overlapping/concurrent plays are allowed — Discord-style).
-  // `stopSoundboard` cuts them all (deafen-on, voice leave); each source drops itself on `ended`.
+  // Live soundboard BufferSourceNodes. Different sounds may overlap, but each soundId owns at most one
+  // source per route so repeated clicks cannot stack the same clip. Each source drops itself on `ended`.
   private readonly liveSources = new Set<AudioBufferSourceNode>();
+  private readonly liveSourcesBySound = new Map<string, AudioBufferSourceNode>();
+  private readonly previewSources = new Set<AudioBufferSourceNode>();
+  private readonly previewSourcesBySound = new Map<string, AudioBufferSourceNode>();
 
   constructor(port: AudioPort) {
     this.port = port;
   }
 
   async init(sinkId?: string): Promise<void> {
+    if (this.ctx !== null) {
+      if (sinkId) await this.ctx.setSinkId(sinkId);
+      return;
+    }
     const ctx = this.port.createContext({ sampleRate: 48000 });
     const master = ctx.createGain();
     const deafen = ctx.createGain();
     const sb = ctx.createGain();
+    const preview = ctx.createGain();
     sb.gain.value = this.soundboardGain;
+    preview.gain.value = this.soundboardGain;
     deafen.connect(master);
     master.connect(ctx.destination);
     sb.connect(deafen);
+    preview.connect(master);
     this.ctx = ctx;
     this.masterGain = master;
     this.deafenGain = deafen;
     this.sbGain = sb;
+    this.previewGain = preview;
     if (sinkId) await ctx.setSinkId(sinkId);
   }
 
@@ -116,7 +137,7 @@ export class AudioGraph {
     const ctx = this.requireCtx();
     const source = ctx.createMediaStreamSource(stream);
     const gain = ctx.createGain();
-    gain.gain.value = this.streamGains.get(trackName) ?? 1;
+    gain.gain.value = streamVolumeLevelToGain(this.streamVolumes.get(trackName) ?? 1);
     source.connect(gain);
     gain.connect(this.requireDeafen());
     const element = this.mutedElement(stream);
@@ -147,15 +168,16 @@ export class AudioGraph {
     if (r) r.gain.gain.value = gain;
   }
 
-  setStreamGain(trackName: string, gain: number): void {
-    this.streamGains.set(trackName, gain);
+  setStreamVolume(trackName: string, level: number): void {
+    this.streamVolumes.set(trackName, level);
     const s = this.streams.get(trackName);
-    if (s) s.gain.gain.value = gain;
+    if (s) s.gain.gain.value = streamVolumeLevelToGain(level);
   }
 
   setSoundboardGain(gain: number): void {
     this.soundboardGain = gain;
     if (this.sbGain) this.sbGain.gain.value = gain;
+    if (this.previewGain) this.previewGain.gain.value = gain;
   }
 
   setDeafened(deafened: boolean): void {
@@ -173,35 +195,89 @@ export class AudioGraph {
     return this.requireCtx().decodeAudioData(bytes);
   }
 
-  async playSoundboard(buffer: AudioBuffer, trimStartMs: number, trimEndMs: number): Promise<void> {
+  async playSoundboard(
+    buffer: AudioBuffer,
+    trimStartMs: number,
+    trimEndMs: number,
+    gain = 1,
+    mode: "shared" | "local-preview" | "editor-preview" = "shared",
+    soundId?: string,
+    onStarted?: () => void,
+  ): Promise<void> {
     const ctx = this.requireCtx();
-    if (!this.sbGain) throw new Error("AudioGraph not initialized");
+    const sourcesBySound = mode === "shared" ? this.liveSourcesBySound : this.previewSourcesBySound;
+    if (soundId !== undefined && sourcesBySound.has(soundId)) return;
+    const destination =
+      mode === "shared"
+        ? this.sbGain
+        : mode === "local-preview"
+          ? this.previewGain
+          : this.masterGain;
+    if (destination === null) throw new Error("AudioGraph not initialized");
     const src = ctx.createBufferSource();
+    const clipGain = ctx.createGain();
+    clipGain.gain.value = gain;
     src.buffer = buffer;
-    src.connect(this.sbGain);
-    this.liveSources.add(src);
+    src.connect(clipGain);
+    clipGain.connect(destination);
+    const sources = mode === "shared" ? this.liveSources : this.previewSources;
+    sources.add(src);
+    if (soundId !== undefined) sourcesBySound.set(soundId, src);
     const offset = trimStartMs / 1000;
     const duration = (trimEndMs - trimStartMs) / 1000; // trim is metadata-only; slice at playback
     await new Promise<void>((resolve) => {
       src.addEventListener("ended", () => {
-        this.liveSources.delete(src);
+        sources.delete(src);
+        if (soundId !== undefined) {
+          if (sourcesBySound.get(soundId) === src) sourcesBySound.delete(soundId);
+        }
+        clipGain.disconnect();
         resolve();
       });
       src.start(0, offset, duration);
+      onStarted?.();
     });
   }
 
   // Cuts every live soundboard source (FR-36: deafen stops in-flight soundboard audio; voice leave
   // stops it too). A stopped source fires `ended`, which also removes it from the set (harmless double).
-  stopSoundboard(): void {
-    for (const src of this.liveSources) {
-      try {
-        src.stop();
-      } catch {
-        // Source already stopped/ended — it is being cleared anyway.
-      }
+  stopSoundboard(soundId?: string): void {
+    if (soundId === undefined) {
+      this.stopSources(this.liveSources);
+      this.liveSourcesBySound.clear();
+      return;
     }
-    this.liveSources.clear();
+    const source = this.liveSourcesBySound.get(soundId);
+    if (source === undefined) return;
+    this.liveSources.delete(source);
+    this.liveSourcesBySound.delete(soundId);
+    this.stopSource(source);
+  }
+
+  stopSoundboardPreview(soundId?: string): void {
+    if (soundId === undefined) {
+      this.stopSources(this.previewSources);
+      this.previewSourcesBySound.clear();
+      return;
+    }
+    const source = this.previewSourcesBySound.get(soundId);
+    if (source === undefined) return;
+    this.previewSources.delete(source);
+    this.previewSourcesBySound.delete(soundId);
+    this.stopSource(source);
+  }
+
+  private stopSources(sources: Set<AudioBufferSourceNode>): void {
+    for (const src of sources) this.stopSource(src);
+    sources.clear();
+  }
+
+  private stopSource(source: AudioBufferSourceNode): void {
+    try {
+      source.stop();
+    } catch {
+      // Source already stopped/ended — its owning registry has already been cleared.
+    }
   }
 
   // The recording captures the call as heard: pre-deafen per-user gains + own mic + soundboard tap.
@@ -262,11 +338,17 @@ export class AudioGraph {
 
   async close(): Promise<void> {
     const ctx = this.ctx;
+    this.stopSoundboard();
+    this.stopSoundboardPreview();
     this.remotes.clear();
     this.streams.clear();
     this.localSource = null;
     this.localAnalyser = null;
     this.ctx = null;
+    this.deafenGain = null;
+    this.masterGain = null;
+    this.sbGain = null;
+    this.previewGain = null;
     if (ctx) await ctx.close();
   }
 

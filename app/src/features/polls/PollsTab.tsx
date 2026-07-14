@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import type { Poll, PollDetail } from "@tavern/shared";
 import { LIMITS, PollPage } from "@tavern/shared";
 import { Button } from "@/components/ui/button";
 import { apiClient } from "@/lib/apiClient";
+import { useInfiniteScroll } from "@/lib/useInfiniteScroll";
 import { connectRoom } from "@/lib/wsClient";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
@@ -13,6 +14,7 @@ import { useSessionStore } from "@/stores/session";
 import { PollDialog } from "./PollDialog";
 
 type Filter = "all" | "active" | "history";
+type ManagedPoll = { poll: Poll; initialOutcomeId?: string };
 
 function key(serverId: string): readonly [string, string] {
   return ["polls", serverId];
@@ -29,7 +31,7 @@ function statusLabel(status: Poll["status"]): string {
 export function PollsTab({ serverId }: { serverId: string }) {
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState<Filter>("all");
-  const [managed, setManaged] = useState<Poll | null>(null);
+  const [managed, setManaged] = useState<ManagedPoll | null>(null);
   const invalidate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: key(serverId) });
   }, [queryClient, serverId]);
@@ -52,6 +54,15 @@ export function PollsTab({ serverId }: { serverId: string }) {
       poll.status === "open" || poll.status === "locked" || poll.status === "resolved_pending";
     return filter === "all" || (filter === "active" ? active : !active);
   });
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useInfiniteScroll({
+    scrollRef,
+    sentinelRef,
+    hasNextPage: query.hasNextPage,
+    isFetchingNextPage: query.isFetchingNextPage,
+    fetchNextPage: query.fetchNextPage,
+  });
 
   return (
     <div data-testid="polls-tab" className="flex h-full min-h-0 flex-col">
@@ -71,7 +82,7 @@ export function PollsTab({ serverId }: { serverId: string }) {
           </Button>
         ))}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto p-3">
         {shown.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
             {m.polls_empty()}
@@ -83,27 +94,20 @@ export function PollsTab({ serverId }: { serverId: string }) {
                 key={poll.id}
                 serverId={serverId}
                 poll={poll}
-                onManage={() => setManaged(poll)}
+                onManage={() => setManaged({ poll })}
+                onBid={(initialOutcomeId) => setManaged({ poll, initialOutcomeId })}
               />
             ))}
           </ul>
         )}
-        {query.hasNextPage ? (
-          <Button
-            className="mt-3"
-            variant="outline"
-            disabled={query.isFetchingNextPage}
-            onClick={() => void query.fetchNextPage()}
-          >
-            {m.polls_load_more()}
-          </Button>
-        ) : null}
+        <div ref={sentinelRef} data-testid="polls-sentinel" className="h-px" />
       </div>
       {managed !== null ? (
         <PollDialog
           serverId={serverId}
-          poll={managed}
+          poll={managed.poll}
           open
+          initialOutcomeId={managed.initialOutcomeId}
           onOpenChange={(open) => {
             if (!open) setManaged(null);
           }}
@@ -117,10 +121,12 @@ function PollHistoryCard({
   serverId,
   poll,
   onManage,
+  onBid,
 }: {
   serverId: string;
   poll: PollDetail;
   onManage: () => void;
+  onBid: (outcomeId: string) => void;
 }) {
   const store = roomStore(serverId);
   const serverMeta = useStore(store, (state) => state.serverMeta);
@@ -147,10 +153,13 @@ function PollHistoryCard({
       </div>
       <div className="mt-3 grid gap-1 text-sm">
         {poll.outcomes.map((outcome) => (
-          <div
+          <button
+            type="button"
             key={outcome.id}
+            disabled={!(poll.status === "open" && poll.myBid === null)}
+            onClick={() => onBid(outcome.id)}
             className={cn(
-              "flex justify-between rounded-md bg-muted/60 px-2 py-1",
+              "flex w-full justify-between rounded-md bg-muted/60 px-2 py-1 text-left enabled:cursor-pointer enabled:hover:bg-muted",
               outcome.id === poll.winningOutcomeId && "bg-emerald-500/15 text-emerald-600",
             )}
           >
@@ -159,7 +168,7 @@ function PollHistoryCard({
               {outcome.id === winning?.id ? ` · ${m.polls_winner()}` : ""}
             </span>
             <span className="tabular-nums">{outcome.totalPoints}</span>
-          </div>
+          </button>
         ))}
       </div>
       <details className="mt-3 text-sm">

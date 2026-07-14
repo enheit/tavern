@@ -109,13 +109,39 @@ async function registryPreset(stub: RoomStub, trackName: string): Promise<string
 // A registers a screen publish (in voice) so the DO registry has an owned screen track at 720p30.
 async function seedScreen(stub: RoomStub, publisher: MemberInit): Promise<string> {
   const track = `screen:${publisher.userId}:1`;
-  const res = await internalPost(stub, "/internal/rtc/authorize", {
-    op: "publish",
+  const sessionId = `sess-${publisher.userId}`;
+  const session = await internalPost(stub, "/internal/rtc/authorize", {
+    op: "session.new",
     userId: publisher.userId,
-    sessionId: `sess-${publisher.userId}`,
+    sessionId,
+    mediaReadyVersion: 2,
+  });
+  expect(await session.json()).toEqual({ ok: true });
+
+  const reserved = await internalPost(stub, "/internal/rtc/authorize", {
+    op: "publish.reserve",
+    userId: publisher.userId,
+    sessionId,
     tracks: [{ trackName: track, kind: "screen", preset: "720p30" }],
   });
-  expect(await res.json()).toEqual({ ok: true });
+  const reservation: { ok: boolean; publicationId?: string } = await reserved.json();
+  expect(reservation.ok).toBe(true);
+  const publicationId = must(reservation.publicationId, "expected publication id");
+
+  const accepted = await internalPost(stub, "/internal/rtc/authorize", {
+    op: "publish.accept",
+    userId: publisher.userId,
+    sessionId,
+    publicationId,
+  });
+  expect(await accepted.json()).toEqual({ ok: true });
+  const committed = await internalPost(stub, "/internal/rtc/authorize", {
+    op: "publish.commit",
+    userId: publisher.userId,
+    sessionId,
+    publicationId,
+  });
+  expect(await committed.json()).toEqual({ ok: true });
   return track;
 }
 
@@ -130,7 +156,7 @@ describe("FR-27 preset guard", () => {
 
     const { ws: wsA } = await connect(stub, a.userId);
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colB.waitForType("voice.state");
     const track = await seedScreen(stub, a);
 
@@ -155,7 +181,7 @@ describe("FR-27 preset guard", () => {
 
     const { ws: wsA, col: colA } = await connect(stub, a.userId);
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colB.waitForType("voice.state");
     const track = await seedScreen(stub, a);
 

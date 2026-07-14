@@ -1,9 +1,28 @@
 import { platform } from "@/platform/types";
+import type { ScreenRid } from "@tavern/shared";
 import type { RtcPort } from "../ports";
 import type { SfuSignal } from "../sfuSignal";
 import { watchConnectionRecovery } from "./connectionRecovery";
 
 export type PullState = "idle" | "connecting" | "connected" | "renegotiating" | "closed" | "failed";
+
+export interface InboundVideoStats {
+  framesDecoded: number;
+  framesReceived: number;
+  framesDropped: number;
+  frameWidth: number | null;
+  frameHeight: number | null;
+  packetsReceived: number;
+  packetsLost: number;
+  bytesReceived: number;
+  framesPerSecond: number | null;
+  jitter: number | null;
+  freezeCount: number;
+  totalFreezesDuration: number;
+  totalDecodeTime: number | null;
+  codec: string | null;
+  roundTripTime: number | null;
+}
 
 type TrackCb = (trackName: string, track: MediaStreamTrack, stream: MediaStream) => void;
 
@@ -96,6 +115,21 @@ export class PullSession {
     return this.sessionIdRef;
   }
 
+  private async completeImmediateRenegotiation(
+    pc: RTCPeerConnection,
+    response: Awaited<ReturnType<SfuSignal["pullTracks"]>>,
+  ): Promise<void> {
+    if (!response.requiresImmediateRenegotiation) return;
+    const offer = response.sessionDescription;
+    if (offer === undefined || offer.type !== "offer") {
+      throw new Error("SFU required immediate renegotiation without an offer");
+    }
+    await pc.setRemoteDescription(offer);
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    await this.signal.renegotiate(this.serverId, this.requireSession(), answer);
+  }
+
   async connect(): Promise<void> {
     this.setState("connecting");
     try {
@@ -123,7 +157,7 @@ export class PullSession {
   }
 
   async addRemoteTracks(
-    tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>,
+    tracks: Array<{ trackName: string; preferredRid?: ScreenRid }>,
   ): Promise<void> {
     await this.enqueue(async () => {
       const pc = this.requirePc();
@@ -159,12 +193,7 @@ export class PullSession {
           }
         }
         // Pulls typically require an immediate renegotiation: apply the SFU offer, answer, PUT it.
-        if (response.requiresImmediateRenegotiation && response.sessionDescription) {
-          await pc.setRemoteDescription(response.sessionDescription);
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          await this.signal.renegotiate(this.serverId, sessionId, answer);
-        }
+        await this.completeImmediateRenegotiation(pc, response);
         if (failed.length > 0) throw new PullTracksError(failed, detail);
         this.setState("connected");
       } catch (err) {
@@ -176,22 +205,38 @@ export class PullSession {
 
   async removeRemoteTracks(trackNames: string[]): Promise<void> {
     await this.enqueue(async () => {
+      const pc = this.requirePc();
       const sessionId = this.requireSession();
       const mids: string[] = [];
       for (const name of trackNames) {
         const mid = this.nameToMid.get(name);
         if (!mid) continue;
         mids.push(mid);
-        this.midToName.delete(mid);
-        this.nameToMid.delete(name);
       }
-      if (mids.length > 0) await this.signal.closeTracks(this.serverId, sessionId, mids);
+      if (mids.length === 0) return;
+      this.setState("renegotiating");
+      try {
+        const response = await this.signal.closeTracks(this.serverId, sessionId, mids);
+        await this.completeImmediateRenegotiation(pc, response);
+        for (const name of trackNames) {
+          const mid = this.nameToMid.get(name);
+          if (mid === undefined) continue;
+          this.midToName.delete(mid);
+          this.nameToMid.delete(name);
+        }
+        this.setState("connected");
+      } catch (error) {
+        // A failed close leaves the previous mapping intact so a caller can keep using or retrying
+        // the still-known track. Surface the failure; never pretend the video was removed.
+        this.setState("connected");
+        throw error;
+      }
     });
   }
 
   // FR-33: quality follows tile size via simulcast — tracks/update on the existing pull, no SDP op.
   // The trackName rides along so the Worker/DO can reprice this watcher's egress (op:'layer', G5).
-  async setLayer(trackName: string, rid: "h" | "l"): Promise<void> {
+  async setLayer(trackName: string, rid: ScreenRid): Promise<void> {
     const mid = this.nameToMid.get(trackName);
     if (!mid) throw new Error(`no pulled track ${trackName}`);
     // §10 e2e hook: record each switch so S8.5's FR-33 spec can assert the layer request happened
@@ -255,25 +300,72 @@ export class PullSession {
   // simulcast layer / preset). Reads existing WebRTC stats only; narrowed with `in`/`typeof` because
   // RTCStats does not declare the video members (no `as`-casts, §9.1). Not exercised under the mock
   // (no media plane) — the PR streams spec asserts signaling/state instead.
-  async inboundVideoStats(): Promise<{
-    framesDecoded: number;
-    frameHeight: number | null;
-    bytesReceived: number;
-    framesPerSecond: number | null;
-  }> {
+  async inboundVideoStats(): Promise<InboundVideoStats> {
     const pc = this.pc;
     if (!pc)
-      return { framesDecoded: 0, frameHeight: null, bytesReceived: 0, framesPerSecond: null };
+      return {
+        framesDecoded: 0,
+        framesReceived: 0,
+        framesDropped: 0,
+        frameWidth: null,
+        frameHeight: null,
+        packetsReceived: 0,
+        packetsLost: 0,
+        bytesReceived: 0,
+        framesPerSecond: null,
+        jitter: null,
+        freezeCount: 0,
+        totalFreezesDuration: 0,
+        totalDecodeTime: null,
+        codec: null,
+        roundTripTime: null,
+      };
     const report = await pc.getStats();
     let framesDecoded = 0;
+    let framesReceived = 0;
+    let framesDropped = 0;
+    let frameWidth: number | null = null;
     let frameHeight: number | null = null;
+    let packetsReceived = 0;
+    let packetsLost = 0;
     let bytesReceived = 0;
     let framesPerSecond: number | null = null;
+    let jitter: number | null = null;
+    let freezeCount = 0;
+    let totalFreezesDuration = 0;
+    let totalDecodeTime: number | null = null;
+    let codec: string | null = null;
+    let codecId: string | null = null;
+    let roundTripTime: number | null = null;
+    const codecs = new Map<string, string>();
+    report.forEach((stat) => {
+      if (stat.type === "codec" && "id" in stat && typeof stat.id === "string") {
+        const mimeType =
+          "mimeType" in stat && typeof stat.mimeType === "string" ? stat.mimeType : null;
+        if (mimeType !== null) codecs.set(stat.id, mimeType.replace(/^video\//, ""));
+      }
+      if (stat.type !== "candidate-pair") return;
+      const selected = "selected" in stat && stat.selected === true;
+      const nominated = "nominated" in stat && stat.nominated === true;
+      if (!selected && !nominated) return;
+      if ("currentRoundTripTime" in stat && typeof stat.currentRoundTripTime === "number") {
+        roundTripTime = stat.currentRoundTripTime;
+      }
+    });
     report.forEach((stat) => {
       if (stat.type !== "inbound-rtp") return;
       if (!("kind" in stat) || stat.kind !== "video") return;
       if ("framesDecoded" in stat && typeof stat.framesDecoded === "number") {
         framesDecoded += stat.framesDecoded;
+      }
+      if ("framesReceived" in stat && typeof stat.framesReceived === "number") {
+        framesReceived += stat.framesReceived;
+      }
+      if ("framesDropped" in stat && typeof stat.framesDropped === "number") {
+        framesDropped += stat.framesDropped;
+      }
+      if ("frameWidth" in stat && typeof stat.frameWidth === "number") {
+        frameWidth = stat.frameWidth;
       }
       if ("frameHeight" in stat && typeof stat.frameHeight === "number") {
         frameHeight = stat.frameHeight;
@@ -281,11 +373,45 @@ export class PullSession {
       if ("bytesReceived" in stat && typeof stat.bytesReceived === "number") {
         bytesReceived += stat.bytesReceived;
       }
+      if ("packetsReceived" in stat && typeof stat.packetsReceived === "number") {
+        packetsReceived += stat.packetsReceived;
+      }
+      if ("packetsLost" in stat && typeof stat.packetsLost === "number") {
+        packetsLost += stat.packetsLost;
+      }
       if ("framesPerSecond" in stat && typeof stat.framesPerSecond === "number") {
         framesPerSecond = stat.framesPerSecond;
       }
+      if ("jitter" in stat && typeof stat.jitter === "number") jitter = stat.jitter;
+      if ("freezeCount" in stat && typeof stat.freezeCount === "number") {
+        freezeCount += stat.freezeCount;
+      }
+      if ("totalFreezesDuration" in stat && typeof stat.totalFreezesDuration === "number") {
+        totalFreezesDuration += stat.totalFreezesDuration;
+      }
+      if ("totalDecodeTime" in stat && typeof stat.totalDecodeTime === "number") {
+        totalDecodeTime = (totalDecodeTime ?? 0) + stat.totalDecodeTime;
+      }
+      if ("codecId" in stat && typeof stat.codecId === "string") codecId = stat.codecId;
     });
-    return { framesDecoded, frameHeight, bytesReceived, framesPerSecond };
+    if (codecId !== null) codec = codecs.get(codecId) ?? null;
+    return {
+      framesDecoded,
+      framesReceived,
+      framesDropped,
+      frameWidth,
+      frameHeight,
+      packetsReceived,
+      packetsLost,
+      bytesReceived,
+      framesPerSecond,
+      jitter,
+      freezeCount,
+      totalFreezesDuration,
+      totalDecodeTime,
+      codec,
+      roundTripTime,
+    };
   }
 
   async close(): Promise<void> {

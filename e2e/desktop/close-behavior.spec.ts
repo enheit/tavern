@@ -17,8 +17,7 @@ test.describe("desktop close behavior", () => {
     await desktop.page.goto(WEB_URL);
     await expect(desktop.page.getByTestId("controls-bar")).toBeVisible({ timeout: 30_000 });
 
-    await desktop.page.getByTestId("user-menu").click();
-    await desktop.page.getByTestId("user-menu-settings").click();
+    await desktop.page.getByTestId("sidebar-settings-button").click();
     await desktop.page.getByTestId("settings-tab-app").click();
     const toggle = desktop.page.getByTestId("settings-close-to-tray");
     await expect(toggle).toBeVisible();

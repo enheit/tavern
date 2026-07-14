@@ -41,6 +41,26 @@ class IOStub {
   }
 }
 
+// ResizeObserver delivers the actual content-size change that happens after an attachment loads.
+class ResizeObserverStub {
+  static instances: ResizeObserverStub[] = [];
+  private observed: Element[] = [];
+  constructor(private readonly cb: ResizeObserverCallback) {
+    ResizeObserverStub.instances.push(this);
+  }
+  observe(el: Element): void {
+    this.observed.push(el);
+  }
+  unobserve(): void {}
+  disconnect(): void {}
+  fire(): void {
+    this.cb(
+      this.observed.map((target) => ({ target }) as ResizeObserverEntry),
+      this as unknown as ResizeObserver,
+    );
+  }
+}
+
 function fireAllIntersections(isIntersecting: boolean): void {
   for (const io of IOStub.instances) io.fire(isIntersecting);
 }
@@ -121,7 +141,9 @@ function zeroPoints() {
 beforeEach(() => {
   sent.length = 0;
   IOStub.instances = [];
+  ResizeObserverStub.instances = [];
   Reflect.set(globalThis, "IntersectionObserver", IOStub);
+  Reflect.set(globalThis, "ResizeObserver", ResizeObserverStub);
   Reflect.set(Element.prototype, "scrollIntoView", () => undefined);
   vi.mocked(connectRoom).mockReturnValue(fakeConn);
   resetRoomStores();
@@ -228,6 +250,65 @@ describe("FR-15 FR-17 message list", () => {
         });
     });
     expect(topValue).toBe(200);
+  });
+
+  it("keeps the latest message fully visible when its content grows after render", () => {
+    seedHello([member(SELF)], 1);
+    roomStore(SID).setState({
+      historyInitialized: true,
+      messages: [chatMessage({ id: 1, body: "GIF" })],
+    });
+    render(<MessageList serverId={SID} />);
+
+    const scroll = screen.getByTestId("message-scroll");
+    let scrollTop = 0;
+    let scrollHeight = 100;
+    Object.defineProperties(scroll, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+
+    scrollHeight = 420;
+    act(() => ResizeObserverStub.instances.forEach((observer) => observer.fire()));
+
+    expect(scrollTop).toBe(420);
+  });
+
+  it("does not pull a reader back down when message content grows above the bottom", () => {
+    seedHello([member(SELF)], 1);
+    roomStore(SID).setState({
+      historyInitialized: true,
+      messages: [chatMessage({ id: 1, body: "GIF" })],
+    });
+    render(<MessageList serverId={SID} />);
+
+    const scroll = screen.getByTestId("message-scroll");
+    let scrollTop = 100;
+    let scrollHeight = 500;
+    Object.defineProperties(scroll, {
+      clientHeight: { configurable: true, value: 100 },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = value;
+        },
+      },
+    });
+    act(() => fireEvent.scroll(scroll));
+
+    scrollHeight = 820;
+    act(() => ResizeObserverStub.instances.forEach((observer) => observer.fire()));
+
+    expect(scrollTop).toBe(100);
   });
 
   it("pending message at reduced opacity until nonce echo", () => {

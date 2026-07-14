@@ -1,5 +1,4 @@
 import type { Locale, Theme } from "@tavern/shared";
-import type { CostStatus } from "@tavern/shared";
 import { UserSettings } from "@tavern/shared";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -17,7 +16,6 @@ import { errorMessage } from "@/lib/errorMessage";
 import { m } from "@/paraglide/messages.js";
 import { platform } from "@/platform/types";
 import { useSettingsStore } from "@/stores/settings";
-import { EgressUsage } from "./EgressUsage";
 
 // FR-06/FR-07/FR-16 persistence: any change in the App or Notifications section writes the FULL
 // camelCase settings row (validated against the shared `UserSettings` zod) to PUT /api/me/settings.
@@ -107,7 +105,7 @@ function DesktopCloseBehavior() {
   );
 }
 
-export function AppSection({ cost }: { cost: CostStatus | null }) {
+export function AppSection() {
   const theme = useSettingsStore((s) => s.theme);
   const locale = useSettingsStore((s) => s.locale);
   const setTheme = useSettingsStore((s) => s.setTheme);
@@ -159,7 +157,6 @@ export function AppSection({ cost }: { cost: CostStatus | null }) {
         </Select>
       </div>
       <DesktopCloseBehavior />
-      <EgressUsage cost={cost} />
     </div>
   );
 }

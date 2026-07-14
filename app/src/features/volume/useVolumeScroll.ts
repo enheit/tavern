@@ -1,28 +1,28 @@
 import { useEffect, useRef, useState } from "react";
 import { pushVolumeHud } from "./hudStore";
 
-// Gain bounds + wheel granularity. Default (unity) is 1.0 = 100%; the ceiling doubles the source.
+// Volume-level bounds + wheel granularity. Default is 1.0 = 100%; the ceiling is 200%.
 // One wheel notch = ±5%, matching the old slider's `step={5}` so the two feel identical.
-const MIN_GAIN = 0;
-const MAX_GAIN = 2;
+const MIN_LEVEL = 0;
+const MAX_LEVEL = 2;
 const STEP = 0.05;
 // How long the inline percent stays up after the last scroll notch before it fades away.
 const INLINE_MS = 1400;
 
-function clampGain(g: number): number {
+function clampLevel(level: number): number {
   // Round to whole percents so accumulated float steps never drift (…0.15000000000000002).
-  return Math.min(MAX_GAIN, Math.max(MIN_GAIN, Math.round(g * 100) / 100));
+  return Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, Math.round(level * 100) / 100));
 }
 
 export interface VolumeScrollOptions {
   // When false the gesture is inert (self chip, un-watched / audioless stream) — no wheel capture,
   // no reset, no HUD.
   enabled: boolean;
-  // Fresh read of the target's current gain (0..2). Read lazily inside the handler so the value is
-  // never a stale closure from an earlier render.
+  // Fresh read of the target's current displayed level (0..2). Read lazily inside the handler so the
+  // value is never a stale closure from an earlier render.
   read: () => number;
-  // Persist + apply the new gain (0..2) — e.g. voiceController.setUserVolume / setStreamVolume.
-  write: (gain: number) => void;
+  // Persist + apply the new level (0..2) — e.g. voiceController.setUserVolume / setStreamVolume.
+  write: (level: number) => void;
   // Fresh HUD metadata for the target (label/color can change as the room store updates).
   meta: () => { key: string; label: string; color?: string };
 }
@@ -49,8 +49,8 @@ export function useVolumeScroll<T extends HTMLElement>(
     const el = ref.current;
     if (!el) return;
 
-    const flash = (gain: number): void => {
-      const pct = Math.round(gain * 100);
+    const flash = (level: number): void => {
+      const pct = Math.round(level * 100);
       const o = optsRef.current;
       const meta = o.meta();
       pushVolumeHud({
@@ -72,7 +72,7 @@ export function useVolumeScroll<T extends HTMLElement>(
       e.preventDefault();
       // Scroll up (negative deltaY) = louder. Clamp; still flash at the boundary so the ceiling/floor
       // gives feedback instead of feeling dead.
-      const next = clampGain(o.read() + (e.deltaY < 0 ? STEP : -STEP));
+      const next = clampLevel(o.read() + (e.deltaY < 0 ? STEP : -STEP));
       o.write(next);
       flash(next);
     };

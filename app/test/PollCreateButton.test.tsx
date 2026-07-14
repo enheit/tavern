@@ -21,6 +21,17 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("poll creation", () => {
+  it("shows validation only after an attempted submission", () => {
+    render(<PollCreateButton serverId="poll-room" />);
+    fireEvent.click(screen.getByTestId("composer-poll"));
+    fireEvent.change(screen.getByTestId("poll-question"), { target: { value: "Who wins?" } });
+    fireEvent.change(screen.getByTestId("poll-outcome-0"), { target: { value: "Blue" } });
+
+    expect(screen.queryByText("Enter 2–10 unique outcomes.")).toBeNull();
+    fireEvent.click(screen.getByTestId("poll-create-submit"));
+    expect(screen.getByText("Enter 2–10 unique outcomes.")).toBeDefined();
+  });
+
   it("validates and sends a two-outcome timed poll", () => {
     render(<PollCreateButton serverId="poll-room" />);
     fireEvent.click(screen.getByTestId("composer-poll"));

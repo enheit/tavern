@@ -33,6 +33,7 @@ export function PollCreateButton({ serverId }: { serverId: string }) {
   const [question, setQuestion] = useState("");
   const [outcomes, setOutcomes] = useState(emptyOutcomes);
   const [duration, setDuration] = useState(120);
+  const [submitAttempted, setSubmitAttempted] = useState(false);
   const trimmed = outcomes.map((outcome) => outcome.title.trim());
   const unique = new Set(trimmed.map((outcome) => outcome.toLocaleLowerCase()));
   const questionValid =
@@ -49,9 +50,11 @@ export function PollCreateButton({ serverId }: { serverId: string }) {
     setQuestion("");
     setOutcomes(emptyOutcomes());
     setDuration(120);
+    setSubmitAttempted(false);
   }
 
   function submit(): void {
+    setSubmitAttempted(true);
     if (!questionValid || !outcomesValid) return;
     createPoll(question.trim(), trimmed, duration);
     setOpen(false);
@@ -73,93 +76,97 @@ export function PollCreateButton({ serverId }: { serverId: string }) {
           <DialogTitle>{m.polls_create()}</DialogTitle>
           <DialogDescription>{m.polls_create_description()}</DialogDescription>
         </DialogHeader>
-        <label className="grid gap-1.5 text-sm">
-          <span className="font-medium">{m.polls_question()}</span>
-          <Input
-            data-testid="poll-question"
-            value={question}
-            maxLength={LIMITS.pollQuestionMaxChars}
-            placeholder={m.polls_question_placeholder()}
-            onChange={(event) => setQuestion(event.target.value)}
-          />
-          {!questionValid && question.length > 0 ? (
-            <span className="text-xs text-destructive">{m.polls_validation_question()}</span>
-          ) : null}
-        </label>
-        <div className="grid gap-2">
-          <span className="text-sm font-medium">{m.polls_outcomes()}</span>
-          {outcomes.map((outcome, index) => (
-            <div key={outcome.id} className="flex items-center gap-2">
-              <Input
-                data-testid={`poll-outcome-${index}`}
-                value={outcome.title}
-                maxLength={LIMITS.pollOutcomeMaxChars}
-                placeholder={m.polls_outcome_placeholder({ number: index + 1 })}
-                onChange={(event) =>
-                  setOutcomes((current) =>
-                    current.map((value) =>
-                      value.id === outcome.id ? { ...value, title: event.target.value } : value,
-                    ),
-                  )
-                }
-              />
-              {outcomes.length > LIMITS.pollOutcomeMin ? (
-                <Button
-                  type="button"
-                  size="icon-sm"
-                  variant="ghost"
-                  aria-label={m.polls_remove_outcome({ number: index + 1 })}
-                  onClick={() =>
-                    setOutcomes((current) => current.filter((value) => value.id !== outcome.id))
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit();
+          }}
+          className="grid gap-4"
+        >
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">{m.polls_question()}</span>
+            <Input
+              data-testid="poll-question"
+              value={question}
+              maxLength={LIMITS.pollQuestionMaxChars}
+              placeholder={m.polls_question_placeholder()}
+              onChange={(event) => setQuestion(event.target.value)}
+            />
+            {submitAttempted && !questionValid ? (
+              <span className="text-xs text-destructive">{m.polls_validation_question()}</span>
+            ) : null}
+          </label>
+          <div className="grid gap-2">
+            <span className="text-sm font-medium">{m.polls_outcomes()}</span>
+            {outcomes.map((outcome, index) => (
+              <div key={outcome.id} className="flex items-center gap-2">
+                <Input
+                  data-testid={`poll-outcome-${index}`}
+                  value={outcome.title}
+                  maxLength={LIMITS.pollOutcomeMaxChars}
+                  placeholder={m.polls_outcome_placeholder({ number: index + 1 })}
+                  onChange={(event) =>
+                    setOutcomes((current) =>
+                      current.map((value) =>
+                        value.id === outcome.id ? { ...value, title: event.target.value } : value,
+                      ),
+                    )
                   }
-                >
-                  <Trash2Icon />
-                </Button>
-              ) : null}
-            </div>
-          ))}
-          {outcomes.length < LIMITS.pollOutcomeMax ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="justify-self-start"
-              onClick={() =>
-                setOutcomes((current) => [...current, { id: crypto.randomUUID(), title: "" }])
-              }
-            >
-              <PlusIcon />
-              {m.polls_add_outcome()}
-            </Button>
-          ) : null}
-          {!outcomesValid && outcomes.some((outcome) => outcome.title.length > 0) ? (
-            <span className="text-xs text-destructive">{m.polls_validation_outcomes()}</span>
-          ) : null}
-        </div>
-        <label className="grid gap-1.5 text-sm">
-          <span className="font-medium">{m.polls_duration()}</span>
-          <select
-            data-testid="poll-duration"
-            value={duration}
-            onChange={(event) => setDuration(Number(event.target.value))}
-            className="h-8 rounded-lg border border-input bg-background px-2.5"
-          >
-            {DURATIONS.map((seconds) => (
-              <option key={seconds} value={seconds}>
-                {seconds < 60 ? `${seconds}s` : `${seconds / 60}m`}
-              </option>
+                />
+                {outcomes.length > LIMITS.pollOutcomeMin ? (
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    variant="ghost"
+                    aria-label={m.polls_remove_outcome({ number: index + 1 })}
+                    onClick={() =>
+                      setOutcomes((current) => current.filter((value) => value.id !== outcome.id))
+                    }
+                  >
+                    <Trash2Icon />
+                  </Button>
+                ) : null}
+              </div>
             ))}
-          </select>
-        </label>
-        <DialogFooter>
-          <Button
-            data-testid="poll-create-submit"
-            disabled={!questionValid || !outcomesValid}
-            onClick={submit}
-          >
-            {m.polls_start()}
-          </Button>
-        </DialogFooter>
+            {outcomes.length < LIMITS.pollOutcomeMax ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="justify-self-start"
+                onClick={() =>
+                  setOutcomes((current) => [...current, { id: crypto.randomUUID(), title: "" }])
+                }
+              >
+                <PlusIcon />
+                {m.polls_add_outcome()}
+              </Button>
+            ) : null}
+            {submitAttempted && !outcomesValid ? (
+              <span className="text-xs text-destructive">{m.polls_validation_outcomes()}</span>
+            ) : null}
+          </div>
+          <label className="grid gap-1.5 text-sm">
+            <span className="font-medium">{m.polls_duration()}</span>
+            <select
+              data-testid="poll-duration"
+              value={duration}
+              onChange={(event) => setDuration(Number(event.target.value))}
+              className="h-8 rounded-lg border border-input bg-background px-2.5"
+            >
+              {DURATIONS.map((seconds) => (
+                <option key={seconds} value={seconds}>
+                  {seconds < 60 ? `${seconds}s` : `${seconds / 60}m`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <DialogFooter>
+            <Button data-testid="poll-create-submit" type="submit">
+              {m.polls_start()}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   );

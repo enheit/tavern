@@ -102,9 +102,8 @@ test.describe("user profile stats e2e", () => {
       await openedB.page.keyboard.press("Escape");
       await expect(openedB.page.getByTestId("tab-stats")).toHaveCount(0);
 
-      await openedB.page.getByTestId("user-menu").click();
-      await openedB.page.getByTestId("user-menu-settings").click();
-      await openedB.page.getByTestId("settings-tab-app").click();
+      await openedB.page.getByTestId("sidebar-settings-button").click();
+      await openedB.page.getByTestId("settings-tab-tavern-usage").click();
       await expect(openedB.page.getByTestId("settings-egress-used")).toBeVisible();
     } finally {
       await openedA.context.close();

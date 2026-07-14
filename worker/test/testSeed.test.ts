@@ -83,7 +83,12 @@ async function createServer(token: string, nickname: string): Promise<string> {
 async function seedVoice(serverId: string, userIds: string[]): Promise<void> {
   await runInDurableObject(roomStub(serverId), async (_i, state) => {
     await state.storage.put("voice", {
-      members: userIds.map((userId) => ({ userId, muted: false, deafened: false })),
+      members: userIds.map((userId) => ({
+        userId,
+        muted: false,
+        deafened: false,
+        mediaReadyVersion: 2,
+      })),
       sessionStartedAt: Date.now(),
     });
   });
@@ -142,7 +147,7 @@ describe("S8.5 test-seed route", () => {
     const sessionRes = await authed(token, `/api/rtc/${serverId}/session`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ mediaReadyVersion: 2 }),
     });
     expect(sessionRes.status).toBe(200);
     const { sessionId }: { sessionId: string } = await sessionRes.json();
@@ -213,5 +218,53 @@ describe("FR-08 seed-code route", () => {
     const res = await SELF.fetch(`${BASE}/api/__test/seed-code`, { method: "POST" });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "not_found" });
+  });
+});
+
+describe("local crowd cleanup route", () => {
+  it("removes a seeded participant from D1 and the room cache", async () => {
+    const ownerToken = await register("remove_owner");
+    const targetToken = await register("remove_target");
+    const targetUserId = await meUserId(targetToken);
+    const serverId = await createServer(ownerToken, "remove-members-server");
+    const join = await authed(targetToken, "/api/servers/join", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ nickname: "remove-members-server", password: "hunter2" }),
+    });
+    expect(join.status).toBe(200);
+
+    expect(
+      await env.DB.prepare("SELECT 1 FROM memberships WHERE user_id = ? AND server_id = ? LIMIT 1")
+        .bind(targetUserId, serverId)
+        .first(),
+    ).not.toBeNull();
+    expect(
+      await runInDurableObject(roomStub(serverId), async (_instance, state) =>
+        new RoomState(state, env).hasMember(targetUserId),
+      ),
+    ).toBe(true);
+
+    const ctx = createExecutionContext();
+    const request = new Request(`${BASE}/api/__test/remove-members`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ serverId, userIds: [targetUserId] }),
+    });
+    const response = await app.fetch(request, { ...env, TAVERN_TEST: "1" }, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ removed: 1 });
+    expect(
+      await env.DB.prepare("SELECT 1 FROM memberships WHERE user_id = ? AND server_id = ? LIMIT 1")
+        .bind(targetUserId, serverId)
+        .first(),
+    ).toBeNull();
+    expect(
+      await runInDurableObject(roomStub(serverId), async (_instance, state) =>
+        new RoomState(state, env).hasMember(targetUserId),
+      ),
+    ).toBe(false);
   });
 });

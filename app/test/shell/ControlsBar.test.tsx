@@ -8,7 +8,25 @@ vi.mock("@/features/streams/useWebcam", () => ({ useWebcam: vi.fn() }));
 vi.mock("@/features/recordings/RecordButton", () => ({
   RecordButton: () => <div data-testid="controls-record" />,
 }));
-vi.mock("@/features/streams/SharePickerDialog", () => ({ SharePickerDialog: () => null }));
+vi.mock("@/features/streams/SharePickerDialog", () => ({
+  SharePickerDialog: (props: {
+    open: boolean;
+    initialPreset?: string;
+    onStart(sel: { sourceId: null; preset: "1080p30" | "1080p60"; withAudio: true }): void;
+  }) =>
+    props.open ? (
+      <button
+        data-testid="share-picker-confirm"
+        onClick={() =>
+          props.onStart({
+            sourceId: null,
+            preset: props.initialPreset === "1080p60" ? "1080p60" : "1080p30",
+            withAudio: true,
+          })
+        }
+      />
+    ) : null,
+}));
 
 import { ControlsBar } from "@/features/shell/ControlsBar";
 import { useScreenShare } from "@/features/streams/useScreenShare";
@@ -19,6 +37,8 @@ const SID = "s1";
 
 const startShare = vi.fn(async () => undefined);
 const stopShare = vi.fn(async () => undefined);
+const replaceCapture = vi.fn(async () => undefined);
+const setPreset = vi.fn(async () => undefined);
 const startCam = vi.fn(async () => undefined);
 const stopCam = vi.fn(async () => undefined);
 const setMuted = vi.fn();
@@ -37,14 +57,18 @@ function mockVoice(active: boolean, over: { muted?: boolean; deafened?: boolean 
   });
 }
 
-function mockMedia(over: { sharing?: boolean; camming?: boolean } = {}): void {
+function mockMedia(
+  over: { sharing?: boolean; camming?: boolean; captureCeiling?: "1080p30" | "1080p60" } = {},
+): void {
   vi.mocked(useScreenShare).mockReturnValue({
     sharing: over.sharing ?? false,
     preset: null,
     trackName: null,
     start: startShare,
     stop: stopShare,
-    setPreset: vi.fn(async () => undefined),
+    setPreset,
+    replaceCapture,
+    captureCeiling: over.captureCeiling ?? null,
   });
   vi.mocked(useWebcam).mockReturnValue({
     active: over.camming ?? false,
@@ -56,6 +80,8 @@ function mockMedia(over: { sharing?: boolean; camming?: boolean } = {}): void {
 beforeEach(() => {
   startShare.mockClear();
   stopShare.mockClear();
+  replaceCapture.mockClear();
+  setPreset.mockClear();
   startCam.mockClear();
   stopCam.mockClear();
   setMuted.mockClear();
@@ -128,17 +154,38 @@ describe("ControlsBar", () => {
     expect(screen.queryByTestId("share-data-100")).toBeNull();
   });
 
-  it("screen button starts sharing at the shown preset when idle (web — no dialog)", () => {
+  it("screen button opens pre-share quality selection before capture", () => {
     mockVoice(true);
     render(<ControlsBar serverId={SID} />);
 
     fireEvent.click(screen.getByTestId("controls-screen"));
+    expect(screen.getByTestId("share-picker-confirm")).toBeTruthy();
+    expect(startShare).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("share-picker-confirm"));
     expect(startShare).toHaveBeenCalledWith({
       sourceId: null,
       preset: "1080p30",
       withAudio: true,
     });
     expect(stopShare).not.toHaveBeenCalled();
+  });
+
+  it("an fps upgrade beyond the capture ceiling opens reacquisition and replaces capture", () => {
+    mockVoice(true);
+    mockMedia({ sharing: true, captureCeiling: "1080p30" });
+    render(<ControlsBar serverId={SID} />);
+
+    fireEvent.click(screen.getByTestId("share-fps-60"));
+    expect(setPreset).not.toHaveBeenCalled();
+    expect(screen.getByTestId("share-picker-confirm")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("share-picker-confirm"));
+    expect(replaceCapture).toHaveBeenCalledWith({
+      sourceId: null,
+      preset: "1080p60",
+      withAudio: true,
+    });
   });
 
   it("while sharing the button stops and the res/fps/data tuning groups appear", () => {

@@ -1,46 +1,48 @@
 import type { StreamInfo } from "@tavern/shared";
 import { Maximize2Icon, Minimize2Icon, MonitorIcon, VideoIcon } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { useVolumeScroll } from "@/features/volume/useVolumeScroll";
+import { Slider } from "@/components/ui/slider";
 import { getVoiceController } from "@/features/voice/voiceController";
+import { useVolumeScroll } from "@/features/volume/useVolumeScroll";
 import { focusStore } from "@/lib/focusState";
+import { cn } from "@/lib/utils";
+import { registerQualityVideoElement, useQualityStore } from "@/media/qualityMonitor";
+import type { QualitySnapshot } from "@/media/qualityMonitor";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
 import { useSettingsStore } from "@/stores/settings";
+import { useStreamPreview } from "./useStreamPreview";
 import { useWatch } from "./useWatch";
 
-// FR-31: apply the tile's per-stream gain to the shared graph AND persist it under
-// settings.volumes.streams (keyed by the opaque userId:kind). Sliders map 0–200% → gain 0–2.
-function setStreamVolume(streamKey: string, gain: number): void {
-  getVoiceController().streamAudioSink()?.setStreamGain(streamKey, gain);
-  const s = useSettingsStore.getState();
-  s.setVolumes({ ...s.volumes, streams: { ...s.volumes.streams, [streamKey]: gain } });
+function setStreamVolume(streamKey: string, level: number): void {
+  getVoiceController().streamAudioSink()?.setStreamVolume(streamKey, level);
+  const settings = useSettingsStore.getState();
+  settings.setVolumes({
+    ...settings.volumes,
+    streams: { ...settings.volumes.streams, [streamKey]: level },
+  });
 }
 
-// FR-29 self path: the sharer's OWN stream (`stream.userId === self.userId`) renders the LOCAL
-// MediaStream directly — never a PullSession to self, never a Watch button (you don't watch yourself).
-// Every other tile is a normal opt-in remote tile (FR-30 applies to webcams exactly as to screens).
 export function StreamTile({
   stream,
   onToggleFocus,
   selfStream,
   fullscreen = false,
+  compact = false,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
   onToggleFocus: () => void;
   selfStream?: MediaStream | null;
-  // Theater fullscreen: `fullscreen` marks this tile as the window-filling instance (renders its
-  // controls always-visible + a minimize affordance); `onToggleFullscreen` enters/exits it.
   fullscreen?: boolean;
+  compact?: boolean;
   onToggleFullscreen: () => void;
 }) {
-  const selfUserId = useSessionStore((s) => s.profile?.userId);
+  const selfUserId = useSessionStore((state) => state.profile?.userId);
   if (stream.userId === selfUserId) {
     return (
       <SelfTile
@@ -48,6 +50,7 @@ export function StreamTile({
         selfStream={selfStream ?? null}
         onToggleFocus={onToggleFocus}
         fullscreen={fullscreen}
+        compact={compact}
         onToggleFullscreen={onToggleFullscreen}
       />
     );
@@ -57,13 +60,12 @@ export function StreamTile({
       stream={stream}
       onToggleFocus={onToggleFocus}
       fullscreen={fullscreen}
+      compact={compact}
       onToggleFullscreen={onToggleFullscreen}
     />
   );
 }
 
-// Enter/exit theater fullscreen for one stream. Lives bottom-left of a watched/self tile's overlay;
-// stops propagation so it never also toggles the tile's focus. Icon flips maximize ↔ minimize.
 function FullscreenButton({
   trackName,
   fullscreen,
@@ -79,11 +81,12 @@ function FullscreenButton({
     <Button
       size="icon-xs"
       variant="secondary"
+      className="ml-auto"
       data-testid={`stream-fullscreen-${trackName}`}
       aria-label={label}
       title={label}
-      onClick={(e) => {
-        e.stopPropagation();
+      onClick={(event) => {
+        event.stopPropagation();
         onToggle();
       }}
     >
@@ -92,38 +95,101 @@ function FullscreenButton({
   );
 }
 
-// FR-29 self-preview: the local webcam (or any own stream) shown muted with a "You" badge. No Watch
-// button and no useWatch — the sharer sees their own tile without pulling from the SFU. On-the-fly
-// quality (FR-27) is driven from the ControlsBar res/fps groups now, not a per-tile dropdown. FR-33: a
-// single left-click escalates the layout (grid → main → fullscreen ↔ main; the Canvas decides), same
-// as a remote tile — there is no simulcast layer to switch (the stream is local), purely layout.
+function qualityHealthLabel(health: QualitySnapshot["health"]): string {
+  if (health === "healthy") return m.streams_quality_healthy();
+  if (health === "adapting") return m.streams_quality_adapting();
+  if (health === "device_limited") return m.streams_quality_device_limited();
+  if (health === "network_limited") return m.streams_quality_network_limited();
+  return m.streams_quality_poor();
+}
+
+function QualityBadge({ trackName }: { trackName: string }) {
+  const quality = useQualityStore((state) => state.snapshots[trackName]);
+  if (quality === undefined) return null;
+  const healthLabel = qualityHealthLabel(quality.health);
+  const resolution = quality.height === null ? "—" : `${quality.height}p`;
+  const cadence = quality.fps === null ? "—" : `${Math.round(quality.fps)} fps`;
+  return (
+    <span
+      data-testid={`stream-quality-${trackName}`}
+      data-health={quality.health}
+      title={`${healthLabel} · ${resolution} · ${cadence}`}
+      className={cn(
+        "absolute top-2 right-2 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-xs font-medium text-white",
+        quality.health === "healthy" && "text-emerald-300",
+        quality.health === "adapting" && "text-amber-200",
+        (quality.health === "device_limited" || quality.health === "network_limited") &&
+          "text-orange-300",
+        quality.health === "poor" && "text-red-300",
+      )}
+    >
+      <span className="size-1.5 rounded-full bg-current" />
+      <span>{resolution}</span>
+      <span>·</span>
+      <span>{cadence}</span>
+      <span>·</span>
+      <span>{healthLabel}</span>
+    </span>
+  );
+}
+
+type PreviewState = "live" | "suspended" | "resuming";
+
 function SelfTile({
   stream,
   selfStream,
   onToggleFocus,
   fullscreen,
+  compact,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
   selfStream: MediaStream | null;
   onToggleFocus: () => void;
   fullscreen: boolean;
+  compact: boolean;
   onToggleFullscreen: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  // FR-29 preview pause: when the Tavern window loses focus/visibility the browser stops painting the
-  // local <video>, leaving a black tile. Rather than show black we cover it with a "still running" card
-  // (Discord-style). The video stays mounted (srcObject intact) so the live preview snaps back the
-  // instant the window is focused again — nothing is torn down, only the cover is toggled.
-  const focused = useStore(focusStore, (s) => s.focused);
-  useEffect(() => {
-    const el = videoRef.current;
-    if (el) el.srcObject = selfStream;
+  const previewActive = useStore(focusStore, (state) => state.focused);
+  const [previewState, setPreviewState] = useState<PreviewState>(
+    previewActive ? "resuming" : "suspended",
+  );
+
+  const resumePreview = useCallback(() => {
+    const element = videoRef.current;
+    if (element === null || selfStream === null) return;
+    element.srcObject = selfStream;
+    setPreviewState("resuming");
   }, [selfStream]);
+
+  // Detaching the muted local preview saves decode/paint work only. It never stops source tracks or
+  // touches the publisher PeerConnection, so alt-tabbing into a game keeps the outgoing stream live.
+  // This can react to keyboard focus because it affects only the local preview; remote delivery below
+  // deliberately uses document visibility so a watched stream on monitor two stays at full quality.
+  useLayoutEffect(() => {
+    const element = videoRef.current;
+    if (element === null) return;
+    if (!previewActive || selfStream === null) {
+      element.pause();
+      element.srcObject = null;
+      setPreviewState("suspended");
+      return;
+    }
+    resumePreview();
+  }, [previewActive, resumePreview, selfStream]);
+
+  useEffect(() => {
+    const element = videoRef.current;
+    if (element === null) return;
+    return registerQualityVideoElement(stream.trackName, element);
+  }, [stream.trackName]);
+
   return (
     <div
       data-testid={`stream-tile-${stream.trackName}`}
       data-self="true"
+      data-preview-state={previewState}
       onClick={onToggleFocus}
       className="group relative flex h-full min-h-0 w-full cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-black/90"
     >
@@ -133,115 +199,132 @@ function SelfTile({
         muted
         playsInline
         data-testid={`stream-self-${stream.trackName}`}
+        onPlaying={() => setPreviewState("live")}
         className="h-full w-full object-contain"
       />
-      {!focused && <PreviewPausedCover stream={stream} />}
+      {selfStream !== null && !previewActive && (
+        <PreviewPausedCover stream={stream} compact={compact} />
+      )}
       <span
         data-testid={`stream-self-badge-${stream.trackName}`}
-        className="absolute top-2 left-2 rounded bg-black/60 px-1.5 py-0.5 text-xs font-medium text-white"
+        className={cn(
+          "absolute top-2 left-2 rounded bg-black/60 font-medium text-white",
+          compact ? "px-1.5 py-0.5 text-[10px]" : "px-1.5 py-0.5 text-xs",
+        )}
       >
         {m.streams_self()}
       </span>
-      <TileOverlay fullscreen={fullscreen}>
-        <FullscreenButton
-          trackName={stream.trackName}
-          fullscreen={fullscreen}
-          onToggle={onToggleFullscreen}
-        />
-      </TileOverlay>
+      {!compact && <QualityBadge trackName={stream.trackName} />}
+      {!compact && (
+        <TileOverlay fullscreen={fullscreen} compact={false}>
+          <FullscreenButton
+            trackName={stream.trackName}
+            fullscreen={fullscreen}
+            onToggle={onToggleFullscreen}
+          />
+        </TileOverlay>
+      )}
     </div>
   );
 }
 
-// Discord-style "your stream is still running" cover shown over the local preview whenever the Tavern
-// window is unfocused/hidden (the browser stops painting the <video>, so it would otherwise be black).
-// A pulsing green dot signals the stream is live, and the kind icon (screen/webcam) grounds what's
-// being shared. High-contrast card so it reads as intentional rather than a broken black tile.
-function PreviewPausedCover({ stream }: { stream: StreamInfo }) {
+function PreviewPausedCover({ stream, compact }: { stream: StreamInfo; compact: boolean }) {
   const KindIcon = stream.kind === "screen" ? MonitorIcon : VideoIcon;
   return (
     <div
       data-testid={`stream-self-paused-${stream.trackName}`}
-      className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-900 px-6 text-center"
+      className={cn(
+        "absolute inset-0 flex flex-col items-center justify-center bg-neutral-900 text-center",
+        compact ? "gap-1.5 px-2" : "gap-3 px-6",
+      )}
     >
-      <span className="relative flex size-14 items-center justify-center rounded-full bg-white/10 text-white/90">
-        <KindIcon className="size-6" />
+      <span
+        className={cn(
+          "relative flex items-center justify-center rounded-full bg-white/10 text-white/90",
+          compact ? "size-9" : "size-14",
+        )}
+      >
+        <KindIcon className={compact ? "size-4" : "size-6"} />
         <span className="absolute -top-0.5 -right-0.5 flex size-3">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
           <span className="relative inline-flex size-3 rounded-full bg-emerald-500" />
         </span>
       </span>
-      <div className="space-y-1">
-        <p className="text-sm font-medium text-white">{m.streams_preview_paused_title()}</p>
-        <p className="text-xs text-white/55">{m.streams_preview_paused_body()}</p>
-      </div>
+      {!compact && (
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-white">{m.streams_preview_paused_title()}</p>
+          <p className="text-xs text-white/55">{m.streams_preview_paused_body()}</p>
+        </div>
+      )}
     </div>
   );
 }
 
-// The bottom control strip shared by self + watched tiles: hover-revealed in the grid, pinned visible
-// while fullscreen (so the minimize affordance + Esc hint are always reachable). Clicks inside never
-// bubble to the tile's focus toggle. Renders the Esc hint on the right when fullscreen.
-function TileOverlay({ fullscreen, children }: { fullscreen: boolean; children: ReactNode }) {
+function TileOverlay({
+  fullscreen,
+  compact,
+  children,
+}: {
+  fullscreen: boolean;
+  compact: boolean;
+  children: ReactNode;
+}) {
   return (
     <div
-      onClick={(e) => e.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
       className={cn(
-        "absolute inset-x-0 bottom-0 flex items-center gap-2 bg-gradient-to-t from-black/70 to-transparent p-2 transition-opacity",
-        fullscreen ? "opacity-100" : "opacity-0 group-hover:opacity-100",
+        "absolute inset-x-0 bottom-0 flex items-center bg-gradient-to-t from-black/80 to-transparent transition-opacity",
+        compact ? "gap-1 p-1.5 opacity-100" : "gap-2 p-2",
+        !compact && (fullscreen ? "opacity-100" : "opacity-0 group-hover:opacity-100"),
       )}
     >
-      {children}
-      {fullscreen && (
-        <span className="ml-auto shrink-0 text-xs text-white/70">
-          {m.streams_fullscreen_hint()}
-        </span>
+      {fullscreen && !compact && (
+        <span className="shrink-0 text-xs text-white/70">{m.streams_fullscreen_hint()}</span>
       )}
+      {children}
     </div>
   );
 }
 
-// FR-30/31/33 remote canvas tile: a placeholder (Watch, FR-30) until the viewer opts in, then the live
-// video (letterboxed 16:9, muted — audio flows through the gain node) with an unwatch button. When the
-// stream carries audio, scrolling the tile boosts/cuts its local volume (FR-31, center-HUD feedback;
-// middle-click resets to 0) — the old per-tile slider is gone. A single left-click on a watched tile
-// escalates the layout (grid → main → fullscreen ↔ main; the Canvas decides, FR-33) — a pure layout
-// toggle: the pull is pinned to the high simulcast layer from the start, so focus/fullscreen never
-// changes quality. Overlay controls stop propagation.
 function RemoteTile({
   stream,
   onToggleFocus,
   fullscreen,
+  compact,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
   onToggleFocus: () => void;
   fullscreen: boolean;
+  compact: boolean;
   onToggleFullscreen: () => void;
 }) {
-  const { state, mediaStream, watch, unwatch } = useWatch(stream);
+  const { state, mediaStream, delivery, deliveryTransitioning, watch, unwatch } = useWatch(stream);
   const watching = state !== "idle";
   const streamKey = `${stream.userId}:${stream.kind}`;
-
-  // FR-31: scroll anywhere on a watched, audio-carrying tile to boost/cut ITS sound locally (0–200%),
-  // middle-click to silence. Replaces the old bottom-strip slider — the center HUD is the only readout.
-  const serverId = useServersStore((s) => s.activeServerId) ?? "";
-  const ownerName = useStore(roomStore(serverId), (s) => {
-    const mm = s.members.find((x) => x.userId === stream.userId);
-    return mm?.displayName ?? stream.userId.slice(0, 8);
+  const serverId = useServersStore((serversState) => serversState.activeServerId) ?? "";
+  const ownerName = useStore(roomStore(serverId), (roomState) => {
+    const member = roomState.members.find((candidate) => candidate.userId === stream.userId);
+    return member?.displayName ?? stream.userId.slice(0, 8);
   });
   const { ref } = useVolumeScroll<HTMLDivElement>({
     enabled: watching && stream.hasAudio,
     read: () => useSettingsStore.getState().volumes.streams[streamKey] ?? 1,
-    write: (gain) => setStreamVolume(streamKey, gain),
+    write: (level) => setStreamVolume(streamKey, level),
     meta: () => ({ key: streamKey, label: ownerName }),
   });
+
+  const stopWatching = useCallback(() => {
+    if (fullscreen) onToggleFullscreen();
+    unwatch();
+  }, [fullscreen, onToggleFullscreen, unwatch]);
 
   return (
     <div
       ref={ref}
       data-testid={`stream-tile-${stream.trackName}`}
       data-watching={watching}
+      data-delivery={delivery}
       onClick={watching ? onToggleFocus : undefined}
       className={cn(
         "group relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden rounded-lg bg-black/90",
@@ -251,13 +334,18 @@ function RemoteTile({
       {watching ? (
         <WatchingView
           stream={stream}
+          streamKey={streamKey}
+          state={state}
           mediaStream={mediaStream}
-          onUnwatch={unwatch}
+          delivery={delivery}
+          deliveryTransitioning={deliveryTransitioning}
+          onUnwatch={stopWatching}
           fullscreen={fullscreen}
+          compact={compact}
           onToggleFullscreen={onToggleFullscreen}
         />
       ) : (
-        <Placeholder stream={stream} onWatch={watch} />
+        <Placeholder stream={stream} compact={compact} onWatch={watch} />
       )}
     </div>
   );
@@ -265,22 +353,39 @@ function RemoteTile({
 
 function WatchingView({
   stream,
+  streamKey,
+  state,
   mediaStream,
+  delivery,
+  deliveryTransitioning,
   onUnwatch,
   fullscreen,
+  compact,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
+  streamKey: string;
+  state: "connecting" | "watching";
   mediaStream: MediaStream | null;
+  delivery: "high" | "low" | "audio";
+  deliveryTransitioning: boolean;
   onUnwatch: () => void;
   fullscreen: boolean;
+  compact: boolean;
   onToggleFullscreen: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
-    const el = videoRef.current;
-    if (el) el.srcObject = mediaStream;
+    const element = videoRef.current;
+    if (element !== null) element.srcObject = mediaStream;
   }, [mediaStream]);
+  useEffect(() => {
+    const element = videoRef.current;
+    if (element === null) return;
+    return registerQualityVideoElement(stream.trackName, element);
+  }, [stream.trackName]);
+
+  const showAudioOnly = delivery === "audio";
   return (
     <>
       <video
@@ -289,69 +394,156 @@ function WatchingView({
         muted
         playsInline
         data-testid={`stream-video-${stream.trackName}`}
-        className="h-full w-full object-contain"
+        className={cn("h-full w-full object-contain", showAudioOnly && "invisible")}
       />
-      <TileOverlay fullscreen={fullscreen}>
-        <FullscreenButton
-          trackName={stream.trackName}
-          fullscreen={fullscreen}
-          onToggle={onToggleFullscreen}
-        />
-        {/* Unwatch is hidden in fullscreen so unwatching can't strand the placeholder full-window —
-            exit fullscreen first, then unwatch from the grid. */}
-        {!fullscreen && (
-          <Button
-            size="xs"
-            variant="secondary"
-            data-testid={`stream-unwatch-${stream.trackName}`}
-            onClick={onUnwatch}
-          >
-            {m.streams_unwatch()}
-          </Button>
+      {(showAudioOnly ||
+        state === "connecting" ||
+        (deliveryTransitioning && mediaStream === null)) && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-neutral-900 px-3 text-center text-white/75">
+          <MonitorIcon className={compact ? "size-5" : "size-8"} />
+          <span className={compact ? "text-[11px]" : "text-sm"}>
+            {state === "connecting"
+              ? m.streams_connecting()
+              : deliveryTransitioning
+                ? m.streams_restoring_video()
+                : m.streams_audio_only()}
+          </span>
+        </div>
+      )}
+      {!compact && !showAudioOnly && <QualityBadge trackName={stream.trackName} />}
+      <TileOverlay fullscreen={fullscreen} compact={compact}>
+        <Button
+          size="xs"
+          variant="secondary"
+          className={compact ? "h-7 max-w-full px-2 text-[11px]" : undefined}
+          data-testid={`stream-unwatch-${stream.trackName}`}
+          onClick={onUnwatch}
+        >
+          {m.streams_unwatch()}
+        </Button>
+        {stream.hasAudio && !compact && <StreamVolume streamKey={streamKey} />}
+        {!compact && (
+          <FullscreenButton
+            trackName={stream.trackName}
+            fullscreen={fullscreen}
+            onToggle={onToggleFullscreen}
+          />
         )}
       </TileOverlay>
     </>
   );
 }
 
-function Placeholder({ stream, onWatch }: { stream: StreamInfo; onWatch: () => void }) {
-  const serverId = useServersStore((s) => s.activeServerId) ?? "";
-  const member = useStore(roomStore(serverId), (s) =>
-    s.members.find((mm) => mm.userId === stream.userId),
+function StreamVolume({ streamKey }: { streamKey: string }) {
+  const level = useSettingsStore((state) => state.volumes.streams[streamKey] ?? 1);
+  const percent = Math.round(level * 100);
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2" title={m.streams_volume()}>
+      <Slider
+        value={[percent]}
+        min={0}
+        max={200}
+        step={5}
+        aria-label={m.streams_volume()}
+        data-testid={`stream-volume-${streamKey}`}
+        onValueChange={(value) => {
+          const next = Array.isArray(value) ? (value[0] ?? 0) : value;
+          setStreamVolume(streamKey, next / 100);
+        }}
+      />
+      <span
+        data-testid={`stream-volume-percent-${streamKey}`}
+        className="w-10 shrink-0 text-right text-xs text-white/80 tabular-nums"
+      >
+        {percent}%
+      </span>
+    </div>
+  );
+}
+
+function Placeholder({
+  stream,
+  compact,
+  onWatch,
+}: {
+  stream: StreamInfo;
+  compact: boolean;
+  onWatch: () => void;
+}) {
+  const serverId = useServersStore((serversState) => serversState.activeServerId) ?? "";
+  const previewUrl = useStreamPreview(serverId, stream.preview);
+  const member = useStore(roomStore(serverId), (roomState) =>
+    roomState.members.find((candidate) => candidate.userId === stream.userId),
   );
   const name = member?.displayName ?? stream.userId.slice(0, 8);
   const color = member?.color ?? "#888888";
-  const [avatarFailed, setAvatarFailed] = useState(false);
   const KindIcon = stream.kind === "screen" ? MonitorIcon : VideoIcon;
   return (
-    <div className="flex flex-col items-center gap-3 p-4 text-center">
-      <span className="relative">
-        {avatarFailed || !member ? (
+    <div
+      data-testid={`stream-placeholder-${stream.trackName}`}
+      className={cn(
+        "absolute inset-0 flex flex-col items-center justify-center text-center",
+        compact ? "gap-1.5 p-2" : "gap-3 p-4",
+      )}
+      style={{ backgroundColor: `color-mix(in srgb, ${color} 28%, #18181b)` }}
+    >
+      {previewUrl !== null && (
+        <img
+          src={previewUrl}
+          alt=""
+          aria-hidden={true}
+          data-testid={`stream-preview-image-${stream.trackName}`}
+          className="absolute inset-0 h-full w-full scale-105 object-cover blur-sm"
+        />
+      )}
+      {previewUrl !== null && (
+        <span
+          aria-hidden={true}
+          data-testid={`stream-preview-shade-${stream.trackName}`}
+          className="absolute inset-0 bg-black/55"
+        />
+      )}
+      {stream.preview !== undefined && !compact && (
+        <span className="absolute top-2 left-2 z-10 rounded bg-black/70 px-2 py-1 text-xs font-medium text-white">
+          {m.streams_preview()}
+        </span>
+      )}
+      <span
+        className={cn("relative z-10 flex flex-col items-center", compact ? "gap-1.5" : "gap-3")}
+      >
+        <span className="relative">
           <span
             data-testid={`stream-avatar-${stream.trackName}`}
-            className="flex size-14 items-center justify-center rounded-full text-lg font-medium text-white"
+            className={cn(
+              "flex items-center justify-center rounded-full font-medium text-white",
+              compact ? "size-9 text-sm" : "size-14 text-lg",
+            )}
             style={{ backgroundColor: color }}
           >
             {name.charAt(0)}
           </span>
-        ) : (
-          <img
-            src={`/api/media/avatars/${stream.userId}.webp`}
-            alt={name}
-            onError={() => setAvatarFailed(true)}
-            className="size-14 rounded-full bg-muted object-cover"
-          />
-        )}
-        <span className="absolute -right-1 -bottom-1 rounded-full bg-background p-1 text-foreground">
-          <KindIcon data-testid={`stream-kind-${stream.trackName}`} className="size-3.5" />
+          <span className="absolute -right-1 -bottom-1 rounded-full bg-background p-1 text-foreground">
+            <KindIcon
+              data-testid={`stream-kind-${stream.trackName}`}
+              className={compact ? "size-3" : "size-3.5"}
+            />
+          </span>
         </span>
+        <span
+          className={cn("max-w-32 truncate font-medium", compact ? "text-xs" : "text-sm")}
+          style={{ color: previewUrl === null ? color : "white" }}
+        >
+          {name}
+        </span>
+        <Button
+          size={compact ? "xs" : "sm"}
+          className={compact ? "h-7 px-2 text-[11px]" : undefined}
+          data-testid={`stream-watch-${stream.trackName}`}
+          onClick={onWatch}
+        >
+          {m.streams_watch()}
+        </Button>
       </span>
-      <span className="text-sm font-medium" style={{ color }}>
-        {name}
-      </span>
-      <Button size="sm" data-testid={`stream-watch-${stream.trackName}`} onClick={onWatch}>
-        {m.streams_watch()}
-      </Button>
     </div>
   );
 }

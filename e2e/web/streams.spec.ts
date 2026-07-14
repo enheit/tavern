@@ -52,7 +52,7 @@ async function seedRoom(
       const page = await context.newPage();
       await page.goto(`/?e2e=1`);
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId("controls-bar")).toBeVisible();
+      await expect(page.getByTestId("app-shell")).toBeVisible();
       return { user, context, page };
     }),
   );
@@ -99,15 +99,16 @@ function camTrackOf(user: SeededUser): string {
   return `cam:${user.userId}`;
 }
 
-// Starts a screen share via the split share button (web: clicking it starts immediately — the fake
-// getDisplayMedia device stands in for the browser picker; no dialog). Optionally picks a preset first
-// through the caret menu. Resolves once the sharer's own self tile appears (publish → stream.added).
+// Opens the cross-platform pre-share quality dialog, optionally chooses a base preset, then starts
+// fake display capture. Resolves once publish → stream.added renders the sharer's self tile.
 async function startScreenShare(client: Client, preset?: PresetId): Promise<string> {
+  await client.page.getByTestId("controls-screen").click();
+  await expect(client.page.getByTestId("share-preset")).toBeVisible();
   if (preset !== undefined) {
-    await client.page.getByTestId("controls-screen-preset").click();
+    await client.page.getByTestId("share-preset").click();
     await client.page.getByTestId(`preset-option-${preset}`).click();
   }
-  await client.page.getByTestId("controls-screen").click();
+  await client.page.getByTestId("share-start").click();
   const trackName = screenTrackOf(client.user);
   await expect(client.page.getByTestId(`stream-tile-${trackName}`)).toBeVisible({
     timeout: 20_000,
@@ -125,19 +126,156 @@ async function startWebcam(client: Client): Promise<string> {
   return trackName;
 }
 
+// Publishes through the same mock-SFU + DO reservation/commit path as PublishSession, but without
+// waiting for mock ICE: the hermetic SFU deliberately has no media plane, so its PeerConnection can
+// never become connected. Publisher capture/refresh is covered by the focused browser-unit tests;
+// this helper keeps the e2e focused on the real preview API, broadcast, R2 read, and rendered tile.
+async function publishMockScreen(
+  client: Client,
+  serverId: string,
+): Promise<{
+  trackName: string;
+  previewId: string;
+}> {
+  await client.page.getByTestId("channel-voice").click();
+  await expect(client.page.getByTestId(`voice-chip-${client.user.userId}`)).toBeVisible({
+    timeout: 20_000,
+  });
+
+  const session = await client.user.request.post(`/api/rtc/${serverId}/session`, {
+    data: { mediaReadyVersion: 2 },
+  });
+  expect(session.status(), await session.text()).toBe(200);
+  const sessionBody: unknown = await session.json();
+  if (
+    typeof sessionBody !== "object" ||
+    sessionBody === null ||
+    !("sessionId" in sessionBody) ||
+    typeof sessionBody.sessionId !== "string"
+  ) {
+    throw new Error("mock publish session did not return a sessionId");
+  }
+
+  const trackName = screenTrackOf(client.user);
+  const publish = await client.user.request.post(
+    `/api/rtc/${serverId}/tracks?session=${sessionBody.sessionId}`,
+    {
+      data: {
+        sessionDescription: {
+          type: "offer",
+          sdp: "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\n",
+        },
+        tracks: [{ location: "local", mid: "0", trackName }],
+      },
+    },
+  );
+  expect(publish.status(), await publish.text()).toBe(200);
+  const publishBody: unknown = await publish.json();
+  if (
+    typeof publishBody !== "object" ||
+    publishBody === null ||
+    !("publicationId" in publishBody) ||
+    typeof publishBody.publicationId !== "string"
+  ) {
+    throw new Error("mock screen publish did not return a publicationId");
+  }
+
+  const confirm = await client.user.request.post(
+    `/api/rtc/${serverId}/tracks/ready?session=${sessionBody.sessionId}`,
+    { data: { publicationId: publishBody.publicationId } },
+  );
+  expect(confirm.status(), await confirm.text()).toBe(200);
+  return { trackName, previewId: publishBody.publicationId };
+}
+
 async function closeClients(clients: Client[]): Promise<void> {
   await Promise.all(clients.map((client) => client.context.close()));
 }
 
 test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
-  test("FR-30 share appears as placeholder until watched", async ({ browser, baseURL, api }) => {
+  test("web chooses capture ceiling and data budget before sharing", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    const { clients } = await seedRoom(browser, baseURL, api, ["quality"]);
+    const client = clients[0];
+    if (!client) throw new Error("expected quality client");
+    try {
+      await joinVoice(client);
+      await client.page.getByTestId("controls-screen").click();
+      await expect(client.page.getByTestId("share-preset")).toBeVisible();
+      await expect(client.page.getByTestId("share-data-tier")).toContainText("100%");
+
+      await client.page.getByTestId("share-preset").click();
+      await client.page.getByTestId("preset-option-1080p60").click();
+      await client.page.getByTestId("share-data-tier").click();
+      await client.page.getByRole("option", { name: "50%" }).click();
+      await client.page.getByTestId("share-start").click();
+
+      await expect(
+        client.page.getByTestId(`stream-tile-${screenTrackOf(client.user)}`),
+      ).toBeVisible({
+        timeout: 20_000,
+      });
+      await expect(client.page.getByTestId("share-fps-60")).toHaveAttribute("aria-pressed", "true");
+      await expect(client.page.getByTestId("share-data-50")).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
+  test("FR-30 share appears as a shaded preview until watched", async ({
+    browser,
+    baseURL,
+    api,
+  }, testInfo) => {
     test.setTimeout(90_000);
-    const { clients } = await seedRoom(browser, baseURL, api, ["a", "b"]);
+    const { serverId, clients } = await seedRoom(browser, baseURL, api, ["a", "b"]);
     const [a, b] = clients;
     if (!a || !b) throw new Error("expected two clients");
     try {
-      await joinVoice(a);
-      const track = await startScreenShare(a);
+      const { trackName: track, previewId } = await publishMockScreen(a, serverId);
+      const upload = await a.page.evaluate(
+        async ({ targetServerId, targetPreviewId }) => {
+          const canvas = document.createElement("canvas");
+          canvas.width = 640;
+          canvas.height = 360;
+          const context = canvas.getContext("2d");
+          if (context === null) throw new Error("2D canvas is unavailable");
+          const gradient = context.createLinearGradient(0, 0, canvas.width, canvas.height);
+          gradient.addColorStop(0, "#7048e8");
+          gradient.addColorStop(0.55, "#1971c2");
+          gradient.addColorStop(1, "#0b7285");
+          context.fillStyle = gradient;
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.fillStyle = "rgba(255, 255, 255, 0.92)";
+          context.font = "600 44px system-ui";
+          context.fillText("Shared screen", 150, 196);
+          const blob = await new Promise<Blob>((resolve, reject) => {
+            canvas.toBlob(
+              (result) =>
+                result === null ? reject(new Error("WebP encode failed")) : resolve(result),
+              "image/webp",
+              0.6,
+            );
+          });
+          const response = await fetch(
+            `/api/servers/${targetServerId}/stream-previews/${targetPreviewId}`,
+            {
+              method: "PUT",
+              headers: { "content-type": "image/webp" },
+              body: blob,
+            },
+          );
+          return { status: response.status, body: await response.text() };
+        },
+        { targetServerId: serverId, targetPreviewId: previewId },
+      );
+      expect(upload.status, upload.body).toBe(200);
 
       // B (not in voice, not watching) sees A's placeholder tile: A's displayName + a Watch button.
       const tile = b.page.getByTestId(`stream-tile-${track}`);
@@ -145,6 +283,27 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
       await expect(tile).toHaveAttribute("data-watching", "false");
       await expect(b.page.getByTestId(`stream-watch-${track}`)).toBeVisible();
       await expect(tile.getByText(a.user.username, { exact: true })).toBeVisible();
+      const preview = b.page.getByTestId(`stream-preview-image-${track}`);
+      await expect(preview).toBeVisible({ timeout: 20_000 });
+      await expect
+        .poll(() =>
+          preview.evaluate((element) =>
+            element instanceof HTMLImageElement ? element.naturalWidth : 0,
+          ),
+        )
+        .toBeGreaterThan(0);
+      expect(await preview.evaluate((element) => getComputedStyle(element).filter)).toContain(
+        "blur",
+      );
+      await expect(b.page.getByText("Preview", { exact: true })).toBeVisible();
+      const shadeColor = await b.page
+        .getByTestId(`stream-preview-shade-${track}`)
+        .evaluate((element) => getComputedStyle(element).backgroundColor);
+      expect(shadeColor).toMatch(/(?:\/|,)\s*0\.55\)$/);
+      await tile.screenshot({
+        path: testInfo.outputPath("shaded-stream-preview.png"),
+        animations: "disabled",
+      });
 
       // Cost guardrail (FR-30): a non-watching client holds zero pulls for the stream.
       const pullForTrack = await b.page.evaluate(
@@ -201,8 +360,7 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
       // Pick an explicit stream-audio device in Settings → Voice — the e2e opt-in for the FR-28
       // system-audio fallback (auto-mode is skipped under the harness; media/capture.ts §10 note).
       // The fake-device flag provides deterministic audioinputs to choose from.
-      await a.page.getByTestId("user-menu").click();
-      await a.page.getByTestId("user-menu-settings").click();
+      await a.page.getByTestId("sidebar-settings-button").click();
       await expect(a.page.getByTestId("settings-dialog")).toBeVisible();
       await a.page.getByTestId("settings-tab-voice").click();
       await a.page.getByTestId("settings-voice-stream-audio").click();
@@ -320,6 +478,67 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
     }
   });
 
+  test("FR-33 fullscreen and compact thumbnail presentation stay stable", async ({
+    browser,
+    baseURL,
+    api,
+  }, testInfo) => {
+    test.setTimeout(90_000);
+    const { serverId, clients } = await seedRoom(browser, baseURL, api, ["fulla", "fullc"]);
+    const [a, c] = clients;
+    if (!a || !c) throw new Error("expected two clients");
+    try {
+      await joinVoice(a);
+      const first = await startScreenShare(a);
+      const second = (await publishMockScreen(c, serverId)).trackName;
+      await expect(a.page.getByTestId(`stream-tile-${second}`)).toBeVisible({ timeout: 20_000 });
+      const localVideo = a.page.getByTestId(`stream-self-${first}`);
+      await expect(localVideo).toBeVisible();
+      await expect
+        .poll(() =>
+          localVideo.evaluate(
+            (element) => element instanceof HTMLVideoElement && element.readyState >= 2,
+          ),
+        )
+        .toBe(true);
+      await localVideo.evaluate((element) => element.setAttribute("data-continuity-probe", "live"));
+
+      await a.page.getByTestId(`stream-tile-${first}`).click();
+      await expect(a.page.getByTestId("canvas")).toHaveAttribute("data-focused", "true");
+      await expect(localVideo).toHaveAttribute("data-continuity-probe", "live");
+      const compact = a.page.getByTestId(`stream-tile-${second}`);
+      await expect(a.page.getByTestId(`stream-slot-${second}`)).toHaveAttribute(
+        "data-focus-thumbnail",
+        "true",
+      );
+      await expect(compact).toBeVisible();
+      await expect(compact.getByTestId(`stream-watch-${second}`)).toBeVisible();
+      await expect(compact.getByTestId(`stream-fullscreen-${second}`)).toHaveCount(0);
+      await a.page.screenshot({
+        path: testInfo.outputPath("compact-stream-thumbnail.png"),
+        animations: "disabled",
+      });
+
+      await a.page.getByTestId(`stream-tile-${first}`).click();
+      await expect(a.page.getByTestId("canvas")).toHaveAttribute("data-fullscreen", "true");
+      await expect(localVideo).toHaveAttribute("data-continuity-probe", "live");
+      await expect(a.page.getByText("Resume preview", { exact: true })).toHaveCount(0);
+      await expect(a.page.getByTestId(`stream-self-paused-${first}`)).toHaveCount(0);
+      await expect(a.page.getByTestId(`stream-tile-${second}`)).toBeHidden();
+      await a.page.screenshot({
+        path: testInfo.outputPath("live-self-stream-fullscreen.png"),
+        animations: "disabled",
+      });
+      await a.page.keyboard.press("Escape");
+      await expect(a.page.getByTestId("canvas")).not.toHaveAttribute("data-fullscreen", "true");
+      await expect(localVideo).toHaveAttribute("data-continuity-probe", "live");
+      await expect(a.page.getByTestId(`stream-tile-${first}`)).toBeVisible();
+      await expect(a.page.getByTestId(`stream-tile-${second}`)).toBeVisible();
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
   test("FR-31 stream volume persists", async ({ browser, baseURL, api }) => {
     test.setTimeout(90_000);
     const { serverId, clients } = await seedRoom(browser, baseURL, api, ["a", "b"]);
@@ -332,19 +551,32 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
       await b.page.getByTestId(`stream-watch-${track}`).click();
       await expect(b.page.getByTestId(`stream-video-${track}`)).toBeVisible({ timeout: 20_000 });
 
-      // Per-stream volume is a scroll gesture on the tile now (no slider); keyed by the opaque
-      // userId:kind (survives trackName rotation). Hover the tile, then scroll up 8 notches:
-      // 100% + 8·5% = 140% (deltaY<0 = louder). The center HUD shows it; localStorage is the truth.
+      // The restored slider and tile-wheel gesture share one persisted userId:kind level. Drive the
+      // slider to 15%, then use one upward wheel notch to reach 20%; neither control focuses the tile.
       const streamKey = `${a.user.userId}:screen`;
       await b.page.getByTestId(`stream-tile-${track}`).hover();
-      await wheelN(b.page, -100, 8);
-      await expect.poll(() => readStreamVolume(b.page, streamKey)).toBe(1.4);
+      const slider = b.page.getByTestId(`stream-volume-${streamKey}`);
+      await expect(slider).toBeVisible();
+      await slider.locator('[data-slot="slider-thumb"]').click();
+      await pressKeyN(b.page, "ArrowLeft", 40);
+      await pressKeyN(b.page, "ArrowRight", 3);
+      await expect(b.page.getByTestId(`stream-volume-percent-${streamKey}`)).toHaveText("15%");
+      await expect.poll(() => readStreamVolume(b.page, streamKey)).toBe(0.15);
 
-      // Persisted (settings.volumes.streams) → survives a fresh boot.
+      await wheelN(b.page, -100, 1);
+      await expect(b.page.getByTestId(`stream-volume-percent-${streamKey}`)).toHaveText("20%");
+      await expect.poll(() => readStreamVolume(b.page, streamKey)).toBe(0.2);
+      await expect(b.page.getByTestId("canvas")).not.toHaveAttribute("data-focused", "true");
+
+      // Persisted (settings.volumes.streams) → survives a fresh boot and re-watch into the slider.
       await b.page.goto(`/?e2e=1`);
       await expect(b.page).toHaveURL(new RegExp(`/s/${serverId}$`));
       await expect(b.page.getByTestId("controls-bar")).toBeVisible();
-      await expect.poll(() => readStreamVolume(b.page, streamKey)).toBe(1.4);
+      await expect.poll(() => readStreamVolume(b.page, streamKey)).toBe(0.2);
+      await b.page.getByTestId(`stream-watch-${track}`).click();
+      await expect(b.page.getByTestId(`stream-video-${track}`)).toBeVisible({ timeout: 20_000 });
+      await b.page.getByTestId(`stream-tile-${track}`).hover();
+      await expect(b.page.getByTestId(`stream-volume-percent-${streamKey}`)).toHaveText("20%");
     } finally {
       await closeClients(clients);
     }
@@ -446,26 +678,15 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
 
 // ---- helpers reading the DOM / test hooks
 
-// Asserts the canvas grid rows match the expected per-row column counts (App-C layout outcome). Each
-// `canvas-row-{r}` is a CSS grid whose resolved gridTemplateColumns has one track per tile in that row.
+// Asserts the canvas grid rows match the expected per-row tile counts (App-C layout outcome). Tiles
+// remain direct, stable canvas children so focus/fullscreen never remount their live video elements.
 async function expectGridRows(page: Page, expected: number[]): Promise<void> {
   await Promise.all(
     expected.map(async (cols, r) => {
-      const row = page.getByTestId(`canvas-row-${r}`);
-      await expect(row).toBeVisible();
-      await expect
-        .poll(() =>
-          row.evaluate(
-            (el) =>
-              getComputedStyle(el)
-                .gridTemplateColumns.split(" ")
-                .filter((t) => t.length > 0).length,
-          ),
-        )
-        .toBe(cols);
+      await expect(page.locator(`[data-layout-row="${r}"]`)).toHaveCount(cols);
     }),
   );
-  await expect(page.getByTestId(`canvas-row-${expected.length}`)).toHaveCount(0);
+  await expect(page.locator(`[data-layout-row="${expected.length}"]`)).toHaveCount(0);
 }
 
 // Rolls the mouse wheel `n` times at the current pointer position (no await-in-loop; a reduce chain).
@@ -473,6 +694,13 @@ async function expectGridRows(page: Page, expected: number[]): Promise<void> {
 async function wheelN(page: Page, deltaY: number, n: number): Promise<void> {
   await Array.from({ length: n }).reduce<Promise<void>>(
     (p) => p.then(() => page.mouse.wheel(0, deltaY)),
+    Promise.resolve(),
+  );
+}
+
+async function pressKeyN(page: Page, key: string, n: number): Promise<void> {
+  await Array.from({ length: n }).reduce<Promise<void>>(
+    (p) => p.then(() => page.keyboard.press(key)),
     Promise.resolve(),
   );
 }
@@ -485,8 +713,8 @@ async function lastLayerRid(page: Page): Promise<string | null> {
 }
 
 async function readStreamVolume(page: Page, streamKey: string): Promise<number | undefined> {
-  // The persisted gain (0..2) under settings.volumes.v1 → streams[userId:kind] — the slider's source
-  // of truth (§5.4 VolumesV1). Traversed without an `as`-cast (§9.1) via Object.entries.
+  // The persisted control level (0..2) under settings.volumes.v1 → streams[userId:kind] — the slider's
+  // source of truth (§5.4 VolumesV1). Traversed without an `as`-cast (§9.1) via Object.entries.
   return page.evaluate((key) => {
     // Defined inside page.evaluate (serialized to the browser) — it cannot be hoisted to module scope.
     // oxlint-disable-next-line unicorn/consistent-function-scoping -- runs in the page's browser context
@@ -497,7 +725,7 @@ async function readStreamVolume(page: Page, streamKey: string): Promise<number |
     };
     const raw = localStorage.getItem("settings.volumes.v1");
     if (raw === null) return undefined;
-    const gain = pick(pick(JSON.parse(raw), "streams"), key);
-    return typeof gain === "number" ? gain : undefined;
+    const level = pick(pick(JSON.parse(raw), "streams"), key);
+    return typeof level === "number" ? level : undefined;
   }, streamKey);
 }

@@ -29,6 +29,7 @@ beforeEach(() => {
     let body: unknown = {};
     if (u.includes("/session")) body = { sessionId: "s1" };
     else if (u.includes("/tracks?")) body = { requiresImmediateRenegotiation: false, tracks: [] };
+    else if (u.includes("/close?")) body = { requiresImmediateRenegotiation: false, tracks: [] };
     else if (u.includes("/ice"))
       body = { iceServers: [{ urls: "stun:x", username: "u", credential: "c" }] };
     return { ok: true, status: 200, headers: new Headers(), json: async () => body };
@@ -115,10 +116,13 @@ describe("§6.1 sfuSignal routes", () => {
     });
   });
 
-  it("getIceServers GETs the ice route and unwraps the iceServers array", async () => {
+  it("getIceServers unwraps and shares one cached request across signal instances", async () => {
     const signal = createSfuSignal(apiClient);
-    const servers = await signal.getIceServers();
+    const other = createSfuSignal(apiClient);
+    const [servers, cached] = await Promise.all([signal.getIceServers(), other.getIceServers()]);
     expect(servers).toEqual([{ urls: "stun:x", username: "u", credential: "c" }]);
+    expect(cached).toEqual(servers);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(calls(fetchMock)[0]).toMatchObject({ url: "/api/rtc/ice", method: "GET" });
   });
 });

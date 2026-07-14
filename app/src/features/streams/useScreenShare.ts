@@ -1,3 +1,4 @@
+import { presetFitsCaptureCeiling } from "@tavern/shared";
 import type { ClientMessage, PresetId } from "@tavern/shared";
 import { toast } from "sonner";
 import { ApiError } from "@/lib/apiClient";
@@ -5,26 +6,34 @@ import { errorMessage } from "@/lib/errorMessage";
 import { connectRoom } from "@/lib/wsClient";
 import { captureScreen, SYSTEM_AUDIO_OFF } from "@/media/capture";
 import type { ScreenCapture } from "@/media/capture";
+import { startPublisherQualityMonitor } from "@/media/qualityMonitor";
+import type { OutboundVideoLayerStats } from "@/media/rtc/publishSession";
 import { m } from "@/paraglide/messages.js";
 import { platform } from "@/platform/types";
 import { getVoiceController } from "@/features/voice/voiceController";
 import { useMediaStore } from "@/stores/media";
 import { useSettingsStore } from "@/stores/settings";
 import type { ShareSelection } from "./types";
+import { startStreamPreview, type StreamPreviewPublication } from "./streamPreviewPublisher";
 
 // The shared publishPC surface screen share needs (§7.1: mic + screen + cam share ONE publish
 // session, owned by the voiceController). PublishSession OWNS track naming + the per-share `n`
-// counter and the App-D h/l encodings — useScreenShare passes NO names/kind and computes none.
+// counter and the h/i/l encodings — useScreenShare passes NO names/kind and computes none.
 export interface ScreenPublisher {
   publishStream(
     video: MediaStreamTrack,
     audio: MediaStreamTrack | null,
     preset: PresetId,
-  ): Promise<{ videoTrackName: string; audioTrackName?: string }>;
-  // FR-27 on-the-fly: fps-only applyConstraints + setParameters re-scaling both encodings from the
-  // acquisition height (no renegotiation — publishSession.setPreset documents the S12.4 platform
-  // pin). Owned by PublishSession; useScreenShare drives it then broadcasts stream.preset.
+  ): Promise<{ videoTrackName: string; audioTrackName?: string; previewId?: string }>;
+  // In-ceiling switch: setParameters re-scales all encodings from the acquisition height without
+  // capture constraint churn. useScreenShare broadcasts stream.preset only after it succeeds.
   setPreset(trackName: string, preset: PresetId): Promise<void>;
+  replaceScreenTrack(
+    trackName: string,
+    nextTrack: MediaStreamTrack,
+    preset: PresetId,
+  ): Promise<void>;
+  outboundVideoStats?(trackName: string): Promise<OutboundVideoLayerStats[]>;
   unpublish(trackNames: string[]): Promise<void>;
 }
 
@@ -38,6 +47,7 @@ export interface ScreenShareDeps {
   wsFor(serverId: string): WsSend;
   activeServerId(): string | null;
   notice(capture: ScreenCapture, wantedAudio: boolean): void;
+  preview?(serverId: string, previewId: string, track: MediaStreamTrack): StreamPreviewPublication;
 }
 
 const CAVEAT_FLAG = "tavern.selfAudioCaveatShown.v1";
@@ -93,10 +103,35 @@ export class ScreenShareController {
   private audio: MediaStreamTrack | null = null;
   private videoTrackName: string | null = null;
   private audioTrackName: string | null = null;
+  private selection: ShareSelection | null = null;
+  private endedHandler: (() => void) | null = null;
+  private stopQualityMonitor: (() => void) | null = null;
+  private preview: StreamPreviewPublication | null = null;
   private stopping = false;
 
   constructor(deps: ScreenShareDeps) {
     this.deps = deps;
+  }
+
+  get captureCeiling(): PresetId | null {
+    return this.selection?.preset ?? null;
+  }
+
+  private monitorQuality(
+    publisher: ScreenPublisher,
+    trackName: string,
+    track: MediaStreamTrack,
+    preset: PresetId,
+  ): void {
+    this.stopQualityMonitor?.();
+    this.stopQualityMonitor = null;
+    if (publisher.outboundVideoStats === undefined) return;
+    this.stopQualityMonitor = startPublisherQualityMonitor({
+      trackName,
+      track,
+      preset,
+      stats: () => publisher.outboundVideoStats?.(trackName) ?? Promise.resolve([]),
+    });
   }
 
   async start(sel: ShareSelection): Promise<void> {
@@ -118,7 +153,7 @@ export class ScreenShareController {
     // The remap-source exists only to be captured — drop it right away when the fallback didn't
     // end up using it (display audio won, no device matched, or the user cancelled nothing).
     if (capture.audioSource !== "monitor") platform.capture.releaseStreamAudio();
-    let names: { videoTrackName: string; audioTrackName?: string };
+    let names: { videoTrackName: string; audioTrackName?: string; previewId?: string };
     try {
       names = await publisher.publishStream(video, audio, sel.preset);
     } catch (err) {
@@ -136,8 +171,14 @@ export class ScreenShareController {
     this.audio = audio;
     this.videoTrackName = names.videoTrackName;
     this.audioTrackName = names.audioTrackName ?? null;
+    this.selection = sel;
+    if (names.previewId !== undefined) {
+      this.preview = this.deps.preview?.(serverId, names.previewId, video) ?? null;
+    }
     // The OS/browser "Stop sharing" button ends the capture track → stop the share (§7.1, once).
-    video.addEventListener("ended", () => void this.stop(), { once: true });
+    this.endedHandler = () => void this.stop();
+    video.addEventListener("ended", this.endedHandler, { once: true });
+    this.monitorQuality(publisher, names.videoTrackName, video, sel.preset);
     useMediaStore.getState().setShareState({
       sharing: true,
       sharePreset: sel.preset,
@@ -167,6 +208,8 @@ export class ScreenShareController {
     const serverId = this.serverId;
     const names =
       this.audioTrackName === null ? [videoTrackName] : [videoTrackName, this.audioTrackName];
+    this.preview?.stop();
+    this.preview = null;
     try {
       if (serverId !== null)
         this.deps.wsFor(serverId).send({ t: "stream.stop", trackName: videoTrackName });
@@ -174,12 +217,16 @@ export class ScreenShareController {
     } finally {
       this.video?.stop();
       this.audio?.stop();
+      this.stopQualityMonitor?.();
+      this.stopQualityMonitor = null;
       // Idempotent, no-op off desktop Linux: tears down the share's pulse remap-source.
       platform.capture.releaseStreamAudio();
       this.video = null;
       this.audio = null;
       this.videoTrackName = null;
       this.audioTrackName = null;
+      this.selection = null;
+      this.endedHandler = null;
       this.serverId = null;
       this.stopping = false;
       useMediaStore
@@ -189,22 +236,82 @@ export class ScreenShareController {
     }
   }
 
-  // FR-27 on-the-fly preset switch — no restart, no viewer renegotiation. Order (pinned): (a)+(b) the
-  // engine's setPreset does an fps-only applyConstraints + sender.setParameters re-scaling both
-  // encodings from the acquisition height (S12.4 pin in publishSession), then (c) the WS
-  // `stream.preset` keeps the DO registry + cost meter (G5) accurate. A no-op when not sharing. The
-  // store mirror updates only AFTER a successful local switch so the dropdown never lies.
+  // Encoder-only switch inside the acquisition ceiling. The store and cost model update only after
+  // sender.setParameters succeeds, so the UI never advertises a geometry/cadence it did not acquire.
   async setPreset(preset: PresetId): Promise<void> {
     const videoTrackName = this.videoTrackName;
     const serverId = this.serverId;
     if (videoTrackName === null || serverId === null) return;
     const publisher = this.deps.publisher();
     if (publisher === null) return;
+    const ceiling = this.selection?.preset;
+    if (ceiling === undefined || !presetFitsCaptureCeiling(preset, ceiling)) {
+      throw new Error("capture_upgrade_required");
+    }
     await publisher.setPreset(videoTrackName, preset);
+    if (this.video !== null) this.monitorQuality(publisher, videoTrackName, this.video, preset);
     this.deps.wsFor(serverId).send({ t: "stream.preset", trackName: videoTrackName, preset });
     useMediaStore
       .getState()
       .setShareState({ sharing: true, sharePreset: preset, shareTrackName: videoTrackName });
+  }
+
+  // Upward quality changes reacquire display capture and replace only the video sender track. Audio,
+  // transceiver, SFU track name, viewer subscriptions, and watch accounting remain untouched. The old
+  // track is stopped only after replaceTrack + encoder parameters both succeed.
+  async replaceCapture(sel: ShareSelection): Promise<void> {
+    const videoTrackName = this.videoTrackName;
+    const serverId = this.serverId;
+    const previous = this.video;
+    const currentSelection = this.selection;
+    if (
+      videoTrackName === null ||
+      serverId === null ||
+      previous === null ||
+      currentSelection === null
+    ) {
+      return;
+    }
+    if (
+      sel.withAudio !== currentSelection.withAudio ||
+      sel.sourceId !== currentSelection.sourceId
+    ) {
+      await this.stop();
+      await this.start(sel);
+      return;
+    }
+    const publisher = this.deps.publisher();
+    if (publisher === null) throw new Error("no publish session");
+    const capture = await this.deps.capture({ ...sel, withAudio: false });
+    capture.audio?.stop();
+    const next = capture.video;
+    const oldEnded = this.endedHandler;
+    if (oldEnded !== null) previous.removeEventListener("ended", oldEnded);
+    try {
+      await publisher.replaceScreenTrack(videoTrackName, next, sel.preset);
+    } catch (err) {
+      next.stop();
+      if (oldEnded !== null) previous.addEventListener("ended", oldEnded, { once: true });
+      throw err;
+    }
+    this.video = next;
+    this.selection = sel;
+    this.endedHandler = () => void this.stop();
+    next.addEventListener("ended", this.endedHandler, { once: true });
+    this.monitorQuality(publisher, videoTrackName, next, sel.preset);
+    this.preview?.replaceTrack(next);
+    previous.stop();
+    useMediaStore.getState().setShareStream(wrapPreview(next));
+    this.deps.wsFor(serverId).send({
+      t: "stream.preset",
+      trackName: videoTrackName,
+      preset: sel.preset,
+    });
+    useMediaStore.getState().setShareState({
+      sharing: true,
+      sharePreset: sel.preset,
+      shareTrackName: videoTrackName,
+    });
   }
 }
 
@@ -215,6 +322,7 @@ function defaultDeps(): ScreenShareDeps {
     wsFor: (serverId) => connectRoom(serverId),
     activeServerId: () => useMediaStore.getState().inVoiceServerId,
     notice: showShareAudioNotice,
+    preview: startStreamPreview,
   };
 }
 
@@ -236,6 +344,8 @@ export function useScreenShare(): {
   start(sel: ShareSelection): Promise<void>;
   stop(): Promise<void>;
   setPreset(preset: PresetId): Promise<void>;
+  replaceCapture(sel: ShareSelection): Promise<void>;
+  captureCeiling: PresetId | null;
 } {
   const sharing = useMediaStore((s) => s.sharing);
   const preset = useMediaStore((s) => s.sharePreset);
@@ -244,8 +354,10 @@ export function useScreenShare(): {
     sharing,
     preset,
     trackName,
+    captureCeiling: getScreenShareController().captureCeiling,
     start: (sel) => getScreenShareController().start(sel),
     stop: () => getScreenShareController().stop(),
     setPreset: (p) => getScreenShareController().setPreset(p),
+    replaceCapture: (sel) => getScreenShareController().replaceCapture(sel),
   };
 }

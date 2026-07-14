@@ -5,12 +5,16 @@ All notable changes to Tavern are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-14
+
+Adds the market, animated voice avatars, Cloudflare and Tavern usage dashboards, streaming QoE monitoring, stream previews and saver delivery, and a redesigned soundboard editor and shell.
+
 ### Fixed
 
-- Linux Wayland screen sharing now recovers when Tavern inherits a deleted D-Bus session socket
-  (the `Failed to connect to socket /tmp/dbus-*` / `ScreenCastPortal failed: 3` failure). Packaged
-  Linux builds validate the bus before Electron starts and use the live per-user runtime bus when
-  the inherited filesystem socket is stale.
+- Packaged Linux builds repair an invalid D-Bus session address before Electron starts, allowing
+  the Wayland screen-cast portal to be reached when Tavern inherits either a deleted `/tmp/dbus-*`
+  socket or the unsupported `disabled:` transport. The launcher uses the live per-user runtime bus
+  when available instead of failing with `ScreenCastPortal failed: 3` before the monitor picker.
 
 ## [0.6.0] — 2026-07-12
 

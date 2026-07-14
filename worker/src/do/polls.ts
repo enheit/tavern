@@ -132,7 +132,7 @@ export class PollsModule {
         )
         .toArray()[0];
       if (existing !== undefined) return "already_bid";
-      this.points.settle(input.now);
+      this.points.settleUser(input.userId, input.now);
       if (!this.points.debitForPoll(input.userId, input.pollId, input.stake, input.now)) {
         return "insufficient_points";
       }

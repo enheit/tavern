@@ -3,6 +3,7 @@ import { ChatImageFromUrlRequest, CreateChatImageResponse, LIMITS } from "@taver
 import type { ErrorCode } from "@tavern/shared";
 import { requireMember } from "../middleware";
 import type { MemberVars } from "../middleware";
+import { recordMediaObject, trackMediaInventory } from "../lib/mediaUsageInventory";
 
 // § chat image paste routes. A member pastes an image into the composer; the client re-encodes it to a
 // bounded webp and PUTs the bytes here. Unlike screenshots (which need a DO registry row + rate limit +
@@ -95,9 +96,12 @@ chatImagesRoute.post("/:id/chat-images", requireMember, async (c) => {
   }
 
   const imageId = crypto.randomUUID();
-  await c.env.MEDIA.put(r2Key(serverId, imageId), bytes, {
+  const object = await c.env.MEDIA.put(r2Key(serverId, imageId), bytes, {
     httpMetadata: { contentType: "image/webp" },
   });
+  c.executionCtx.waitUntil(
+    trackMediaInventory(recordMediaObject(c.env.DB, object), "put", object.key),
+  );
   return c.json(CreateChatImageResponse.parse({ id: imageId }));
 });
 
@@ -123,8 +127,11 @@ chatImagesRoute.post("/:id/chat-images/from-url", requireMember, async (c) => {
   }
 
   const imageId = crypto.randomUUID();
-  await c.env.MEDIA.put(r2Key(serverId, imageId), fetched.bytes, {
+  const object = await c.env.MEDIA.put(r2Key(serverId, imageId), fetched.bytes, {
     httpMetadata: { contentType: fetched.contentType },
   });
+  c.executionCtx.waitUntil(
+    trackMediaInventory(recordMediaObject(c.env.DB, object), "put", object.key),
+  );
   return c.json(CreateChatImageResponse.parse({ id: imageId }));
 });

@@ -6,7 +6,11 @@ import {
   CLOSE_KICKED,
   CLOSE_PROTOCOL_VIOLATION,
   LIMITS,
+  MarketScope,
+  PatchMarketItemRequest,
+  PurchaseMarketItemRequest,
   MemberInit,
+  PatchSoundRequest,
   PointConfig,
   Sound,
   UserProfile,
@@ -26,16 +30,23 @@ import { RecordingsModule } from "./recordings";
 import { createScreenshot, deleteScreenshot, listScreenshots } from "./screenshots";
 import { PointsModule, type PointEligibility } from "./points";
 import { PollsModule, type PollMutationResult } from "./polls";
+import { MarketModule } from "./market";
 import {
+  claimSoundPlayback,
   createSound,
+  completeSoundAssetCleanup,
   deleteSound,
   getSoundPlayback,
   listSounds,
   patchSound,
+  pendingSoundAssetCleanup,
   recordPlay,
+  releaseSoundPlayback,
+  replaceSound,
   TavernError,
 } from "./soundboard";
-import type { Actor, SoundPatch } from "./soundboard";
+import type { Actor, SoundPatch, SoundReplacement } from "./soundboard";
+import { removeMediaObject, trackMediaInventory } from "../lib/mediaUsageInventory";
 
 // Internal recording route bodies (Worker → DO). The Worker route resolves the caller's userId + admin
 // from the session; the DO decides authorization from its own registry (§7.4).
@@ -62,6 +73,11 @@ const screenshotDeleteBody = z.object({
   screenshotId: z.string(),
 });
 
+const streamPreviewAuthorizeBody = z.object({ userId: z.uuid(), previewId: z.uuid() });
+const streamPreviewCommitBody = streamPreviewAuthorizeBody.extend({
+  version: z.string().min(1).max(128),
+});
+
 // Test-only seed body (S8.5): register `count` synthetic active screen shares. Reachable only via the
 // mock-SFU-gated /api/__test route (index.ts) + the internal header — never in production.
 const testSeedSharesBody = z.object({ count: z.number().int().min(0) });
@@ -71,11 +87,22 @@ const testSeedSharesBody = z.object({ count: z.number().int().min(0) });
 const createSoundBody = z.object({ sound: Sound.omit({ playCount: true }), r2Key: z.string() });
 const patchSoundBody = z.object({
   soundId: z.string(),
-  patch: z.object({
-    name: z.string().optional(),
-    trimStartMs: z.number().optional(),
-    trimEndMs: z.number().optional(),
+  patch: PatchSoundRequest,
+  actor: z.object({ userId: z.string(), isAdmin: z.boolean() }),
+});
+const replaceSoundBody = z.object({
+  soundId: z.uuid(),
+  replacement: Sound.pick({
+    id: true,
+    name: true,
+    emoji: true,
+    gain: true,
+    sourceFileName: true,
+    durationMs: true,
+    trimStartMs: true,
+    trimEndMs: true,
   }),
+  r2Key: z.string(),
   actor: z.object({ userId: z.string(), isAdmin: z.boolean() }),
 });
 const deleteSoundBody = z.object({
@@ -84,6 +111,27 @@ const deleteSoundBody = z.object({
 });
 const pointConfigBody = z.object({ userId: z.uuid(), config: PointConfig });
 const testSeedPointsBody = z.object({ userId: z.uuid(), balance: z.number().int().nonnegative() });
+const marketCreateBody = z.object({
+  itemId: z.uuid(),
+  name: z.string().trim().min(1).max(LIMITS.marketItemNameMax),
+  price: z.number().int().positive().max(LIMITS.marketPriceMax),
+  userId: z.uuid(),
+  isAdmin: z.boolean(),
+  r2Key: z.string().min(1),
+});
+const marketPatchBody = z.object({
+  itemId: z.uuid(),
+  patch: PatchMarketItemRequest,
+  isAdmin: z.boolean(),
+});
+const marketDeleteBody = z.object({ itemId: z.uuid(), isAdmin: z.boolean() });
+const marketPurchaseBody = z.object({
+  itemId: z.uuid(),
+  userId: z.uuid(),
+  displayName: z.string().min(1).max(LIMITS.displayNameMax),
+  purchase: PurchaseMarketItemRequest,
+});
+const marketEquipBody = z.object({ userId: z.uuid(), itemId: z.uuid().nullable() });
 
 // TavernError code → the HTTP status the Worker route forwards for a soundboard op.
 function soundErrorStatus(code: ErrorCode): 403 | 404 | 422 {
@@ -99,10 +147,9 @@ const INTERNAL_HEADER = "X-Tavern-Internal";
 // The empty-voice alarm interval (ghost lifetime ≤ this = the FR-24 crash-safety close). 5 s in tests
 // that opt in via the env flag (set only in .dev.vars / test env, never production config — §S3.4 task 5).
 const FAST_ALARM_MS = 5_000;
-
-// Minimum gap between accepted `sound.play` frames from one user (FR-36 rate limit, §App-B
-// rateSoundPlayPerSec = 1/s → 1000 ms). Token bucket of capacity 1 = a per-user last-accepted stamp.
-const SOUND_PLAY_MIN_GAP_MS = 1000 / LIMITS.rateSoundPlayPerSec;
+const VOICE_RECONNECT_GRACE_MS = 15_000;
+const VOICE_DISCONNECTS_KEY = "voice:disconnects";
+type VoiceDisconnects = Record<string, number>;
 
 // Streamer userId encoded in a watchable video track name (§7.1 grammar `screen:{uid}:{n}` /
 // `cam:{uid}`). Used to key the watch-stat (viewer→streamer) pair on watch.stop, when the stream may
@@ -143,6 +190,7 @@ export class ServerRoom extends DurableObject<Env> {
   private readonly recordings: RecordingsModule;
   private readonly points: PointsModule;
   private readonly polls: PollsModule;
+  private readonly market: MarketModule;
   // connId → hello-timeout handle (in-memory; a 5 s pending timer keeps the DO from hibernating, so
   // the same instance handles the hello within the window — negligible cost, §S3.1 task 6).
   private readonly helloTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -153,9 +201,6 @@ export class ServerRoom extends DurableObject<Env> {
   // from the sound-upload budget so rapid Space captures don't starve sound uploads (or vice versa).
   // In-memory per DO like the other buckets — a DO eviction only ever refills the budget, never revokes.
   private readonly screenshotTimes = new Map<string, number[]>();
-  // userId → last accepted sound.play timestamp (FR-36 per-user rate limit; in-memory per DO like the
-  // upload/chat buckets — a DO eviction only ever refills the budget, never revokes, fine at our scale).
-  private readonly soundPlayTimes = new Map<string, number>();
   // The message router later steps plug domain modules into. This step implements `hello`; every
   // other valid type answers `not_implemented` until S3.2/S3.4/S8/S9 fill the map (S12.4 verifies none
   // remain). `ping` never reaches here — setWebSocketAutoResponse answers it without waking the DO.
@@ -174,6 +219,7 @@ export class ServerRoom extends DurableObject<Env> {
     this.costMeter = new CostMeter(ctx, env);
     this.points = new PointsModule(ctx.storage.sql);
     this.polls = new PollsModule(ctx.storage, this.points);
+    this.market = new MarketModule(ctx.storage, this.points);
     this.recordings = new RecordingsModule({
       sql: ctx.storage.sql,
       storage: ctx.storage,
@@ -182,14 +228,14 @@ export class ServerRoom extends DurableObject<Env> {
       activity: this.activity,
     });
     this.routes = {
-      hello: (ws, att) => this.handleHello(ws, att),
+      hello: (ws, att, msg) => this.handleHello(ws, att, msg),
       "chat.send": (ws, att, msg) => this.handleChatSend(ws, att, msg),
       "chat.history": (ws, att, msg) => this.handleChatHistory(ws, att, msg),
       "chat.read": (ws, att, msg) => this.handleChatRead(ws, att, msg),
       "chat.edit": (ws, att, msg) => this.handleChatEdit(ws, att, msg),
       "chat.delete": (ws, att, msg) => this.handleChatDelete(ws, att, msg),
       "chat.reaction.set": (ws, att, msg) => this.handleChatReactionSet(ws, att, msg),
-      "voice.join": (ws, att) => this.handleVoiceJoin(ws, att),
+      "voice.join": (ws, att, msg) => this.handleVoiceJoin(ws, att, msg),
       "voice.leave": (_ws, att) => this.leaveVoice(att.userId, Date.now()),
       "voice.state": (ws, att, msg) => this.handleVoiceState(ws, att, msg),
       "stream.start": (_ws, att, msg) => this.handleStreamStart(att, msg),
@@ -198,6 +244,7 @@ export class ServerRoom extends DurableObject<Env> {
       "watch.start": (ws, att, msg) => this.handleWatchStart(ws, att, msg),
       "watch.stop": (_ws, att, msg) => this.handleWatchStop(att, msg),
       "sound.play": (ws, att, msg) => this.handleSoundPlay(ws, att, msg),
+      "sound.stop": (ws, att, msg) => this.handleSoundStop(ws, att, msg),
       "rec.start": (ws, att) => this.handleRecStart(ws, att),
       "rec.stop": (ws, att) => this.handleRecStop(ws, att),
       "status.set": (_ws, _att, msg) => this.handleStatusSet(msg),
@@ -288,9 +335,15 @@ export class ServerRoom extends DurableObject<Env> {
         this.chat.refreshReactorDisplayName(member.userId, member.displayName);
         this.chat.initializeReadCursor(member.userId);
         await this.room.setMeta(body.serverMeta);
+        const joinedMember = this.room
+          .listMembers()
+          .find((candidate) => candidate.userId === member.userId) ?? {
+          ...member,
+          presence: this.room.presenceOf(member.userId),
+        };
         this.room.broadcast({
           t: "member.joined",
-          member: { ...member, presence: this.room.presenceOf(member.userId) },
+          member: joinedMember,
           at,
         });
         // FR-39 producer: a genuinely new membership (the join route skips this call for a re-join, so
@@ -375,10 +428,95 @@ export class ServerRoom extends DurableObject<Env> {
           ),
         );
       }
-      // GET /internal/home → bounded idle-center recap. A due pending hangout can be finalized lazily
-      // here as well as by the alarm, so a delayed alarm never leaves a stale dashboard.
+      case "/internal/market": {
+        const userId = url.searchParams.get("userId");
+        const scope = MarketScope.safeParse(url.searchParams.get("scope") ?? "shop");
+        if (userId === null || !scope.success) {
+          return Response.json({ error: "bad_request" satisfies ErrorCode }, { status: 400 });
+        }
+        const page = this.market.page(scope.data, userId, url.searchParams.get("cursor"));
+        if (page === null) {
+          return Response.json({ error: "bad_request" satisfies ErrorCode }, { status: 400 });
+        }
+        return Response.json(page);
+      }
+      case "/internal/market/create": {
+        const body = marketCreateBody.parse(await request.json());
+        if (!body.isAdmin) {
+          return Response.json({ error: "not_admin" satisfies ErrorCode }, { status: 403 });
+        }
+        if (!this.allowUpload(body.userId, at)) {
+          return Response.json({ error: "rate_limited" satisfies ErrorCode }, { status: 429 });
+        }
+        const item = this.market.create({
+          id: body.itemId,
+          name: body.name,
+          price: body.price,
+          createdBy: body.userId,
+          r2Key: body.r2Key,
+          now: at,
+        });
+        this.recordUpload(body.userId, at);
+        this.room.broadcast({ t: "market.updated", at });
+        return Response.json({ item });
+      }
+      case "/internal/market/patch": {
+        const body = marketPatchBody.parse(await request.json());
+        if (!body.isAdmin) {
+          return Response.json({ error: "not_admin" satisfies ErrorCode }, { status: 403 });
+        }
+        const result = this.market.patch(body.itemId, body.patch, at);
+        if (!result.ok) return this.marketError(result.code);
+        this.room.broadcast({ t: "market.updated", at });
+        return Response.json({ item: result.value });
+      }
+      case "/internal/market/delete": {
+        const body = marketDeleteBody.parse(await request.json());
+        if (!body.isAdmin) {
+          return Response.json({ error: "not_admin" satisfies ErrorCode }, { status: 403 });
+        }
+        const result = this.market.delete(body.itemId);
+        if (!result.ok) return this.marketError(result.code);
+        this.room.broadcast({ t: "market.updated", at });
+        await this.cleanupMarketAssets();
+        return Response.json({ itemId: result.value.itemId });
+      }
+      case "/internal/market/purchase": {
+        const body = marketPurchaseBody.parse(await request.json());
+        const result = this.market.purchase({
+          itemId: body.itemId,
+          userId: body.userId,
+          displayName: body.displayName,
+          expectedRevision: body.purchase.expectedRevision,
+          wearImmediately: body.purchase.wearImmediately,
+          now: at,
+        });
+        if (!result.ok) return this.marketError(result.code);
+        this.room.broadcast({ t: "market.updated", at });
+        this.room.broadcast({
+          t: "member.icon.updated",
+          userId: body.userId,
+          icon: result.value.equippedIcon,
+          at,
+        });
+        this.broadcastPointSnapshots(at);
+        return Response.json(result.value);
+      }
+      case "/internal/market/equip": {
+        const body = marketEquipBody.parse(await request.json());
+        const result = this.market.equip(body.userId, body.itemId);
+        if (!result.ok) return this.marketError(result.code);
+        this.room.broadcast({
+          t: "member.icon.updated",
+          userId: body.userId,
+          icon: result.value,
+          at,
+        });
+        return Response.json({ icon: result.value });
+      }
+      // GET /internal/home is a read-only bounded projection. Due hangouts are finalized by the room
+      // alarm; a dashboard refresh must never turn into a storage-writing fan-out.
       case "/internal/home": {
-        if (this.hangouts.finalizeDue(at)) this.room.broadcast({ t: "hangout.updated", at });
         return Response.json(
           homeSnapshot({
             sql: this.ctx.storage.sql,
@@ -399,8 +537,30 @@ export class ServerRoom extends DurableObject<Env> {
           return Response.json({ ok: false, error: "bad_request" } satisfies RtcAuthorizeRes);
         }
         const res = await this.room.rtcAuthorize(parsed.data, this.costMeter, at);
-        if (res.ok) await this.syncPoints(at);
         return Response.json(res);
+      }
+      case "/internal/stream-preview/authorize": {
+        const parsed = streamPreviewAuthorizeBody.safeParse(await request.json());
+        if (!parsed.success) {
+          return Response.json({ ok: false, error: "bad_request" satisfies ErrorCode });
+        }
+        return Response.json(
+          await this.room.authorizeStreamPreview(parsed.data.userId, parsed.data.previewId, at),
+        );
+      }
+      case "/internal/stream-preview/commit": {
+        const parsed = streamPreviewCommitBody.safeParse(await request.json());
+        if (!parsed.success) {
+          return Response.json({ ok: false, error: "bad_request" satisfies ErrorCode });
+        }
+        return Response.json(
+          await this.room.commitStreamPreview(
+            parsed.data.userId,
+            parsed.data.previewId,
+            parsed.data.version,
+            at,
+          ),
+        );
       }
       case "/internal/points/config": {
         if (request.method !== "PUT") {
@@ -417,22 +577,33 @@ export class ServerRoom extends DurableObject<Env> {
         }
         const body = testSeedPointsBody.parse(await request.json());
         this.points.setBalanceForTest(body.userId, body.balance, at);
-        this.broadcastPointSnapshotsFor([body.userId], at);
+        this.broadcastPointSnapshots(at);
         return Response.json(this.points.snapshot(body.userId, at));
       }
       // GET /internal/stats → StatsResponse (§6.1 `GET /api/servers/:id/stats`). perUser unions the
       // member cache + message senders + stream-seconds rows; messages from ChatModule.
       case "/internal/stats": {
-        const snapshot = this.stats.snapshot(
+        const snapshot = await this.stats.snapshot(
           this.chat.messageCountByUser(),
           this.room.listMembers(),
+          at,
         );
         return Response.json(snapshot);
       }
       // GET /internal/sounds → { sounds } (§6.1 `GET /api/servers/:id/sounds`), ordered playCount DESC
       // then createdAt DESC (FR-37). The Worker route validates against the shared SoundsResponse.
-      case "/internal/sounds":
-        return Response.json({ sounds: listSounds(this.ctx.storage.sql) });
+      case "/internal/sounds": {
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        const limit = Math.min(
+          Math.max(1, Number(url.searchParams.get("limit") ?? LIMITS.historyPageSize)),
+          LIMITS.historyPageSize,
+        );
+        const sounds = listSounds(this.ctx.storage.sql).slice(offset, offset + limit + 1);
+        return Response.json({
+          sounds: sounds.slice(0, limit),
+          hasMore: sounds.length > limit,
+        });
+      }
       // POST /internal/sounds/create (FR-34): rate-limit the uploader (§App-B uploadsPerUserPerHour),
       // then persist + broadcast `sound.updated`. On a rate-limit reject the Worker deletes the R2
       // object it already put (task 4). A bad_trim (sub-200ms clip) is likewise a non-2xx the route
@@ -471,14 +642,39 @@ export class ServerRoom extends DurableObject<Env> {
           throw err;
         }
       }
+      case "/internal/sounds/replace": {
+        const body = replaceSoundBody.parse(await request.json());
+        if (!this.allowUpload(body.actor.userId, at)) {
+          return Response.json({ error: "rate_limited" satisfies ErrorCode }, { status: 429 });
+        }
+        try {
+          const replacement: SoundReplacement = body.replacement;
+          const actor: Actor = body.actor;
+          const sound = this.ctx.storage.transactionSync(() =>
+            replaceSound(this.ctx.storage.sql, body.soundId, replacement, body.r2Key, actor),
+          );
+          this.recordUpload(body.actor.userId, at);
+          this.room.broadcast({ t: "sound.updated", at });
+          await this.cleanupSoundAssets();
+          return Response.json({ sound });
+        } catch (err: unknown) {
+          if (err instanceof TavernError) {
+            return Response.json({ error: err.code }, { status: soundErrorStatus(err.code) });
+          }
+          throw err;
+        }
+      }
       // POST /internal/sounds/delete (FR-35): uploader-or-admin. Returns the stored R2 key so the
       // Worker deletes the object; broadcasts `sound.updated`.
       case "/internal/sounds/delete": {
         const body = deleteSoundBody.parse(await request.json());
         try {
           const actor: Actor = body.actor;
-          const { r2Key } = deleteSound(this.ctx.storage.sql, body.soundId, actor);
+          const { r2Key } = this.ctx.storage.transactionSync(() =>
+            deleteSound(this.ctx.storage.sql, body.soundId, actor),
+          );
           this.room.broadcast({ t: "sound.updated", at });
+          await this.cleanupSoundAssets();
           return Response.json({ r2Key });
         } catch (err: unknown) {
           if (err instanceof TavernError) {
@@ -490,8 +686,11 @@ export class ServerRoom extends DurableObject<Env> {
       // FR-25 recording multipart (§6.1). The Worker routes stream the part bytes + resolve
       // session/admin; the DO owns authorization + the R2 multipart lifecycle (create/abort) + the row.
       // GET /internal/recordings → list (newest finalized first).
-      case "/internal/recordings":
-        return Response.json({ recordings: this.recordings.list() });
+      case "/internal/recordings": {
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        const limit = Number(url.searchParams.get("limit") ?? LIMITS.historyPageSize);
+        return Response.json(this.recordings.list(offset, limit));
+      }
       // POST /internal/recordings/open → create the multipart for the active starter.
       case "/internal/recordings/open": {
         const body = recOpenBody.parse(await request.json());
@@ -520,8 +719,11 @@ export class ServerRoom extends DurableObject<Env> {
       // § screenshots (§6.1). The Worker route PUTs the image to R2 + resolves the caller/admin; the DO
       // owns the registry row, the per-user capture rate limit, and the `screenshot.updated` broadcast.
       // GET /internal/screenshots → list (newest first).
-      case "/internal/screenshots":
-        return Response.json({ screenshots: listScreenshots(this.ctx.storage.sql) });
+      case "/internal/screenshots": {
+        const offset = Number(url.searchParams.get("offset") ?? 0);
+        const limit = Number(url.searchParams.get("limit") ?? LIMITS.historyPageSize);
+        return Response.json(listScreenshots(this.ctx.storage.sql, offset, limit));
+      }
       // POST /internal/screenshots/create → rate-limit the capturer, insert the row, broadcast the nudge.
       // On a rate-limit reject the Worker deletes the R2 object it already PUT (mirrors sounds/create).
       case "/internal/screenshots/create": {
@@ -630,17 +832,24 @@ export class ServerRoom extends DurableObject<Env> {
     }
     const now = Date.now();
     this.room.presenceOnClose(ws, att, now);
-    // Implicit voice leave when the user's LAST socket goes away (§S3.4 task 3). Exclude the closing
-    // socket; if no other socket for the user remains, they are fully gone → leave voice.
-    const otherLive = this.room.socketsOf(att.userId).some((sock) => sock !== ws);
-    if (!otherLive) await this.leaveVoice(att.userId, now);
+    // A transient network handoff must not tear down every SFU session. The last socket starts a
+    // short durable lease; a reconnecting hello cancels it, otherwise the alarm performs the leave.
+    const otherMediaSocket = this.hasMediaSocket(att.userId, ws);
+    if (
+      !otherMediaSocket &&
+      this.room.voiceState().members.some((member) => member.userId === att.userId)
+    ) {
+      await this.scheduleVoiceDisconnect(att.userId, now);
+    }
   }
 
-  private async handleHello(ws: WebSocket, att: ConnAttachment): Promise<void> {
+  private async handleHello(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): Promise<void> {
+    if (msg.t !== "hello") return;
     const at = Date.now();
     const firstHello = !att.hello;
+    const mediaResume = msg.mediaResume === true && msg.mediaReset !== true;
     if (firstHello) {
-      const next: ConnAttachment = { ...att, hello: true };
+      const next: ConnAttachment = { ...att, hello: true, mediaResume };
       ws.serializeAttachment(next);
       const timer = this.helloTimers.get(att.connId);
       if (timer !== undefined) {
@@ -648,21 +857,40 @@ export class ServerRoom extends DurableObject<Env> {
         this.helloTimers.delete(att.connId);
       }
     }
-    // Reconnect replays the full snapshot (§6.2 no delta sync); a repeat hello is idempotent. The
-    // active-streams list is read from the RTC registry (async KV) so a client connecting AFTER a
-    // share started still learns it (`stream.added` fires once, at publish). The hello timer was
-    // cleared above (before the await), so nothing closes this socket during the read.
+    // Reconnect replays the full snapshot (§6.2 no delta sync); a repeat hello is idempotent. Browser
+    // capture cannot survive document replacement, so an owning tab's reload sends mediaReset even
+    // while its old socket briefly overlaps the new one. Other fresh connections fall back to socket
+    // ownership: a second passive tab does not disturb an existing media tab, while a reconnect after
+    // an already-closed owner clears its abandoned voice/RTC lifetime before taking the snapshot.
+    if (msg.mediaReset === true) {
+      await this.cancelVoiceDisconnect(att.userId);
+      if (this.room.voiceState().members.some((member) => member.userId === att.userId)) {
+        await this.leaveVoice(att.userId, at);
+      }
+    } else if (mediaResume) {
+      await this.cancelVoiceDisconnect(att.userId);
+    } else if (
+      firstHello &&
+      !this.hasMediaSocket(att.userId, ws) &&
+      this.room.voiceState().members.some((member) => member.userId === att.userId)
+    ) {
+      await this.cancelVoiceDisconnect(att.userId);
+      await this.leaveVoice(att.userId, at);
+    }
+    // The active-streams list is read from the RTC registry (async KV) so a client connecting AFTER
+    // somebody else's share started still learns it (`stream.added` fires once, at publish). The hello
+    // timer was cleared above (before the await), so nothing closes this socket during the read.
     const streams = await this.room.activeStreams();
-    await this.syncPoints(at, false);
     await this.processPollDue(at);
     const readState = this.chat.readState(att.userId);
+    const costStatus = await this.costMeter.status(at);
     this.room.send(
       ws,
       this.room.helloSnapshot(
         att.userId,
         this.chat.lastMessageId(),
         readState,
-        this.costMeter.status(at),
+        costStatus,
         this.recordings.state(),
         streams,
         this.points.snapshot(att.userId, at),
@@ -758,7 +986,7 @@ export class ServerRoom extends DurableObject<Env> {
       return;
     }
     this.broadcastPoll(result.poll.id, now, msg.requestId, actor.userId);
-    this.broadcastPointSnapshotsFor(result.affectedUserIds, now);
+    if (result.affectedUserIds.length > 0) this.broadcastPointSnapshots(now);
     const deadline = this.polls.nextDeadline();
     if (deadline !== null) await this.ensureAlarmNoLaterThan(deadline);
   }
@@ -878,17 +1106,15 @@ export class ServerRoom extends DurableObject<Env> {
     }
   }
 
-  // sound.play (FR-36): token-bucket rate-limit the caller (LIMITS.rateSoundPlayPerSec, per user,
-  // in-memory per DO) → over-limit `rate_limited`; unknown soundId → `not_found`; else append a
-  // `sound_plays` row (FR-37 stats) and broadcast `sound.played` to ALL sockets — the sender included,
-  // so it plays on its own broadcast receipt (single code path, tight cross-client sync). Errors reply
-  // on the caller's socket only and never consume the rate budget (recorded only on a full success).
+  // sound.play (FR-36): unknown soundId → `not_found`; an already-active sound is an idempotent no-op;
+  // otherwise append one `sound_plays` row (FR-37 stats) and broadcast `sound.played` to ALL sockets —
+  // the sender included, so it plays on its own broadcast receipt. The active registry is keyed by
+  // soundId rather than userId so different sounds may overlap but the same sound never stacks.
   private handleSoundPlay(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): void {
     if (msg.t !== "sound.play") return;
     const at = Date.now();
-    const last = this.soundPlayTimes.get(att.userId);
-    if (last !== undefined && at - last < SOUND_PLAY_MIN_GAP_MS) {
-      this.room.send(ws, { t: "error", code: "rate_limited" });
+    if (!this.room.voiceState().members.some((member) => member.userId === att.userId)) {
+      this.room.send(ws, { t: "error", code: "not_in_voice" });
       return;
     }
     const playback = getSoundPlayback(this.ctx.storage.sql, msg.soundId);
@@ -896,8 +1122,20 @@ export class ServerRoom extends DurableObject<Env> {
       this.room.send(ws, { t: "error", code: "not_found" });
       return;
     }
-    this.soundPlayTimes.set(att.userId, at);
-    recordPlay(this.ctx.storage.sql, msg.soundId, att.userId, at);
+    const claimed = this.ctx.storage.transactionSync(() => {
+      if (
+        !claimSoundPlayback(
+          this.ctx.storage.sql,
+          msg.soundId,
+          at,
+          playback.trimEndMs - playback.trimStartMs,
+        )
+      )
+        return false;
+      recordPlay(this.ctx.storage.sql, msg.soundId, att.userId, at);
+      return true;
+    });
+    if (!claimed) return;
     this.room.broadcast({
       t: "sound.played",
       soundId: msg.soundId,
@@ -905,6 +1143,26 @@ export class ServerRoom extends DurableObject<Env> {
       at,
       trimStartMs: playback.trimStartMs,
       trimEndMs: playback.trimEndMs,
+      gain: playback.gain,
+    });
+  }
+
+  private handleSoundStop(ws: WebSocket, att: ConnAttachment, msg: ClientMessage): void {
+    if (msg.t !== "sound.stop") return;
+    if (!this.room.voiceState().members.some((member) => member.userId === att.userId)) {
+      this.room.send(ws, { t: "error", code: "not_in_voice" });
+      return;
+    }
+    if (getSoundPlayback(this.ctx.storage.sql, msg.soundId) === null) {
+      this.room.send(ws, { t: "error", code: "not_found" });
+      return;
+    }
+    releaseSoundPlayback(this.ctx.storage.sql, msg.soundId);
+    this.room.broadcast({
+      t: "sound.stopped",
+      soundId: msg.soundId,
+      byUserId: att.userId,
+      at: Date.now(),
     });
   }
 
@@ -912,16 +1170,25 @@ export class ServerRoom extends DurableObject<Env> {
   // the first member, appends a `voice.join` activity, broadcasts the full snapshot to ALL sockets
   // (FR-24: non-voice members see the timer), and ensures the crash-safety alarm is armed. A repeat
   // join is a no-op that just re-sends the current snapshot to the requester.
-  private async handleVoiceJoin(ws: WebSocket, att: ConnAttachment): Promise<void> {
+  private async handleVoiceJoin(
+    ws: WebSocket,
+    att: ConnAttachment,
+    msg: ClientMessage,
+  ): Promise<void> {
+    if (msg.t !== "voice.join" || msg.mediaReadyVersion !== 2) {
+      this.room.send(ws, { t: "error", code: "voice_client_update_required" });
+      return;
+    }
     const at = Date.now();
     const beforeIds = this.room.voiceState().members.map((member) => member.userId);
     const already = this.room.voiceState().members.some((m) => m.userId === att.userId);
-    const snapshot = this.room.voiceJoin(att.userId, at);
-    await this.room.persistVoice();
+    const snapshot = this.room.voiceJoin(att.userId, at, msg.mediaReadyVersion);
+    ws.serializeAttachment({ ...att, hello: true, mediaResume: true } satisfies ConnAttachment);
     if (already) {
       this.room.send(ws, { t: "voice.state", voice: snapshot, at });
       return;
     }
+    await this.room.persistVoice();
     const afterIds = snapshot.members.map((member) => member.userId);
     if (this.hangouts.noteVoiceChange(beforeIds, afterIds, at)) {
       this.room.broadcast({ t: "hangout.updated", at });
@@ -935,10 +1202,10 @@ export class ServerRoom extends DurableObject<Env> {
     await this.ensureAlarmArmed(at);
   }
 
-  // voice.leave path — shared by the client `voice.leave`, the last-socket disconnect, and the alarm's
-  // ghost reconciliation. Idempotent: a user not in voice is a no-op (so a double alarm never double-
-  // closes). Closes the leaver's open stream/watch intervals, appends a `voice.leave` activity, and
-  // broadcasts the new snapshot to all remaining sockets.
+  // voice.leave path — shared by explicit leave and alarm expiry after the reconnect grace window.
+  // Idempotent: a user not in voice is a no-op (so a double alarm never double-closes). Closes the
+  // leaver's open stream/watch intervals, appends a `voice.leave` activity, and broadcasts the new
+  // snapshot to all remaining sockets.
   private async leaveVoice(userId: string, now: number): Promise<void> {
     if (!this.room.voiceState().members.some((m) => m.userId === userId)) return;
     const beforeIds = this.room.voiceState().members.map((member) => member.userId);
@@ -948,6 +1215,7 @@ export class ServerRoom extends DurableObject<Env> {
     // Drop the leaver's SFU sessions/tracks/grants + flush their open meter watches (§S3.4 disconnect
     // cleanup path; the SFU GCs the dead session itself). Broadcasts stream.removed for their video.
     await this.room.rtcCleanupFor(userId, this.costMeter, now);
+    await this.cleanupStreamPreviews();
     await this.syncPoints(now);
     // FR-25 dirty end: if the leaver owns the active recording without a prior graceful rec.stop, cancel
     // it (abort R2 multipart, delete row, broadcast inactive, aborted activity). No-op otherwise, so a
@@ -989,7 +1257,7 @@ export class ServerRoom extends DurableObject<Env> {
   private async handleStatusSet(msg: ClientMessage): Promise<void> {
     if (msg.t !== "status.set") return;
     const text = msg.text.trim();
-    await this.room.setStatus(text);
+    if (!(await this.room.setStatus(text))) return;
     this.room.broadcast({ t: "status.updated", text, at: Date.now() });
   }
 
@@ -1001,10 +1269,11 @@ export class ServerRoom extends DurableObject<Env> {
   ): Promise<void> {
     if (msg.t !== "voice.state") return;
     const at = Date.now();
-    const snapshot = this.room.setVoiceFlags(att.userId, {
+    const { snapshot, changed } = this.room.setVoiceFlags(att.userId, {
       muted: msg.muted,
       deafened: msg.deafened,
     });
+    if (!changed) return;
     await this.room.persistVoice();
     await this.syncPoints(at);
     this.room.broadcast({ t: "voice.state", voice: snapshot, at });
@@ -1057,6 +1326,7 @@ export class ServerRoom extends DurableObject<Env> {
       this.costMeter,
       now,
     );
+    await this.cleanupStreamPreviews();
     await this.syncPoints(now);
     // FR-39: record the share stop (one entry per stopped track) + broadcast live to open Activity tabs.
     this.room.broadcast({
@@ -1082,7 +1352,7 @@ export class ServerRoom extends DurableObject<Env> {
     // watch, or SFU state exists (G1: rejection precedes SFU ops). The REST pull path's isBlocked
     // check (roomState op:pull) stays as the belt for pulls that bypass watch.start. Voice is
     // untouched: mic pulls carry no grant and skip the blocked check.
-    if (this.costMeter.isBlocked(at)) {
+    if (await this.costMeter.isBlocked(at)) {
       this.room.send(ws, { t: "error", code: "cost_cap" });
       return;
     }
@@ -1134,54 +1404,88 @@ export class ServerRoom extends DurableObject<Env> {
     this.room.broadcast({ t: "stream.updated", trackName: msg.trackName, preset: msg.preset, at });
   }
 
-  // Single, multiplexed, idempotent alarm (DO alarms are at-least-once). (a) Reconcile ghosts — any
-  // voice member with zero live sockets goes through the leave path. (b) While voice still has members,
-  // flush the stat accumulators (S7.1 appends costMeter.tick(now) at this exact seam). (c) Re-arm iff
-  // members remain or open intervals exist, else let the alarm lapse.
+  // Single, multiplexed, idempotent alarm (DO alarms are at-least-once). It expires reconnect leases,
+  // projects live counters without settling them, processes due work, and re-arms only while work or
+  // a deadline remains.
   async alarm(): Promise<void> {
     const now = Date.now();
     await this.cleanupChatImages();
+    await this.cleanupSoundAssets();
+    await this.cleanupMarketAssets();
+    await this.cleanupStreamPreviews();
     // KV is the source of truth; re-read it so a crash-leftover seeded straight into storage is seen.
     await this.room.loadVoice();
     // (a) Reconcile ghosts (voice members with zero live sockets) through the leave path. Sequential —
     // each leaveVoice mutates shared voice + stats state, so they must not overlap (no Promise.all);
     // a `.then` chain keeps them ordered without an await inside the loop.
-    const ghostIds = this.room
+    const legacyIds = this.room
       .voiceState()
-      .members.filter((m) => this.room.socketsOf(m.userId).length === 0)
+      .members.filter((m) => m.mediaReadyVersion !== 2)
       .map((m) => m.userId);
+    for (const userId of legacyIds) {
+      for (const ws of this.room.socketsOf(userId)) {
+        this.room.send(ws, { t: "error", code: "voice_client_update_required" });
+      }
+    }
+    const disconnects = (await this.ctx.storage.get<VoiceDisconnects>(VOICE_DISCONNECTS_KEY)) ?? {};
+    let disconnectsChanged = false;
+    for (const member of this.room.voiceState().members) {
+      if (this.hasMediaSocket(member.userId)) {
+        if (disconnects[member.userId] !== undefined) {
+          delete disconnects[member.userId];
+          disconnectsChanged = true;
+        }
+      } else if (disconnects[member.userId] === undefined) {
+        disconnects[member.userId] = now + VOICE_RECONNECT_GRACE_MS;
+        disconnectsChanged = true;
+      }
+    }
+    const expiredIds = Object.entries(disconnects)
+      .filter(([, deadline]) => deadline <= now)
+      .map(([userId]) => userId);
+    const leavingIds = [...new Set([...legacyIds, ...expiredIds])];
     let chain: Promise<void> = Promise.resolve();
-    for (const userId of ghostIds) chain = chain.then(() => this.leaveVoice(userId, now));
+    for (const userId of leavingIds) chain = chain.then(() => this.leaveVoice(userId, now));
     await chain;
-    await this.syncPoints(now);
+    for (const userId of leavingIds) {
+      if (disconnects[userId] !== undefined) {
+        delete disconnects[userId];
+        disconnectsChanged = true;
+      }
+    }
+    if (disconnectsChanged) await this.writeVoiceDisconnects(disconnects);
+    this.broadcastPointSnapshots(now);
     await this.processPollDue(now);
     if (this.hangouts.finalizeDue(now)) this.room.broadcast({ t: "hangout.updated", at: now });
-    // (b) While voice still has members, bank the accumulators mid-session, then tick the egress meter
-    // (§8 G5). A newly-crossed 700 GB warn threshold → broadcast cost.warning once per month-bucket.
+    // While voice still has members, project the live egress meter without banking open intervals.
+    // A newly-crossed 700 GB warn threshold → broadcast cost.warning once per month-bucket.
     if (this.room.voiceState().members.length > 0) {
-      await this.stats.flushOpenIntervals(now);
       if (await this.costMeter.tick(now)) {
         this.room.broadcast({
           t: "cost.warning",
-          usedGB: this.costMeter.usedGB(now),
+          usedGB: await this.costMeter.usedGB(now),
           capGB: LIMITS.egressKillGB,
           at: now,
         });
       }
       // Live egress readout for the Stats tab — same CostStatus shape hello.ok snapshots, refreshed
       // every tick while anyone is in voice (the only time the meter can move).
-      this.room.broadcast({ t: "cost.update", cost: this.costMeter.status(now), at: now });
+      this.room.broadcast({ t: "cost.update", cost: await this.costMeter.status(now), at: now });
     }
     // (c) Re-arm iff work remains (members or open intervals); otherwise let the alarm lapse.
     const stillActive =
       this.room.voiceState().members.length > 0 ||
       (await this.stats.hasOpenIntervals()) ||
-      this.chat.hasPendingImageCleanup();
+      this.chat.hasPendingImageCleanup() ||
+      pendingSoundAssetCleanup(this.ctx.storage.sql).length > 0 ||
+      this.market.pendingAssetCleanup().length > 0 ||
+      (await this.room.hasPendingStreamPreviewCleanup());
     const hangoutDeadline = this.hangouts.pendingDeadline();
     const pollDeadline = this.polls.nextDeadline();
+    const voiceDisconnectDeadline = Object.values(disconnects).toSorted((a, b) => a - b)[0] ?? null;
     const routineDeadline = stillActive ? now + this.alarmIntervalMs() : null;
     const nextDeadline =
-      [routineDeadline, hangoutDeadline, pollDeadline]
+      [routineDeadline, hangoutDeadline, pollDeadline, voiceDisconnectDeadline]
         .filter((deadline): deadline is number => deadline !== null)
         .toSorted((a, b) => a - b)[0] ?? null;
     if (nextDeadline !== null) await this.ctx.storage.setAlarm(nextDeadline);
@@ -1227,18 +1531,14 @@ export class ServerRoom extends DurableObject<Env> {
   }
 
   private broadcastPointSnapshots(at: number): void {
-    for (const userId of this.room.connectedUserIds()) {
+    const userIds = this.room.connectedUserIds();
+    const pointLeaderboard = this.points.leaderboard(
+      this.room.listMembers().map((member) => member.userId),
+      at,
+    );
+    for (const userId of userIds) {
       this.room.broadcast(
-        { t: "points.updated", points: this.points.snapshot(userId, at), at },
-        { toUserId: userId },
-      );
-    }
-  }
-
-  private broadcastPointSnapshotsFor(userIds: readonly string[], at: number): void {
-    for (const userId of new Set(userIds)) {
-      this.room.broadcast(
-        { t: "points.updated", points: this.points.snapshot(userId, at), at },
+        { t: "points.updated", points: this.points.snapshot(userId, at), pointLeaderboard, at },
         { toUserId: userId },
       );
     }
@@ -1261,7 +1561,7 @@ export class ServerRoom extends DurableObject<Env> {
   private async processPollDue(now: number): Promise<void> {
     const due = this.polls.processDue(now);
     for (const poll of due.polls) this.broadcastPoll(poll.id, now);
-    this.broadcastPointSnapshotsFor(due.affectedUserIds, now);
+    if (due.affectedUserIds.length > 0) this.broadcastPointSnapshots(now);
   }
 
   private async cleanupChatImages(): Promise<void> {
@@ -1271,6 +1571,11 @@ export class ServerRoom extends DurableObject<Env> {
         chain.then(async () => {
           try {
             await this.env.MEDIA.delete(`${this.room.id()}/chat-images/${imageId}.webp`);
+            await trackMediaInventory(
+              removeMediaObject(this.env.DB, `${this.room.id()}/chat-images/${imageId}.webp`),
+              "delete",
+              `${this.room.id()}/chat-images/${imageId}.webp`,
+            );
             this.chat.completeImageCleanup(imageId);
           } catch (error: unknown) {
             console.error("chat image cleanup failed", {
@@ -1285,6 +1590,95 @@ export class ServerRoom extends DurableObject<Env> {
     if (this.chat.hasPendingImageCleanup()) await this.ensureAlarmArmed(Date.now());
   }
 
+  private async cleanupSoundAssets(): Promise<void> {
+    await pendingSoundAssetCleanup(this.ctx.storage.sql).reduce<Promise<void>>(
+      (chain, r2Key) =>
+        chain.then(async () => {
+          try {
+            await this.env.MEDIA.delete(r2Key);
+            // Keep the queue row until both R2 and the storage inventory agree. A later alarm retries
+            // the same idempotent deletion if either service is temporarily unavailable.
+            await removeMediaObject(this.env.DB, r2Key);
+            completeSoundAssetCleanup(this.ctx.storage.sql, r2Key);
+          } catch (error: unknown) {
+            console.error("sound asset cleanup failed", {
+              serverId: this.room.id(),
+              r2Key,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }),
+      Promise.resolve(),
+    );
+    if (pendingSoundAssetCleanup(this.ctx.storage.sql).length > 0) {
+      await this.ensureAlarmArmed(Date.now());
+    }
+  }
+
+  private async cleanupMarketAssets(): Promise<void> {
+    await Promise.all(
+      this.market.pendingAssetCleanup().map(async (r2Key) => {
+        try {
+          await this.env.MEDIA.delete(r2Key);
+          await removeMediaObject(this.env.DB, r2Key);
+          this.market.completeAssetCleanup(r2Key);
+        } catch (error: unknown) {
+          console.error("market asset cleanup failed", {
+            serverId: this.room.id(),
+            r2Key,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }),
+    );
+    if (this.market.pendingAssetCleanup().length > 0) {
+      await this.ensureAlarmArmed(Date.now());
+    }
+  }
+
+  private marketError(code: ErrorCode): Response {
+    const status =
+      code === "not_found"
+        ? 404
+        : code === "not_admin" || code === "forbidden"
+          ? 403
+          : code === "rate_limited"
+            ? 429
+            : code === "market_sold" ||
+                code === "market_item_changed" ||
+                code === "market_item_frozen" ||
+                code === "market_icon_not_owned" ||
+                code === "insufficient_points"
+              ? 409
+              : 400;
+    return Response.json({ error: code }, { status });
+  }
+
+  private async cleanupStreamPreviews(): Promise<void> {
+    const pending = await this.room.pendingStreamPreviewCleanup();
+    await Promise.all(
+      pending.map(async (previewId) => {
+        const key = `${this.room.id()}/stream-previews/${previewId}.webp`;
+        try {
+          await this.env.MEDIA.delete(key);
+          // Keep the queue entry until BOTH stores agree. If D1 is temporarily unavailable the alarm
+          // repeats the idempotent R2 delete and inventory removal instead of silently losing cleanup.
+          await removeMediaObject(this.env.DB, key);
+          await this.room.completeStreamPreviewCleanup(previewId);
+        } catch (error: unknown) {
+          console.error("stream preview cleanup failed", {
+            serverId: this.room.id(),
+            previewId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }),
+    );
+    if (await this.room.hasPendingStreamPreviewCleanup()) {
+      await this.ensureAlarmArmed(Date.now());
+    }
+  }
+
   // Arms the alarm only if none is scheduled (never pushes an in-flight ghost-close window forward).
   private async ensureAlarmArmed(now: number): Promise<void> {
     if ((await this.ctx.storage.getAlarm()) === null) {
@@ -1295,6 +1689,37 @@ export class ServerRoom extends DurableObject<Env> {
   private async ensureAlarmNoLaterThan(deadline: number): Promise<void> {
     const current = await this.ctx.storage.getAlarm();
     if (current === null || current > deadline) await this.ctx.storage.setAlarm(deadline);
+  }
+
+  private async scheduleVoiceDisconnect(userId: string, now: number): Promise<void> {
+    const disconnects = (await this.ctx.storage.get<VoiceDisconnects>(VOICE_DISCONNECTS_KEY)) ?? {};
+    const deadline = now + VOICE_RECONNECT_GRACE_MS;
+    disconnects[userId] = deadline;
+    await this.ctx.storage.put(VOICE_DISCONNECTS_KEY, disconnects);
+    await this.ensureAlarmNoLaterThan(deadline);
+  }
+
+  private hasMediaSocket(userId: string, exclude?: WebSocket): boolean {
+    return this.room.socketsOf(userId).some((socket) => {
+      if (socket === exclude) return false;
+      const attachment: ConnAttachment | null = socket.deserializeAttachment();
+      return attachment?.mediaResume === true;
+    });
+  }
+
+  private async cancelVoiceDisconnect(userId: string): Promise<void> {
+    const disconnects = await this.ctx.storage.get<VoiceDisconnects>(VOICE_DISCONNECTS_KEY);
+    if (disconnects === undefined || disconnects[userId] === undefined) return;
+    delete disconnects[userId];
+    await this.writeVoiceDisconnects(disconnects);
+  }
+
+  private async writeVoiceDisconnects(disconnects: VoiceDisconnects): Promise<void> {
+    if (Object.keys(disconnects).length === 0) {
+      await this.ctx.storage.delete(VOICE_DISCONNECTS_KEY);
+      return;
+    }
+    await this.ctx.storage.put(VOICE_DISCONNECTS_KEY, disconnects);
   }
 
   private alarmIntervalMs(): number {

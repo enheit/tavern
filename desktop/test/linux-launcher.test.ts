@@ -100,6 +100,24 @@ describe("Linux packaged launcher", () => {
     expect(result.address).toBe(`unix:path=${runtimeBus}`);
   });
 
+  it("replaces the invalid disabled sentinel with the live runtime bus", async () => {
+    const runtimeDir = await tempDir();
+    const runtimeBus = join(runtimeDir, "bus");
+    await listen(runtimeBus);
+
+    const result = await runLauncher("disabled:", runtimeDir);
+
+    expect(result).toEqual({ address: `unix:path=${runtimeBus}`, args: ["one", "two words"] });
+  });
+
+  it("clears the invalid disabled sentinel when no replacement bus exists", async () => {
+    const runtimeDir = await tempDir();
+
+    const result = await runLauncher("disabled:", runtimeDir);
+
+    expect(result.address).toBe("");
+  });
+
   it("preserves a live custom session bus instead of forcing the runtime bus", async () => {
     const runtimeDir = await tempDir();
     const runtimeBus = join(runtimeDir, "bus");

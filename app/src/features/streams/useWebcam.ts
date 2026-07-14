@@ -3,15 +3,15 @@ import { create } from "zustand";
 import { connectRoom } from "@/lib/wsClient";
 import { getCam } from "@/media/capture";
 import { getVoiceController } from "@/features/voice/voiceController";
-import { updateVoiceSession } from "@/features/voice/voiceSession";
 import { useMediaStore } from "@/stores/media";
 import { useSettingsStore } from "@/stores/settings";
+import { startStreamPreview, type StreamPreviewPublication } from "./streamPreviewPublisher";
 
 // The shared publishPC surface the webcam needs (§7.1: mic + screen + cam share ONE publish session,
-// owned by the voiceController). PublishSession OWNS the `cam:{userId}` name + the App-D webcam h/l
+// owned by the voiceController). PublishSession OWNS the `cam:{userId}` name + the webcam h/i/l
 // encodings — useWebcam passes NO name/encodings. `camSender()` backs the mid-publish device switch.
 export interface CamPublisher {
-  publishCam(track: MediaStreamTrack): Promise<{ trackName: string }>;
+  publishCam(track: MediaStreamTrack): Promise<{ trackName: string; previewId?: string }>;
   unpublish(trackNames: string[]): Promise<void>;
   camSender(): RTCRtpSender | null;
 }
@@ -26,6 +26,7 @@ export interface WebcamDeps {
   wsFor(serverId: string): WsSend;
   activeServerId(): string | null;
   cameraDeviceId(): string | undefined;
+  preview?(serverId: string, previewId: string, track: MediaStreamTrack): StreamPreviewPublication;
 }
 
 // Self-preview state (§App-D webcam tile): the live LOCAL webcam mirrored for the sharer's own tile.
@@ -63,6 +64,7 @@ export class WebcamController {
   private video: MediaStreamTrack | null = null;
   private stream: MediaStream | null = null;
   private trackName: string | null = null;
+  private preview: StreamPreviewPublication | null = null;
   private starting = false;
   private stopping = false;
 
@@ -84,7 +86,7 @@ export class WebcamController {
       const publisher = this.deps.publisher();
       if (publisher === null) throw new Error("no publish session");
       const track = await this.deps.getCam(this.deps.cameraDeviceId());
-      let name: { trackName: string };
+      let name: { trackName: string; previewId?: string };
       try {
         name = await publisher.publishCam(track);
       } catch (err) {
@@ -96,6 +98,9 @@ export class WebcamController {
       this.video = track;
       this.stream = wrapStream(track);
       this.trackName = name.trackName;
+      if (name.previewId !== undefined) {
+        this.preview = this.deps.preview?.(serverId, name.previewId, track) ?? null;
+      }
       // OS/browser "stop" or a device disappearing ends the capture track → stop the webcam (once).
       track.addEventListener("ended", () => void this.stop(), { once: true });
       useWebcamStore
@@ -106,9 +111,6 @@ export class WebcamController {
       this.deps
         .wsFor(serverId)
         .send({ t: "stream.start", kind: "webcam", trackName: name.trackName, preset: "720p30" });
-      // Refresh auto-resume (voiceSession.ts): mark the cam live so a reload restarts it. No-op
-      // when no voice session blob exists (unit-test fakes join without one).
-      updateVoiceSession({ camOn: true });
     } finally {
       this.starting = false;
     }
@@ -119,6 +121,8 @@ export class WebcamController {
     if (trackName === null || this.stopping) return;
     this.stopping = true;
     const serverId = this.serverId;
+    this.preview?.stop();
+    this.preview = null;
     try {
       if (serverId !== null) this.deps.wsFor(serverId).send({ t: "stream.stop", trackName });
       await this.deps.publisher()?.unpublish([trackName]);
@@ -130,9 +134,6 @@ export class WebcamController {
       this.serverId = null;
       this.stopping = false;
       useWebcamStore.getState().set({ active: false, trackName: null, stream: null });
-      // Covers the explicit toggle AND the track "ended" path (device unplugged) — a reload after
-      // either must not restart the cam. No-op after voice leave (blob already cleared).
-      updateVoiceSession({ camOn: false });
     }
   }
 
@@ -149,6 +150,7 @@ export class WebcamController {
     await sender.replaceTrack(next);
     this.video = next;
     this.stream = wrapStream(next);
+    this.preview?.replaceTrack(next);
     useWebcamStore.getState().set({ active: true, trackName: this.trackName, stream: this.stream });
   }
 }
@@ -162,6 +164,7 @@ function defaultDeps(): WebcamDeps {
     // the same seam useScreenShare reads.
     activeServerId: () => useMediaStore.getState().inVoiceServerId,
     cameraDeviceId: () => useSettingsStore.getState().deviceSettings.cameraDeviceId,
+    preview: startStreamPreview,
   };
 }
 

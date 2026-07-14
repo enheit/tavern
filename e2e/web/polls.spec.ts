@@ -24,22 +24,33 @@ test.describe("point polls", () => {
     await expect(creator.page.getByTestId("poll-rail")).toContainText("Which team wins?");
     await expect(predictor.page.getByTestId("poll-rail")).toContainText("Which team wins?");
 
-    await predictor.page.getByRole("button", { name: "Place bid" }).click();
-    await predictor.page.getByRole("button", { name: "Red", exact: false }).click();
-    await predictor.page.getByTestId("poll-bid-amount").fill("30");
+    await predictor.page
+      .getByTestId("poll-rail")
+      .getByRole("radio", { name: "Red", exact: false })
+      .click();
+    const predictorAmount = predictor.page.getByTestId("poll-bid-amount");
+    await expect(predictorAmount).toBeFocused();
+    await predictorAmount.fill("30");
     await predictor.page.getByTestId("poll-bid-submit").click();
     await expect(predictor.page.getByTestId("points-balance")).toHaveText("70");
 
-    await creator.page.getByRole("button", { name: "Manage" }).click();
-    await creator.page.getByRole("button", { name: "Blue", exact: false }).click();
-    await creator.page.getByTestId("poll-bid-amount").fill("20");
+    await creator.page
+      .getByTestId("poll-rail")
+      .getByRole("radio", { name: "Blue", exact: false })
+      .click();
+    const creatorAmount = creator.page.getByTestId("poll-bid-amount");
+    await expect(creatorAmount).toBeFocused();
+    await creatorAmount.fill("20");
     await creator.page.getByTestId("poll-bid-submit").click();
     await expect(creator.page.getByTestId("points-balance")).toHaveText("80");
 
-    await creator.page.getByRole("button", { name: "Manage" }).click();
+    await creator.page.getByTestId(/^poll-settings-/).click();
     await creator.page.getByRole("button", { name: "Close bidding now" }).click();
-    await creator.page.getByRole("button", { name: "Manage" }).click();
-    await creator.page.getByRole("button", { name: "Red", exact: false }).click();
+    await creator.page.getByTestId(/^poll-settings-/).click();
+    await creator.page
+      .getByTestId(/^poll-dialog-/)
+      .getByRole("button", { name: "Red", exact: false })
+      .click();
     await creator.page.getByTestId("poll-resolve-submit").click();
 
     await expect(predictor.page.getByTestId("poll-rail")).toContainText("You won 20 points");

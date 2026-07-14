@@ -14,6 +14,7 @@ export const ERROR_CODES = [
   "not_in_voice",
   "not_implemented",
   "voice_elsewhere",
+  "voice_client_update_required",
   "share_cap",
   "cost_cap",
   "pull_denied",
@@ -39,6 +40,10 @@ export const ERROR_CODES = [
   "poll_limit",
   "already_bid",
   "insufficient_points",
+  "market_sold",
+  "market_item_changed",
+  "market_item_frozen",
+  "market_icon_not_owned",
   "correction_expired",
   "correction_used",
 ] as const;

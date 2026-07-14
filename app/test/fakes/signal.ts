@@ -1,4 +1,9 @@
-import type { RtcTracksResponse } from "@tavern/shared";
+import type {
+  PresetId,
+  RtcTracksResponse,
+  ScreenRid,
+  ScreenSimulcastProfile,
+} from "@tavern/shared";
 import type { SfuSignal } from "@/media/sfuSignal";
 import { EventLog } from "./log";
 
@@ -9,15 +14,22 @@ export class FakeSignal implements SfuSignal {
   readonly published: {
     sessionId: string;
     offer: RTCSessionDescriptionInit;
-    tracks: Array<{ mid: string; trackName: string }>;
+    tracks: Array<{
+      mid: string;
+      trackName: string;
+      preset?: PresetId;
+      simulcastProfile?: ScreenSimulcastProfile;
+    }>;
   }[] = [];
   readonly pulled: {
     sessionId: string;
-    tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>;
+    tracks: Array<{ trackName: string; preferredRid?: ScreenRid }>;
   }[] = [];
   readonly renegotiated: RTCSessionDescriptionInit[] = [];
-  readonly layerUpdates: { mid: string; rid: "h" | "l" }[] = [];
+  readonly layerUpdates: { mid: string; rid: ScreenRid }[] = [];
   readonly closedTracks: { mids: string[]; offer?: RTCSessionDescriptionInit }[] = [];
+  readonly confirmedPublications: string[] = [];
+  readonly abortedPublications: string[] = [];
   private sessionCounter = 0;
 
   publishResponse: RtcTracksResponse = {
@@ -30,6 +42,11 @@ export class FakeSignal implements SfuSignal {
     requiresImmediateRenegotiation: true,
     tracks: [],
     sessionDescription: { type: "offer", sdp: "sfu-offer" },
+  };
+
+  closeResponse: RtcTracksResponse = {
+    requiresImmediateRenegotiation: false,
+    tracks: [],
   };
 
   iceServers: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
@@ -49,17 +66,49 @@ export class FakeSignal implements SfuSignal {
     _serverId: string,
     sessionId: string,
     offer: RTCSessionDescriptionInit,
-    tracks: Array<{ mid: string; trackName: string }>,
+    tracks: Array<{
+      mid: string;
+      trackName: string;
+      preset?: PresetId;
+      simulcastProfile?: ScreenSimulcastProfile;
+    }>,
   ): Promise<RtcTracksResponse> {
     this.log.record("publishTracks");
     this.published.push({ sessionId, offer, tracks });
-    return Promise.resolve(this.publishResponse);
+    return Promise.resolve(
+      this.publishResponse.tracks.length === 0
+        ? {
+            ...this.publishResponse,
+            tracks: tracks.map((track) => ({ trackName: track.trackName, mid: track.mid })),
+          }
+        : this.publishResponse,
+    );
+  }
+
+  confirmPublishedTracks(
+    _serverId: string,
+    _sessionId: string,
+    publicationId: string,
+  ): Promise<void> {
+    this.log.record("confirmPublishedTracks");
+    this.confirmedPublications.push(publicationId);
+    return Promise.resolve();
+  }
+
+  abortPublishedTracks(
+    _serverId: string,
+    _sessionId: string,
+    publicationId: string,
+  ): Promise<void> {
+    this.log.record("abortPublishedTracks");
+    this.abortedPublications.push(publicationId);
+    return Promise.resolve();
   }
 
   pullTracks(
     _serverId: string,
     sessionId: string,
-    tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>,
+    tracks: Array<{ trackName: string; preferredRid?: ScreenRid }>,
   ): Promise<RtcTracksResponse> {
     this.log.record("pullTracks");
     this.pulled.push({ sessionId, tracks });
@@ -81,7 +130,7 @@ export class FakeSignal implements SfuSignal {
     _sessionId: string,
     mid: string,
     _trackName: string,
-    preferredRid: "h" | "l",
+    preferredRid: ScreenRid,
   ): Promise<void> {
     this.log.record("updateLayer");
     this.layerUpdates.push({ mid, rid: preferredRid });
@@ -93,10 +142,10 @@ export class FakeSignal implements SfuSignal {
     _sessionId: string,
     mids: string[],
     offer?: RTCSessionDescriptionInit,
-  ): Promise<void> {
+  ): Promise<RtcTracksResponse> {
     this.log.record("closeTracks");
     this.closedTracks.push(offer ? { mids, offer } : { mids });
-    return Promise.resolve();
+    return Promise.resolve(this.closeResponse);
   }
 
   getIceServers(): Promise<RTCIceServer[]> {

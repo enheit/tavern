@@ -23,8 +23,8 @@ function elapsedSeconds(startMs: number, endMs: number): number {
 // Accumulates server-authoritative watch/stream seconds (FR-40). All timing is explicit (`at`/`now`
 // passed in — no internal clock, for testability). Open intervals live in KV; the accumulated totals
 // live in the `stat_stream_seconds` / `stat_watch_seconds` SQLite tables (S3.1 migration, no schema
-// change). Every accumulation re-baselines the open interval to `now`, so a running interval survives
-// any number of alarm flushes plus its final stop with no double-count.
+// change). Running intervals are projected into snapshots without banking them, so storage writes are
+// limited to semantic start/stop events.
 export class StatsModule {
   constructor(private readonly ctx: DurableObjectState) {}
 
@@ -132,15 +132,22 @@ export class StatsModule {
     return Object.keys(open.streams).length > 0 || Object.keys(open.watches).length > 0;
   }
 
-  // Server-authoritative stats snapshot (FR-40). `perUser` is the union of the member cache, the
-  // message senders, and the stream-seconds rows; `watchPairs` is every accumulated (viewer→streamer)
-  // pair. Synchronous — the totals live in SQLite (sync), open intervals are not read here.
-  snapshot(messageCounts: Map<string, number>, members: Member[]): StatsResponse {
+  // Server-authoritative stats snapshot (FR-40). Persisted totals are projected together with open
+  // intervals, so the UI stays live without an alarm writing every active row once per minute.
+  async snapshot(
+    messageCounts: Map<string, number>,
+    members: Member[],
+    now: number,
+  ): Promise<StatsResponse> {
+    const open = await this.readOpen();
     const streamSeconds = new Map<string, number>();
     for (const row of this.sql
       .exec<Record<string, SqlStorageValue>>(`SELECT user_id, seconds FROM stat_stream_seconds`)
       .toArray()) {
       streamSeconds.set(String(row["user_id"]), Number(row["seconds"]));
+    }
+    for (const [userId, startedAt] of Object.entries(open.streams)) {
+      streamSeconds.set(userId, (streamSeconds.get(userId) ?? 0) + elapsedSeconds(startedAt, now));
     }
     const userIds = new Set<string>();
     for (const member of members) userIds.add(member.userId);
@@ -151,16 +158,34 @@ export class StatsModule {
       messages: messageCounts.get(userId) ?? 0,
       streamSeconds: streamSeconds.get(userId) ?? 0,
     }));
-    const watchPairs = this.sql
+    const watchSeconds = new Map<
+      string,
+      { viewerId: string; streamerId: string; seconds: number }
+    >();
+    for (const row of this.sql
       .exec<Record<string, SqlStorageValue>>(
         `SELECT viewer_id, streamer_id, seconds FROM stat_watch_seconds`,
       )
-      .toArray()
-      .map((row) => ({
-        viewerId: String(row["viewer_id"]),
-        streamerId: String(row["streamer_id"]),
+      .toArray()) {
+      const viewerId = String(row["viewer_id"]);
+      const streamerId = String(row["streamer_id"]);
+      watchSeconds.set(watchKey(viewerId, streamerId), {
+        viewerId,
+        streamerId,
         seconds: Number(row["seconds"]),
-      }));
+      });
+    }
+    for (const [key, startedAt] of Object.entries(open.watches)) {
+      const [viewerId, streamerId] = key.split(":");
+      if (viewerId === undefined || streamerId === undefined) continue;
+      const current = watchSeconds.get(key);
+      watchSeconds.set(key, {
+        viewerId,
+        streamerId,
+        seconds: (current?.seconds ?? 0) + elapsedSeconds(startedAt, now),
+      });
+    }
+    const watchPairs = [...watchSeconds.values()];
     // Validate the DO→wire boundary (§9.8 / A9) before it leaves the DO as an HTTP body.
     return StatsResponse.parse({ perUser, watchPairs });
   }

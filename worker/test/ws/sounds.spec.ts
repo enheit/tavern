@@ -12,6 +12,9 @@ type RoomStub = DurableObjectStub<import("../../src/do/ServerRoom").ServerRoom>;
 type NewSound = {
   id: string;
   name: string;
+  emoji: string;
+  gain: number;
+  sourceFileName: string;
   uploaderId: string;
   durationMs: number;
   trimStartMs: number;
@@ -53,6 +56,9 @@ function newSound(uploaderId: string): NewSound {
   return {
     id: crypto.randomUUID(),
     name: "clip",
+    emoji: "🔊",
+    gain: 1,
+    sourceFileName: "clip.mp3",
     uploaderId,
     durationMs: 1000,
     trimStartMs: 0,

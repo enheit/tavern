@@ -3,10 +3,13 @@ import { StatsResponse } from "@tavern/shared";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { MarketIcon } from "@/features/market/MarketIcon";
 import { apiClient } from "@/lib/apiClient";
 import { formatHoursMinutes } from "@/lib/time";
 import { m } from "@/paraglide/messages.js";
 import { useSessionStore } from "@/stores/session";
+import { useSettingsStore } from "@/stores/settings";
 
 function ProfileAvatar({ member }: { member: Member }) {
   const [failed, setFailed] = useState(false);
@@ -42,6 +45,7 @@ export function UserProfileDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const selfUserId = useSessionStore((state) => state.profile?.userId);
+  const locale = useSettingsStore((state) => state.locale);
   const query = useQuery({
     queryKey: ["stats", serverId],
     queryFn: () => apiClient.get(`/api/servers/${serverId}/stats`, StatsResponse),
@@ -60,10 +64,42 @@ export function UserProfileDialog({
           <ProfileAvatar member={member} />
           <DialogTitle
             data-testid="user-profile-name"
-            className="pt-1 text-sm"
+            className="flex items-center gap-1.5 pt-1 text-sm"
             style={{ color: member.color }}
           >
             {member.displayName}
+            {member.marketIcon === undefined ? null : (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger
+                    aria-label={m.market_receipt({
+                      date: new Intl.DateTimeFormat(locale, {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      }).format(member.marketIcon.purchasedAt),
+                      points: member.marketIcon.pricePaid.toLocaleString(locale),
+                    })}
+                    className="inline-flex"
+                  >
+                    <MarketIcon
+                      serverId={serverId}
+                      itemId={member.marketIcon.itemId}
+                      name={member.marketIcon.name}
+                      testId="user-profile-market-icon"
+                    />
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {m.market_receipt({
+                      date: new Intl.DateTimeFormat(locale, {
+                        dateStyle: "medium",
+                        timeStyle: "short",
+                      }).format(member.marketIcon.purchasedAt),
+                      points: member.marketIcon.pricePaid.toLocaleString(locale),
+                    })}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            )}
           </DialogTitle>
           <p data-testid="user-profile-username" className="text-xs text-muted-foreground">
             @{member.username}

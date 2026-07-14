@@ -156,6 +156,7 @@ describe("FR-27 captureScreen", () => {
     assertNoKeys(constraints.video, ["min", "exact"]);
     expect(constraints.audio).toBe(true);
     expect(result.video.kind).toBe("video");
+    expect(result.video.contentHint).toBe("motion");
     expect(result.audio).toBeNull();
     expect(result.audioSource).toBeNull();
   });
@@ -177,6 +178,7 @@ describe("FR-27 captureScreen", () => {
     const result = await captureScreen({ sourceId: "screen:0", preset: "480p15", withAudio: true });
     expect(result.audio).toBe(audioTrack);
     expect(result.audioSource).toBe("display");
+    expect(result.video.contentHint).toBe("detail");
   });
 });
 

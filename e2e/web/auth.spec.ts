@@ -40,7 +40,7 @@ test.describe("FR-01 FR-02 auth", () => {
     await registerViaUi(page, uniqueName(), password());
     await expect(page).toHaveURL(/\/join$/);
 
-    // The header user-menu logout button lands in S5.2, so drive logout at the session level: end the
+    // Drive logout at the session level: end the
     // browser session (what useAuth.logout does via sign-out + authTransport.clear — that client wiring
     // is unit-tested) and assert the boot gate then routes to /login on the next navigation.
     await page.context().clearCookies();

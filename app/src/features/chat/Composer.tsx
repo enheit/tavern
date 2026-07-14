@@ -264,6 +264,7 @@ export function Composer({ serverId }: { serverId: string }) {
     <div data-testid="composer" className="relative p-2">
       {autocompleteOpen ? (
         <MentionAutocomplete
+          serverId={serverId}
           suggestions={suggestions}
           activeIndex={activeIndex}
           onPick={pickMention}

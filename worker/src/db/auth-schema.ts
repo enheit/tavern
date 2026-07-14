@@ -19,6 +19,7 @@ export const user = sqliteTable("user", {
   displayName: text("display_name").notNull(),
   color: text("color").default("#e0e0e0").notNull(),
   avatarKey: text("avatar_key"),
+  voiceAvatar: text("voice_avatar"),
 });
 
 export const session = sqliteTable(

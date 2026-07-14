@@ -43,6 +43,51 @@ function internalPost(stub: RoomStub, path: string, body: unknown): Promise<Resp
   });
 }
 
+async function transitionPublication(
+  stub: RoomStub,
+  userId: string,
+  sessionId: string,
+  publicationId: string,
+  op: "publish.accept" | "publish.commit",
+): Promise<void> {
+  const response = await internalPost(stub, "/internal/rtc/authorize", {
+    op,
+    userId,
+    sessionId,
+    publicationId,
+  });
+  expect(await response.json()).toEqual({ ok: true });
+}
+
+async function publishTracks(
+  stub: RoomStub,
+  userId: string,
+  sessionId: string,
+  tracks: unknown[],
+): Promise<string> {
+  const session = await internalPost(stub, "/internal/rtc/authorize", {
+    op: "session.new",
+    userId,
+    sessionId,
+    mediaReadyVersion: 2,
+  });
+  expect(await session.json()).toEqual({ ok: true });
+
+  const reserved = await internalPost(stub, "/internal/rtc/authorize", {
+    op: "publish.reserve",
+    userId,
+    sessionId,
+    tracks,
+  });
+  const reservation = (await reserved.json()) as { ok: boolean; publicationId?: string };
+  expect(reservation.ok).toBe(true);
+  const publicationId = must(reservation.publicationId, "expected publication id");
+
+  await transitionPublication(stub, userId, sessionId, publicationId, "publish.accept");
+  await transitionPublication(stub, userId, sessionId, publicationId, "publish.commit");
+  return publicationId;
+}
+
 async function seed(stub: RoomStub, member: MemberInit, meta: RoomMeta): Promise<void> {
   const res = await internalPost(stub, "/internal/member-join", { member, serverMeta: meta });
   expect(res.status).toBe(204);
@@ -94,10 +139,23 @@ class Collector {
   }
 }
 
-async function connect(stub: RoomStub, userId: string): Promise<{ ws: WebSocket; col: Collector }> {
+async function connect(
+  stub: RoomStub,
+  userId: string,
+  media: { resume?: boolean; reset?: boolean } = {},
+): Promise<{ ws: WebSocket; col: Collector }> {
   const ws = await openSocket(stub, await mintTicket(stub, userId));
   const col = new Collector(ws);
-  ws.send(HELLO);
+  ws.send(
+    media.resume === true || media.reset === true
+      ? JSON.stringify({
+          t: "hello",
+          proto: 1,
+          mediaResume: media.resume === true,
+          mediaReset: media.reset === true,
+        })
+      : HELLO,
+  );
   await col.waitForType("hello.ok");
   return { ws, col };
 }
@@ -129,16 +187,10 @@ describe("FR-19 publish broadcast", () => {
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
 
     // A joins voice (so the publish authorize passes the in-voice gate), then publishes a webcam.
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colB.waitForType("voice.state");
 
-    const res = await internalPost(stub, "/internal/rtc/authorize", {
-      op: "publish",
-      userId: a.userId,
-      sessionId: "sess-a",
-      tracks: [{ trackName: `cam:${a.userId}`, kind: "cam" }],
-    });
-    expect(await res.json()).toEqual({ ok: true });
+    await publishTracks(stub, a.userId, "sess-a", [{ trackName: `cam:${a.userId}`, kind: "cam" }]);
 
     const added = await colB.waitForType("stream.added");
     expect(added.stream).toMatchObject({
@@ -150,6 +202,63 @@ describe("FR-19 publish broadcast", () => {
 
     wsA.close();
     wsB.close();
+  });
+});
+
+describe("stream preview version broadcast", () => {
+  it("updates idle peers and appears in a late joiner's hello snapshot", async () => {
+    const stub = freshRoom();
+    const publisher = memberInit();
+    const peer = memberInit();
+    const late = memberInit();
+    const meta = metaFor(publisher.userId);
+    await seed(stub, publisher, meta);
+    await seed(stub, peer, meta);
+    await seed(stub, late, meta);
+    const { ws: publisherWs, col: publisherCol } = await connect(stub, publisher.userId);
+    const { ws: peerWs, col: peerCol } = await connect(stub, peer.userId);
+    publisherWs.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
+    await publisherCol.waitForType("voice.state");
+    const trackName = `cam:${publisher.userId}`;
+    const previewId = await publishTracks(stub, publisher.userId, "preview-session", [
+      { trackName, kind: "cam" },
+    ]);
+    await peerCol.waitForType("stream.added");
+
+    expect(
+      await (
+        await internalPost(stub, "/internal/stream-preview/authorize", {
+          userId: publisher.userId,
+          previewId,
+        })
+      ).json(),
+    ).toMatchObject({ ok: true, trackName });
+    expect(
+      await (
+        await internalPost(stub, "/internal/stream-preview/commit", {
+          userId: publisher.userId,
+          previewId,
+          version: "r2-version-1",
+        })
+      ).json(),
+    ).toEqual({ ok: true });
+
+    const updated = await peerCol.waitForType("stream.updated");
+    expect(updated).toMatchObject({
+      trackName,
+      preset: "720p30",
+      preview: { id: previewId, version: "r2-version-1" },
+    });
+    const { ws: lateWs, col: lateCol } = await connect(stub, late.userId);
+    const hello = await lateCol.waitForType("hello.ok");
+    expect(hello.streams.find((stream) => stream.trackName === trackName)?.preview).toEqual({
+      id: previewId,
+      version: "r2-version-1",
+    });
+
+    publisherWs.close();
+    peerWs.close();
+    lateWs.close();
   });
 });
 
@@ -168,15 +277,9 @@ describe("late-join / reconnect stream discovery (hello.ok snapshot)", () => {
 
     // A connects, joins voice, and publishes — all BEFORE B ever connects.
     const { ws: wsA, col: colA } = await connect(stub, a.userId);
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colA.waitForType("voice.state");
-    const pub = await internalPost(stub, "/internal/rtc/authorize", {
-      op: "publish",
-      userId: a.userId,
-      sessionId: "sess-a",
-      tracks: [{ trackName: `cam:${a.userId}`, kind: "cam" }],
-    });
-    expect(await pub.json()).toEqual({ ok: true });
+    await publishTracks(stub, a.userId, "sess-a", [{ trackName: `cam:${a.userId}`, kind: "cam" }]);
 
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
     const helloB = await colB.waitForType("hello.ok");
@@ -201,18 +304,12 @@ describe("late-join / reconnect stream discovery (hello.ok snapshot)", () => {
     await seed(stub, b, meta);
 
     const { ws: wsA, col: colA } = await connect(stub, a.userId);
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colA.waitForType("voice.state");
-    const pub = await internalPost(stub, "/internal/rtc/authorize", {
-      op: "publish",
-      userId: a.userId,
-      sessionId: "sess-a",
-      tracks: [
-        { trackName: `screen:${a.userId}:1`, kind: "screen" },
-        { trackName: `screenAudio:${a.userId}:1`, kind: "screenAudio" },
-      ],
-    });
-    expect(await pub.json()).toEqual({ ok: true });
+    await publishTracks(stub, a.userId, "sess-a", [
+      { trackName: `screen:${a.userId}:1`, kind: "screen" },
+      { trackName: `screenAudio:${a.userId}:1`, kind: "screenAudio" },
+    ]);
 
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
     const helloB = await colB.waitForType("hello.ok");
@@ -239,14 +336,9 @@ describe("late-join / reconnect stream discovery (hello.ok snapshot)", () => {
     await seed(stub, b, meta);
 
     const { ws: wsA, col: colA } = await connect(stub, a.userId);
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colA.waitForType("voice.state");
-    await internalPost(stub, "/internal/rtc/authorize", {
-      op: "publish",
-      userId: a.userId,
-      sessionId: "sess-a",
-      tracks: [{ trackName: `cam:${a.userId}`, kind: "cam" }],
-    });
+    await publishTracks(stub, a.userId, "sess-a", [{ trackName: `cam:${a.userId}`, kind: "cam" }]);
 
     const { ws: wsB } = await connect(stub, b.userId);
     wsB.close(); // B refreshes the page.
@@ -261,6 +353,34 @@ describe("late-join / reconnect stream discovery (hello.ok snapshot)", () => {
     wsA.close();
     wsB2.close();
   });
+
+  it("an owning-tab refresh removes webcam and screen before hello.ok despite socket overlap", async () => {
+    const stub = freshRoom();
+    const a = memberInit();
+    await seed(stub, a, metaFor(a.userId));
+
+    const first = await connect(stub, a.userId);
+    first.ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
+    await first.col.waitForType("voice.state");
+    await publishTracks(stub, a.userId, "sess-a", [
+      { trackName: `cam:${a.userId}`, kind: "cam" },
+      { trackName: `screen:${a.userId}:1`, kind: "screen", preset: "1080p30" },
+    ]);
+
+    // During a real refresh the replacement page can finish its hello before the browser reports the
+    // old socket closed. The explicit owner reset must win over that overlap.
+    const refreshed = await connect(stub, a.userId, { reset: true });
+    const hello = await refreshed.col.waitForType("hello.ok");
+    expect(hello.voice.members.some((member) => member.userId === a.userId)).toBe(false);
+    expect(hello.streams.filter((stream) => stream.userId === a.userId)).toEqual([]);
+    const disconnects = await runInDurableObject(stub, (_instance, state) =>
+      state.storage.get<Record<string, number>>("voice:disconnects"),
+    );
+    expect(disconnects).toBeUndefined();
+
+    first.ws.close();
+    refreshed.ws.close();
+  });
 });
 
 describe("§8 G5 cost.warning delivery", () => {
@@ -271,7 +391,7 @@ describe("§8 G5 cost.warning delivery", () => {
     const { ws, col } = await connect(stub, a.userId);
 
     // A is in voice with a LIVE socket → the alarm keeps them (not a ghost) and runs the meter tick.
-    ws.send(JSON.stringify({ t: "voice.join" }));
+    ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await col.waitForType("voice.state");
 
     // Seed this month's egress at the warn threshold; the next alarm tick crosses it.

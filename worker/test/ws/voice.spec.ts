@@ -131,10 +131,14 @@ class Collector {
 }
 
 // Opens a socket, completes the hello handshake, returns the socket + its collector.
-async function connect(stub: RoomStub, userId: string): Promise<{ ws: WebSocket; col: Collector }> {
+async function connect(
+  stub: RoomStub,
+  userId: string,
+  mediaResume = false,
+): Promise<{ ws: WebSocket; col: Collector }> {
   const ws = await openSocket(stub, await mintTicket(stub, userId));
   const col = new Collector(ws);
-  ws.send(HELLO);
+  ws.send(mediaResume ? JSON.stringify({ t: "hello", proto: 1, mediaResume: true }) : HELLO);
   await col.waitForType("hello.ok");
   return { ws, col };
 }
@@ -161,7 +165,7 @@ describe("FR-18 voice join/leave", () => {
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
 
     // A joins → both A's and B's sockets receive voice.state with A + a live session timer (FR-24).
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     const afterAJoin = await colB.waitForVoice((v) => v.members.length === 1);
     expect(afterAJoin.members.map((m) => m.userId)).toEqual([a.userId]);
     expect(afterAJoin.sessionStartedAt).not.toBeNull();
@@ -169,7 +173,7 @@ describe("FR-18 voice join/leave", () => {
     expect(aSelfView.members[0]?.userId).toBe(a.userId);
 
     // B joins → snapshot has both members.
-    wsB.send(JSON.stringify({ t: "voice.join" }));
+    wsB.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     const afterBJoin = await colB.waitForVoice((v) => v.members.length === 2);
     expect(afterBJoin.members.map((m) => m.userId).toSorted()).toEqual(
       [a.userId, b.userId].toSorted(),
@@ -177,7 +181,7 @@ describe("FR-18 voice join/leave", () => {
 
     // Double-join from B → still exactly 2, B not duplicated (idempotent no-op).
     const beforeCount = colB.voiceStates().length;
-    wsB.send(JSON.stringify({ t: "voice.join" }));
+    wsB.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await vi.waitFor(() => {
       if (colB.voiceStates().length <= beforeCount) throw new Error("awaiting no-op snapshot");
     });
@@ -189,7 +193,7 @@ describe("FR-18 voice join/leave", () => {
     wsB.close();
   });
 
-  it("A's last socket hard-closes → snapshot without A + a voice.leave activity", async () => {
+  it("A's last socket gets a reconnect lease, then expiry emits voice.leave", async () => {
     const stub = freshRoom();
     const a = memberInit();
     const b = memberInit();
@@ -200,17 +204,81 @@ describe("FR-18 voice join/leave", () => {
     const { ws: wsA } = await connect(stub, a.userId);
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
 
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colB.waitForVoice((v) => v.members.some((m) => m.userId === a.userId));
 
-    // A's socket drops → B sees A removed from voice + a synthesized voice.leave activity entry.
+    // A's socket drops, but voice survives until the durable reconnect lease expires.
     wsA.close();
+    await vi.waitFor(async () => {
+      const deadline = await runInDurableObject(stub, async (_instance, state) => {
+        const leases = await state.storage.get<Record<string, number>>("voice:disconnects");
+        return leases?.[a.userId];
+      });
+      expect(deadline).toBeTypeOf("number");
+    });
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put("voice:disconnects", { [a.userId]: 0 });
+    });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
     const gone = await colB.waitForVoice((v) => v.members.length === 0);
     expect(gone.members).toEqual([]);
     const leave = await colB.waitForActivity("voice.leave");
     expect(leave.entry.userId).toBe(a.userId);
 
     wsB.close();
+  });
+
+  it("a media-resuming hello cancels the reconnect lease without leaving voice", async () => {
+    const stub = freshRoom();
+    const member = memberInit();
+    await seed(stub, member, metaFor(member.userId));
+    const first = await connect(stub, member.userId);
+    first.ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
+    await first.col.waitForVoice((voice) =>
+      voice.members.some((item) => item.userId === member.userId),
+    );
+
+    first.ws.close();
+    await vi.waitFor(async () => {
+      const lease = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.get<Record<string, number>>("voice:disconnects"),
+      );
+      expect(lease?.[member.userId]).toBeTypeOf("number");
+    });
+
+    const resumed = await connect(stub, member.userId, true);
+    const hello = await resumed.col.waitForType("hello.ok");
+    expect(hello.voice.members.some((item) => item.userId === member.userId)).toBe(true);
+    await vi.waitFor(async () => {
+      const lease = await runInDurableObject(stub, (_instance, state) =>
+        state.storage.get<Record<string, number>>("voice:disconnects"),
+      );
+      expect(lease).toBeUndefined();
+    });
+
+    resumed.ws.send(JSON.stringify({ t: "voice.leave" }));
+    await resumed.col.waitForVoice((voice) => voice.members.length === 0);
+    resumed.ws.close();
+  });
+
+  it("a second non-media tab does not end another tab's live voice session", async () => {
+    const stub = freshRoom();
+    const member = memberInit();
+    await seed(stub, member, metaFor(member.userId));
+    const mediaTab = await connect(stub, member.userId);
+    mediaTab.ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
+    await mediaTab.col.waitForVoice((voice) =>
+      voice.members.some((item) => item.userId === member.userId),
+    );
+
+    const passiveTab = await connect(stub, member.userId);
+    const hello = await passiveTab.col.waitForType("hello.ok");
+    expect(hello.voice.members.some((item) => item.userId === member.userId)).toBe(true);
+
+    mediaTab.ws.send(JSON.stringify({ t: "voice.leave" }));
+    await passiveTab.col.waitForVoice((voice) => voice.members.length === 0);
+    mediaTab.ws.close();
+    passiveTab.ws.close();
   });
 });
 
@@ -221,7 +289,7 @@ describe("FR-24 session timer & auto-close", () => {
     await seed(stub, a, metaFor(a.userId));
     const { ws, col } = await connect(stub, a.userId);
 
-    ws.send(JSON.stringify({ t: "voice.join" }));
+    ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await col.waitForVoice((v) => v.members.length === 1 && v.sessionStartedAt !== null);
 
     await runInDurableObject(stub, async (_instance, state) => {
@@ -243,7 +311,7 @@ describe("FR-24 session timer & auto-close", () => {
     await seed(stub, a, metaFor(a.userId));
     const { ws, col } = await connect(stub, a.userId);
 
-    ws.send(JSON.stringify({ t: "voice.join" }));
+    ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await col.waitForVoice((v) => v.members.length === 1);
     ws.send(JSON.stringify({ t: "voice.leave" }));
     await col.waitForVoice((v) => v.members.length === 0);
@@ -275,6 +343,7 @@ describe("FR-24 session timer & auto-close", () => {
         `INSERT INTO voice_sessions (channel_id, started_at) VALUES ('main', ?)`,
         base,
       );
+      await state.storage.put("voice:disconnects", { [ghostId]: 0 });
       // A real ghost still has the join-armed alarm pending; model that so the alarm fires. Future
       // time so ONLY the explicit runDurableObjectAlarm fires it (a past time races the scheduler).
       await state.storage.setAlarm(Date.now() + 3_600_000);
@@ -314,6 +383,7 @@ describe("FR-24 session timer & auto-close", () => {
       );
       // The ghost was mid-stream when it crashed → an open stream interval to be swept exactly once.
       await state.storage.put("stats:open", { streams: { [ghostId]: base }, watches: {} });
+      await state.storage.put("voice:disconnects", { [ghostId]: 0 });
       // A real ghost still has the join-armed alarm pending; model that so the alarm fires. Future
       // time so ONLY the explicit runDurableObjectAlarm fires it (a past time races the scheduler).
       await state.storage.setAlarm(Date.now() + 3_600_000);
@@ -370,7 +440,7 @@ describe("FR-26 flags relay", () => {
     const { ws: wsA } = await connect(stub, a.userId);
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
 
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colB.waitForVoice((v) => v.members.some((m) => m.userId === a.userId));
 
     wsA.send(JSON.stringify({ t: "voice.state", muted: true, deafened: false }));
@@ -477,12 +547,31 @@ describe("FR-40 stat accumulators", () => {
 // broadcasts the fresh voice.state (peers re-pull on a seq change; the first publish's broadcast is
 // the "mic is now pullable" signal that the join-time snapshot raced).
 describe("TASK-1 micSeq", () => {
-  function publishMic(stub: RoomStub, userId: string, sessionId: string): Promise<Response> {
-    return internalPost(stub, "/internal/rtc/authorize", {
-      op: "publish",
+  async function publishMic(stub: RoomStub, userId: string, sessionId: string): Promise<Response> {
+    await internalPost(stub, "/internal/rtc/authorize", {
+      op: "session.new",
+      userId,
+      sessionId,
+      mediaReadyVersion: 2,
+    });
+    const reserve = await internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish.reserve",
       userId,
       sessionId,
       tracks: [{ trackName: `mic:${userId}`, kind: "mic" }],
+    });
+    const { publicationId } = (await reserve.json()) as { publicationId: string };
+    await internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish.accept",
+      userId,
+      sessionId,
+      publicationId,
+    });
+    return internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish.commit",
+      userId,
+      sessionId,
+      publicationId,
     });
   }
 
@@ -495,7 +584,7 @@ describe("TASK-1 micSeq", () => {
     await seed(stub, b, meta);
     const { ws: wsA } = await connect(stub, a.userId);
     const { ws: wsB, col: colB } = await connect(stub, b.userId);
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colB.waitForVoice((v) => v.members.some((m) => m.userId === a.userId));
 
     // First mic registration → micSeq 1 lands on the peer's socket.
@@ -524,20 +613,39 @@ describe("TASK-1 micSeq", () => {
     const meta = metaFor(a.userId);
     await seed(stub, a, meta);
     const { ws: wsA, col: colA } = await connect(stub, a.userId);
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     await colA.waitForVoice((v) => v.members.length === 1);
 
-    const res = await internalPost(stub, "/internal/rtc/authorize", {
-      op: "publish",
+    await internalPost(stub, "/internal/rtc/authorize", {
+      op: "session.new",
+      userId: a.userId,
+      sessionId: "sfu-a-1",
+      mediaReadyVersion: 2,
+    });
+    const reserved = await internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish.reserve",
       userId: a.userId,
       sessionId: "sfu-a-1",
       tracks: [{ trackName: `screen:${a.userId}:1`, kind: "screen", preset: "1080p30" }],
+    });
+    const { publicationId } = (await reserved.json()) as { publicationId: string };
+    await internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish.accept",
+      userId: a.userId,
+      sessionId: "sfu-a-1",
+      publicationId,
+    });
+    const res = await internalPost(stub, "/internal/rtc/authorize", {
+      op: "publish.commit",
+      userId: a.userId,
+      sessionId: "sfu-a-1",
+      publicationId,
     });
     expect(res.status).toBe(200);
     // stream.added arrives; the voice snapshot (if any) must not carry a micSeq for A.
     await colA.waitForType("stream.added");
     const latest = colA.voiceStates().at(-1);
-    expect(latest?.voice.members.find((m) => m.userId === a.userId)?.micSeq).toBeUndefined();
+    expect(latest?.voice.members.find((m) => m.userId === a.userId)?.micSeq).toBe(0);
 
     wsA.close();
   });

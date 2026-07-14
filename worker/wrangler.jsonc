@@ -13,6 +13,16 @@
     }
   ],
   "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "tavern-media" }],
+  // Animation is unsupported by Wrangler's low-fidelity offline Images implementation. Keep only
+  // this binding remote in local development so GIF/WebP behavior matches the production service;
+  // D1, R2, and Durable Objects remain local.
+  "images": { "binding": "IMAGES", "remote": true },
+  "analytics_engine_datasets": [
+    { "binding": "QOE_ANALYTICS", "dataset": "tavern_qoe_v1" }
+  ],
+  "ratelimits": [
+    { "name": "QOE_RATE_LIMITER", "namespace_id": "74001", "simple": { "limit": 3, "period": 60 } }
+  ],
   "durable_objects": {
     "bindings": [{ "name": "SERVER_ROOM", "class_name": "ServerRoom" }]
   },
@@ -24,9 +34,14 @@
     "run_worker_first": ["/api/*"]
   },
   "observability": { "enabled": true },
+  "triggers": { "crons": ["*/15 * * * *", "17 2 * * *"] },
   // Static better-auth base URL (see worker/src/auth.ts) — per environment; local dev overrides
   // via .dev.vars (8787), the nightly realtime worker via its generated .dev.vars (8788).
-  "vars": { "BETTER_AUTH_URL": "https://tavern.roman-mahotskyi.workers.dev" },
+  "vars": {
+    "BETTER_AUTH_URL": "https://tavern.roman-mahotskyi.workers.dev",
+    "SFU_ADAPTATION_MODE": "adaptive",
+    "CLOUDFLARE_ACCOUNT_ID": "fd8a5f7a38f28a2cd11e79e85985c7d4"
+  },
   // NEVER DEPLOY these env vars (dev/test flags only — .dev.vars / .dev.vars.e2e / CI step env):
   //   TAVERN_SFU_MOCK        — swaps the Realtime client for the fixture mock (§10 hermeticity)
   //   TAVERN_TEST            — unlocks the /api/__test/set-egress seeding route (S12.3, §8 e2e)
@@ -39,6 +54,9 @@
       "REALTIME_APP_SECRET",
       "TURN_KEY_ID",
       "TURN_KEY_API_TOKEN",
+      // Read-only account analytics token used only in scheduled Worker refreshes. Keep it out of
+      // vars and all client responses; a missing token leaves remote metrics explicitly unavailable.
+      "CLOUDFLARE_ANALYTICS_TOKEN",
       // GIF picker's Klipy key. Declared here so `wrangler dev` loads it from .dev.vars (wrangler only
       // surfaces .dev.vars keys named in this list). Prod: `wrangler secret put KLIPY_API_KEY`. The
       // /api/gifs/search proxy still degrades to a mock set if it is ever absent (route-level guard).
@@ -47,10 +65,15 @@
   },
   // S7.4 e2e environment (`wrangler dev --env e2e`, picks `.dev.vars.e2e` → TAVERN_SFU_MOCK=1 +
   // TAVERN_TEST_FAST_ALARM=1). Named environments do NOT inherit bindings, so the d1_databases,
-  // r2_buckets, durable_objects, and assets entries are re-declared here verbatim from the top level.
+  // r2_buckets, Analytics Engine, rate limit, durable_objects, and assets entries are re-declared
+  // here verbatim from the top level.
   "env": {
     "e2e": {
-      "vars": { "BETTER_AUTH_URL": "http://localhost:8787" },
+      "vars": {
+        "BETTER_AUTH_URL": "http://localhost:8787",
+        "SFU_ADAPTATION_MODE": "adaptive",
+        "CLOUDFLARE_ACCOUNT_ID": "fd8a5f7a38f28a2cd11e79e85985c7d4"
+      },
       "d1_databases": [
         {
           "binding": "DB",
@@ -60,6 +83,13 @@
         }
       ],
       "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "tavern-media" }],
+      "images": { "binding": "IMAGES", "remote": true },
+      "analytics_engine_datasets": [
+        { "binding": "QOE_ANALYTICS", "dataset": "tavern_qoe_v1" }
+      ],
+      "ratelimits": [
+        { "name": "QOE_RATE_LIMITER", "namespace_id": "74001", "simple": { "limit": 3, "period": 60 } }
+      ],
       "durable_objects": {
         "bindings": [{ "name": "SERVER_ROOM", "class_name": "ServerRoom" }]
       },

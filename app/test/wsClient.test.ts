@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LIMITS } from "@tavern/shared";
 import { closeAllRooms, connectRoom, WsNotOpenError } from "@/lib/wsClient";
+import { MEDIA_OWNER_STORAGE_KEY } from "@/lib/mediaOwnership";
 import { roomStore, resetRoomStores } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
 
@@ -86,6 +87,7 @@ function helloOk(memberIds: string[]): unknown {
         dailyCap: null,
       },
     },
+    polls: [],
   };
 }
 
@@ -117,7 +119,9 @@ beforeEach(() => {
   vi.spyOn(Math, "random").mockReturnValue(0.5); // deterministic jitter factor = 1.0
   useServersStore.setState({ servers: [], activeServerId: null, connState: {} });
   resetRoomStores();
+  sessionStorage.clear();
   serverId = uid();
+  useServersStore.setState({ activeServerId: serverId });
 });
 
 afterEach(() => {
@@ -129,6 +133,30 @@ afterEach(() => {
 });
 
 describe("§6.2 wsClient", () => {
+  it("marks an owning replacement document as a media reset until hello.ok", async () => {
+    const replacementPerformance = Object.create(performance);
+    Object.defineProperty(replacementPerformance, "getEntriesByType", {
+      value: vi.fn(() => [{ type: "reload" }]),
+    });
+    vi.stubGlobal("performance", replacementPerformance);
+    sessionStorage.setItem(MEDIA_OWNER_STORAGE_KEY, serverId);
+
+    const conn = connectRoom(serverId);
+    await flush();
+    const ws = lastWs();
+    ws.emit("open", {});
+    expect(JSON.parse(ws.sent[0] ?? "null")).toMatchObject({
+      t: "hello",
+      mediaResume: false,
+      mediaReset: true,
+    });
+    expect(sessionStorage.getItem(MEDIA_OWNER_STORAGE_KEY)).toBe(serverId);
+
+    ws.emit("message", { data: JSON.stringify(helloOk([])) });
+    expect(sessionStorage.getItem(MEDIA_OWNER_STORAGE_KEY)).toBeNull();
+    conn.close();
+  });
+
   it("backs off 1s,2s,4s… capped at 30s, refetching a ticket each attempt", async () => {
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const conn = connectRoom(serverId);

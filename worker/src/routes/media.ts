@@ -54,7 +54,8 @@ mediaRoute.get("/*", requireAuth, async (c) => {
 
   if (!key.startsWith("avatars/")) {
     const segments = key.split("/");
-    const scoped = segments[0] === "sounds" || segments[0] === "recordings";
+    const scoped =
+      segments[0] === "sounds" || segments[0] === "recordings" || segments[0] === "market-icons";
     const serverId = segments[1];
     if (!scoped || serverId === undefined || serverId === "") {
       return c.json({ error: "not_member" satisfies ErrorCode }, 403);

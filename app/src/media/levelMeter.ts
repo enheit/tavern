@@ -1,9 +1,21 @@
 import { LIMITS } from "@tavern/shared";
 
-interface SpeakingOpts {
+export interface SpeakingOpts {
   thresholdRms?: number;
   sustainMs?: number;
   hangoverMs?: number;
+  // High-frequency 0..1 speech energy for animation. Unlike the latched speaking callback, this is
+  // emitted every analyser frame and must feed a non-React consumer such as voiceLevelBus.
+  onLevel?: (level: number) => void;
+}
+
+// Map the analyser's linear RMS onto a useful visual range. Values below the microphone noise floor
+// remain closed; five times the speaking threshold is considered fully open. The speaking detector
+// itself continues to compare the original RMS so animation tuning cannot change voice semantics.
+export function normalizeVoiceLevel(rms: number, speakingThreshold: number): number {
+  const floor = speakingThreshold * 0.35;
+  const ceiling = speakingThreshold * 5;
+  return Math.min(1, Math.max(0, (rms - floor) / (ceiling - floor)));
 }
 
 // FR-23 speaking detection: rAF-polled RMS on an AnalyserNode. Speaking latches on once RMS stays
@@ -27,6 +39,7 @@ export function watchSpeaking(
     let sum = 0;
     for (const v of buf) sum += v * v;
     const rms = Math.sqrt(sum / buf.length);
+    opts.onLevel?.(normalizeVoiceLevel(rms, threshold));
     const now = performance.now();
     if (rms >= threshold) {
       belowSince = null;
@@ -51,5 +64,6 @@ export function watchSpeaking(
   let rafId = requestAnimationFrame(tick);
   return () => {
     cancelAnimationFrame(rafId);
+    opts.onLevel?.(0);
   };
 }

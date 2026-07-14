@@ -1,16 +1,22 @@
-import type { StreamInfo } from "@tavern/shared";
 import { computeLayout } from "@tavern/shared";
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useStore } from "zustand";
+import type { VoiceLoungeMember } from "@/features/home/VoiceLounge";
 import { captureStreamScreenshot } from "@/features/screenshots/captureScreenshot";
+import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
 import { StreamTile } from "./StreamTile";
-import { isWatchingTrack } from "./useWatch";
+import { isWatchingTrack, setWatchTheaterFullscreen } from "./useWatch";
 import { useWebcamStore } from "./useWebcam";
+import { VoiceAvatarTile } from "./VoiceAvatarTile";
+
+type CanvasParticipant =
+  | { kind: "stream"; key: string; trackName: string }
+  | { kind: "voice"; key: string; member: VoiceLoungeMember };
 
 // The `f` fullscreen shortcut must not fire while the user is typing (chat box, inputs) — ignore the key
 // when it originates from an editable element.
@@ -39,11 +45,17 @@ function isInteractiveTarget(el: EventTarget | null): boolean {
 // active; the canvas itself owns only stream presentation.
 export function Canvas({ serverId, active }: { serverId: string; active: boolean }) {
   const store = roomStore(serverId);
+  const members = useStore(store, (s) => s.members);
+  const voice = useStore(store, (s) => s.voice);
   const streams = useStore(store, (s) => s.streams);
   const focusedTrackName = useStore(store, (s) => s.focusedTrackName);
   const setFocused = useStore(store, (s) => s.setFocusedTrackName);
+  const focusedVoiceUserId = useStore(store, (s) => s.focusedVoiceUserId);
+  const setFocusedVoice = useStore(store, (s) => s.setFocusedVoiceUserId);
   const fullscreenTrackName = useStore(store, (s) => s.fullscreenTrackName);
   const setFullscreen = useStore(store, (s) => s.setFullscreenTrackName);
+  const fullscreenVoiceUserId = useStore(store, (s) => s.fullscreenVoiceUserId);
+  const setFullscreenVoice = useStore(store, (s) => s.setFullscreenVoiceUserId);
   const selfUserId = useSessionStore((s) => s.profile?.userId);
 
   // FR-29 self-preview: the live LOCAL stream is rendered directly on the sharer's own tile (never
@@ -78,26 +90,49 @@ export function Canvas({ serverId, active }: { serverId: string; active: boolean
     return () => ro.disconnect();
   }, []);
 
+  // Theater mode changes delivery policy, not watch ownership: the selected stream stays high while
+  // the other explicitly watched streams enter saver delivery. Leaving theater restores them on the
+  // same PullSessions. The validity check prevents a removed stream name from hiding every survivor.
+  const theaterTrackName =
+    fullscreenTrackName !== null &&
+    streams.some((stream) => stream.trackName === fullscreenTrackName)
+      ? fullscreenTrackName
+      : null;
+  useEffect(() => {
+    setWatchTheaterFullscreen(serverId, theaterTrackName);
+    return () => setWatchTheaterFullscreen(serverId, null);
+  }, [serverId, theaterTrackName]);
+
   // Keyboard: Esc + `f`.
   // - Esc exits, fullscreen first (theater) then focus (FR-33) — a single Esc collapses the top layer
   //   without also dropping focus underneath.
-  // - `f` toggles theater fullscreen. Already fullscreen → back to the previous layout. Otherwise pick a
-  //   target: the focused stream if one is focused ("already selected → increase to fullscreen"), else the
-  //   first stream in trackName order that is actually showing video (self or a watched remote) — "if 2
-  //   equal, choose the first". Ignored while typing / with modifiers / on auto-repeat.
+  // - `f` toggles theater fullscreen. Already fullscreen → back to the previous layout. A focused voice
+  //   avatar remains the target; otherwise use the focused stream, or the first stream in trackName order
+  //   that is actually showing video (self or a watched remote). Ignored while typing, with modifiers,
+  //   and on auto-repeat.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") {
-        if (fullscreenTrackName !== null) setFullscreen(null);
+        if (fullscreenVoiceUserId !== null) setFullscreenVoice(null);
+        else if (fullscreenTrackName !== null) setFullscreen(null);
         else if (focusedTrackName !== null) setFocused(null);
+        else if (focusedVoiceUserId !== null) setFocusedVoice(null);
         return;
       }
       if (!active) return;
       if (e.key === "f" || e.key === "F") {
         if (e.repeat || e.ctrlKey || e.metaKey || e.altKey || isTypingTarget(e.target)) return;
         e.preventDefault();
+        if (fullscreenVoiceUserId !== null) {
+          setFullscreenVoice(null);
+          return;
+        }
         if (fullscreenTrackName !== null) {
           setFullscreen(null);
+          return;
+        }
+        if (focusedVoiceUserId !== null) {
+          setFullscreenVoice(focusedVoiceUserId);
           return;
         }
         const ordered = [...streams].toSorted((a, b) => a.trackName.localeCompare(b.trackName));
@@ -141,117 +176,238 @@ export function Canvas({ serverId, active }: { serverId: string; active: boolean
   }, [
     streams,
     focusedTrackName,
+    focusedVoiceUserId,
     fullscreenTrackName,
+    fullscreenVoiceUserId,
     selfUserId,
     serverId,
     setFullscreen,
     setFocused,
+    setFocusedVoice,
+    setFullscreenVoice,
     active,
   ]);
 
   const sorted = [...streams].toSorted((a, b) => a.trackName.localeCompare(b.trackName));
+  const webcamUserIds = new Set(
+    sorted.filter((stream) => stream.kind === "webcam").map((stream) => stream.userId),
+  );
+  const voiceMembers = voice.members
+    .flatMap((voiceMember) => {
+      if (webcamUserIds.has(voiceMember.userId)) return [];
+      const profile = members.find((member) => member.userId === voiceMember.userId);
+      return profile === undefined ? [] : [{ profile, voice: voiceMember }];
+    })
+    .toSorted((a, b) =>
+      a.profile.displayName.localeCompare(b.profile.displayName, undefined, {
+        sensitivity: "base",
+      }),
+    );
+  const participants: CanvasParticipant[] = [
+    ...sorted.map((stream) => ({
+      kind: "stream" as const,
+      key: `stream:${stream.trackName}`,
+      trackName: stream.trackName,
+    })),
+    ...voiceMembers.map((member) => ({
+      kind: "voice" as const,
+      key: `voice:${member.profile.userId}`,
+      member,
+    })),
+  ];
   const focusedStream =
     focusedTrackName === null ? undefined : sorted.find((s) => s.trackName === focusedTrackName);
-  const fullscreenStream =
-    fullscreenTrackName === null
+  const focusedVoiceMember =
+    focusedVoiceUserId === null
       ? undefined
-      : sorted.find((s) => s.trackName === fullscreenTrackName);
+      : voiceMembers.find((member) => member.profile.userId === focusedVoiceUserId);
+  const fullscreenStream =
+    theaterTrackName === null ? undefined : sorted.find((s) => s.trackName === theaterTrackName);
+  const fullscreenVoiceMember =
+    fullscreenVoiceUserId === null
+      ? undefined
+      : voiceMembers.find((member) => member.profile.userId === fullscreenVoiceUserId);
+  const focusedParticipantKey =
+    focusedVoiceMember !== undefined
+      ? `voice:${focusedVoiceMember.profile.userId}`
+      : focusedStream === undefined
+        ? null
+        : `stream:${focusedStream.trackName}`;
 
-  // Theater fullscreen: a fixed overlay above the whole shell (header/sidebar/chat hidden), rendering
-  // the single stream window-filling. It escapes the grid because `position: fixed` is viewport-anchored
-  // and no ancestor sets a containing block. The grid/focus tree unmounts, but the tile remounts here in
-  // the SAME commit, so the watch pull survives the reparent via the trackName-keyed WatchController
-  // registry (no re-pull) — exactly as focus mode reparents. WS + room store stay live underneath, so
-  // chat and toast notifications keep flowing. Exit via the tile's minimize button, Esc, or clicking the
-  // stream itself — a click drops back to focus (main) mode, seeding focus so the main↔fullscreen click
-  // cycle also works when fullscreen was entered via `f` straight from the grid.
-  if (fullscreenStream) {
-    return (
-      <div data-testid="canvas" data-fullscreen="true" className="fixed inset-0 z-50 bg-black">
-        <StreamTile
-          stream={fullscreenStream}
-          fullscreen
-          selfStream={selfStreamFor(fullscreenStream.trackName)}
-          onToggleFocus={() => {
-            setFocused(fullscreenStream.trackName);
-            setFullscreen(null);
-          }}
-          onToggleFullscreen={() => setFullscreen(null)}
-        />
-      </div>
-    );
-  }
-
-  const others =
-    focusedStream === undefined
-      ? []
-      : sorted.filter((stream) => stream.trackName !== focusedStream.trackName);
-  const cells: StreamInfo[][] = [];
-  if (sorted.length > 0 && focusedStream === undefined) {
-    const { rows } = computeLayout(sorted.length, size.w, size.h);
-    let index = 0;
-    for (const count of rows) {
-      cells.push(sorted.slice(index, index + count));
-      index += count;
+  // A tile owns live browser media state, so changing its visual placement must never change its
+  // React identity. Every stream is therefore rendered exactly once as a stable, keyed child of the
+  // canvas. Grid/focus/theater modes only change CSS placement. In particular, the local <video>
+  // element survives the full-size cycle instead of remounting with an empty srcObject and replaying
+  // preview/placeholder UI while the browser starts it again.
+  const fullscreen = fullscreenStream !== undefined || fullscreenVoiceMember !== undefined;
+  const fullscreenParticipantKey =
+    fullscreenVoiceMember !== undefined
+      ? `voice:${fullscreenVoiceMember.profile.userId}`
+      : fullscreenStream === undefined
+        ? null
+        : `stream:${fullscreenStream.trackName}`;
+  const focused = !fullscreen && focusedParticipantKey !== null;
+  const gridRows =
+    !fullscreen && !focused ? computeLayout(participants.length, size.w, size.h).rows : [];
+  const placements = new Map<string, { row: number; columns: number }>();
+  let placementIndex = 0;
+  for (const [row, columns] of gridRows.entries()) {
+    for (const participant of participants.slice(placementIndex, placementIndex + columns)) {
+      placements.set(participant.key, { row, columns });
     }
+    placementIndex += columns;
   }
+  const thumbnails = focused
+    ? participants.filter((participant) => participant.key !== focusedParticipantKey)
+    : [];
+  const thumbnailIndex = new Map(
+    thumbnails.map((participant, index) => [participant.key, index] as const),
+  );
+  const canvasStyle: CSSProperties = fullscreen
+    ? { gridTemplateColumns: "minmax(0, 1fr)", gridTemplateRows: "minmax(0, 1fr)" }
+    : focused
+      ? {
+          gridTemplateColumns: `repeat(${Math.max(1, thumbnails.length)}, minmax(0, 1fr))`,
+          gridTemplateRows: thumbnails.length === 0 ? "minmax(0, 1fr)" : "minmax(0, 1fr) 9rem",
+        }
+      : {
+          gridTemplateColumns: "repeat(12, minmax(0, 1fr))",
+          gridTemplateRows: `repeat(${Math.max(1, gridRows.length)}, minmax(0, 1fr))`,
+        };
+  const layoutFor = (
+    participantKey: string,
+    isFullscreenTarget: boolean,
+  ): {
+    focusedTile: boolean;
+    placement: { row: number; columns: number } | undefined;
+    slotStyle: CSSProperties;
+  } => {
+    const placement = placements.get(participantKey);
+    const focusedTile = focused && participantKey === focusedParticipantKey;
+    if (fullscreen) {
+      return {
+        focusedTile,
+        placement,
+        slotStyle: isFullscreenTarget
+          ? { gridColumn: "1", gridRow: "1" }
+          : { display: "none", gridColumn: "1", gridRow: "1" },
+      };
+    }
+    if (focused) {
+      return {
+        focusedTile,
+        placement,
+        slotStyle: focusedTile
+          ? { gridColumn: "1 / -1", gridRow: "1" }
+          : { gridColumn: (thumbnailIndex.get(participantKey) ?? 0) + 1, gridRow: "2" },
+      };
+    }
+    const columns = placement?.columns ?? 1;
+    return {
+      focusedTile,
+      placement,
+      slotStyle: {
+        gridColumn: `span ${12 / columns} / span ${12 / columns}`,
+        gridRow: (placement?.row ?? 0) + 1,
+      },
+    };
+  };
 
   return (
     <div
       ref={ref}
       data-testid="canvas"
-      data-focused={focusedStream === undefined ? undefined : "true"}
-      className="flex h-full min-h-0 w-full flex-col gap-2 p-2"
+      data-focused={focused ? "true" : undefined}
+      data-fullscreen={fullscreen ? "true" : undefined}
+      className={cn(
+        "grid h-full min-h-0 w-full gap-2 p-2",
+        fullscreen && "fixed inset-0 z-50 bg-black p-0",
+      )}
+      style={canvasStyle}
     >
-      {focusedStream === undefined ? (
-        cells.map((rowStreams, rowIndex) => (
+      {focused && thumbnails.length > 0 && (
+        <div
+          data-testid="focus-strip"
+          aria-hidden={true}
+          className="pointer-events-none min-h-0 min-w-0"
+          style={{ gridColumn: "1 / -1", gridRow: 2 }}
+        />
+      )}
+      {sorted.map((stream) => {
+        const participantKey = `stream:${stream.trackName}`;
+        const isFullscreen = fullscreen && stream.trackName === fullscreenStream?.trackName;
+        const { focusedTile, placement, slotStyle } = layoutFor(participantKey, isFullscreen);
+        return (
           <div
-            key={rowStreams[0]?.trackName ?? String(rowIndex)}
-            data-testid={`canvas-row-${rowIndex}`}
-            className="grid min-h-0 flex-1 gap-2"
-            style={{ gridTemplateColumns: `repeat(${rowStreams.length}, minmax(0, 1fr))` }}
+            key={stream.trackName}
+            data-testid={`stream-slot-${stream.trackName}`}
+            data-layout-row={!fullscreen && !focused ? placement?.row : undefined}
+            data-focused-tile={focusedTile ? "true" : undefined}
+            data-focus-thumbnail={focused && !focusedTile ? "true" : undefined}
+            data-fullscreen-tile={isFullscreen ? "true" : undefined}
+            className={cn(
+              "min-h-0 min-w-0",
+              focused && !focusedTile && "aspect-video h-full max-w-full justify-self-center",
+            )}
+            style={slotStyle}
           >
-            {rowStreams.map((stream) => (
-              <StreamTile
-                key={stream.trackName}
-                stream={stream}
-                selfStream={selfStreamFor(stream.trackName)}
-                onToggleFocus={() =>
-                  setFocused(focusedTrackName === stream.trackName ? null : stream.trackName)
-                }
-                onToggleFullscreen={() => setFullscreen(stream.trackName)}
-              />
-            ))}
-          </div>
-        ))
-      ) : (
-        <>
-          {/* Main stream fills the space above the strip. Clicking it escalates to theater fullscreen
-              (same as `f` / the tile's maximize button); clicking the fullscreen stream drops back here. */}
-          <div className="min-h-0 min-w-0 flex-1">
             <StreamTile
-              stream={focusedStream}
-              selfStream={selfStreamFor(focusedStream.trackName)}
-              onToggleFocus={() => setFullscreen(focusedStream.trackName)}
-              onToggleFullscreen={() => setFullscreen(focusedStream.trackName)}
+              stream={stream}
+              selfStream={selfStreamFor(stream.trackName)}
+              fullscreen={isFullscreen}
+              compact={focused && !focusedTile}
+              onToggleFocus={() => {
+                if (isFullscreen) {
+                  setFocused(stream.trackName);
+                  setFullscreen(null);
+                } else if (focused) {
+                  if (focusedTile) setFullscreen(stream.trackName);
+                  else setFocused(stream.trackName);
+                } else {
+                  setFocused(focusedTrackName === stream.trackName ? null : stream.trackName);
+                }
+              }}
+              onToggleFullscreen={() => setFullscreen(isFullscreen ? null : stream.trackName)}
             />
           </div>
-          {others.length > 0 ? (
-            <div data-testid="focus-strip" className="flex h-28 shrink-0 gap-2 overflow-x-auto">
-              {others.map((stream) => (
-                <div key={stream.trackName} className="aspect-video h-full shrink-0">
-                  <StreamTile
-                    stream={stream}
-                    selfStream={selfStreamFor(stream.trackName)}
-                    onToggleFocus={() => setFocused(stream.trackName)}
-                    onToggleFullscreen={() => setFullscreen(stream.trackName)}
-                  />
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </>
-      )}
+        );
+      })}
+      {voiceMembers.map((member) => {
+        const participantKey = `voice:${member.profile.userId}`;
+        const isFullscreen = fullscreenParticipantKey === participantKey;
+        const { focusedTile, placement, slotStyle } = layoutFor(participantKey, isFullscreen);
+        return (
+          <div
+            key={member.profile.userId}
+            data-testid={`voice-avatar-slot-${member.profile.userId}`}
+            data-layout-row={!fullscreen && !focused ? placement?.row : undefined}
+            data-focused-tile={focusedTile ? "true" : undefined}
+            data-focus-thumbnail={focused && !focusedTile ? "true" : undefined}
+            data-fullscreen-tile={isFullscreen ? "true" : undefined}
+            className={cn(
+              "min-h-0 min-w-0",
+              focused && !focusedTile && "aspect-video h-full max-w-full justify-self-center",
+            )}
+            style={slotStyle}
+          >
+            <VoiceAvatarTile
+              active={active && (!fullscreen || isFullscreen)}
+              compact={focused && !focusedTile}
+              member={member}
+              serverId={serverId}
+              onFocus={() => {
+                if (isFullscreen) {
+                  setFullscreenVoice(null);
+                } else if (focused && focusedTile) {
+                  setFullscreenVoice(member.profile.userId);
+                } else {
+                  setFocusedVoice(member.profile.userId);
+                }
+              }}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

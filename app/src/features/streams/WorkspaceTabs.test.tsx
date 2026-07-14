@@ -7,8 +7,8 @@ import { m } from "@/paraglide/messages.js";
 import { WorkspaceTabs } from "./WorkspaceTabs";
 
 vi.mock("@/features/home/TavernHome", () => ({
-  TavernHome: ({ onOpenSoundboard }: { onOpenSoundboard: () => void }) => (
-    <div data-testid="tavern-home">
+  TavernHome: ({ onOpenSoundboard, active }: { onOpenSoundboard: () => void; active: boolean }) => (
+    <div data-testid="tavern-home" data-active={String(active)}>
       <button type="button" onClick={onOpenSoundboard}>
         {m.home_open_soundboard()}
       </button>
@@ -26,6 +26,9 @@ vi.mock("@/features/soundboard/SoundboardPanel", () => ({
 }));
 vi.mock("@/features/polls/PollsTab", () => ({
   PollsTab: () => <div data-testid="polls-panel" />,
+}));
+vi.mock("@/features/market/MarketTab", () => ({
+  MarketTab: () => <div data-testid="market-panel" />,
 }));
 vi.mock("./Canvas", () => ({
   Canvas: ({ active }: { active: boolean }) => (
@@ -58,6 +61,7 @@ describe("workspace navigation", () => {
       "Screenshots",
       "Soundboard",
       "Polls",
+      "Market",
     ]);
     expect(screen.getByTestId("workspace-tab-dashboard").getAttribute("aria-selected")).toBe(
       "true",
@@ -76,15 +80,61 @@ describe("workspace navigation", () => {
       "Screenshots",
       "Soundboard",
       "Polls",
+      "Market",
     ]);
     expect(screen.getByTestId("workspace-tab-stream").getAttribute("aria-selected")).toBe("true");
     expect(screen.getByTestId("canvas").dataset.active).toBe("true");
+    expect(screen.getByTestId("tavern-home").dataset.active).toBe("false");
     expect(screen.getByTestId("tavern-home")).toBeDefined();
 
     fireEvent.click(screen.getByTestId("workspace-tab-recordings"));
     expect(screen.getByTestId("recordings-panel")).toBeDefined();
     expect(screen.getByTestId("canvas").dataset.active).toBe("false");
+    expect(screen.getByTestId("tavern-home").dataset.active).toBe("false");
     expect(screen.getByTestId("tavern-home")).toBeDefined();
+  });
+
+  it("shows the Stream workspace for voice participants even when nobody is sharing video", () => {
+    roomStore(SERVER_ID).setState({
+      voice: {
+        members: [{ userId: "voice-user", muted: false, deafened: false }],
+        sessionStartedAt: 1,
+      },
+    });
+    render(<WorkspaceTabs serverId={SERVER_ID} />);
+
+    expect(screen.getByTestId("workspace-tab-stream").getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByTestId("canvas").dataset.active).toBe("true");
+  });
+
+  it("treats a webcam as the same visual participant while a screen share remains additional", () => {
+    roomStore(SERVER_ID).setState({
+      voice: {
+        members: [{ userId: "voice-user", muted: false, deafened: false }],
+        sessionStartedAt: 1,
+      },
+    });
+    render(<WorkspaceTabs serverId={SERVER_ID} />);
+    fireEvent.click(screen.getByTestId("workspace-tab-recordings"));
+
+    act(() =>
+      roomStore(SERVER_ID).setState({
+        streams: [{ ...stream("cam:voice-user"), kind: "webcam", userId: "voice-user" }],
+      }),
+    );
+    expect(screen.getByTestId("workspace-tab-recordings").getAttribute("aria-selected")).toBe(
+      "true",
+    );
+
+    act(() =>
+      roomStore(SERVER_ID).setState({
+        streams: [
+          { ...stream("cam:voice-user"), kind: "webcam", userId: "voice-user" },
+          { ...stream("screen:voice-user:1"), userId: "voice-user" },
+        ],
+      }),
+    );
+    expect(screen.getByTestId("workspace-tab-stream").getAttribute("aria-selected")).toBe("true");
   });
 
   it("opens new streams automatically and only falls back from the Stream view", () => {

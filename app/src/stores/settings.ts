@@ -104,7 +104,7 @@ function persistDeviceSettings(settings: DeviceSettingsV1): void {
 }
 
 function defaultVolumes(): VolumesV1 {
-  return { v: 1, users: {}, streams: {}, soundboard: 1, mutedUsers: [] };
+  return { v: 1, users: {}, streams: {}, soundboard: 1, soundboardMuted: false, mutedUsers: [] };
 }
 
 function loadVolumes(): VolumesV1 {

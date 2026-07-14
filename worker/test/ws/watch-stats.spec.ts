@@ -46,6 +46,22 @@ function internalPost(stub: RoomStub, path: string, body: unknown): Promise<Resp
   });
 }
 
+async function transitionPublication(
+  stub: RoomStub,
+  userId: string,
+  sessionId: string,
+  publicationId: string,
+  op: "publish.accept" | "publish.commit",
+): Promise<void> {
+  const response = await internalPost(stub, "/internal/rtc/authorize", {
+    op,
+    userId,
+    sessionId,
+    publicationId,
+  });
+  expect(await response.json()).toEqual({ ok: true });
+}
+
 async function seed(stub: RoomStub, member: MemberInit, meta: RoomMeta): Promise<void> {
   const res = await internalPost(stub, "/internal/member-join", { member, serverMeta: meta });
   expect(res.status).toBe(204);
@@ -87,13 +103,27 @@ function metaFor(admin: string): RoomMeta {
 
 async function seedScreen(stub: RoomStub, publisher: MemberInit): Promise<string> {
   const track = `screen:${publisher.userId}:1`;
-  const res = await internalPost(stub, "/internal/rtc/authorize", {
-    op: "publish",
+  const sessionId = `sess-${publisher.userId}`;
+  const session = await internalPost(stub, "/internal/rtc/authorize", {
+    op: "session.new",
     userId: publisher.userId,
-    sessionId: `sess-${publisher.userId}`,
+    sessionId,
+    mediaReadyVersion: 2,
+  });
+  expect(await session.json()).toEqual({ ok: true });
+
+  const reserved = await internalPost(stub, "/internal/rtc/authorize", {
+    op: "publish.reserve",
+    userId: publisher.userId,
+    sessionId,
     tracks: [{ trackName: track, kind: "screen", preset: "720p30" }],
   });
-  expect(await res.json()).toEqual({ ok: true });
+  const reservation = (await reserved.json()) as { ok: boolean; publicationId?: string };
+  expect(reservation.ok).toBe(true);
+  const publicationId = must(reservation.publicationId, "expected publication id");
+
+  await transitionPublication(stub, publisher.userId, sessionId, publicationId, "publish.accept");
+  await transitionPublication(stub, publisher.userId, sessionId, publicationId, "publish.commit");
   return track;
 }
 
@@ -146,8 +176,8 @@ describe("FR-40 watch wiring", () => {
     await seed(stub, b, meta);
     const wsA = await connect(stub, a.userId);
     const wsB = await connect(stub, b.userId);
-    wsA.send(JSON.stringify({ t: "voice.join" }));
-    wsB.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
+    wsB.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     const track = await seedScreen(stub, a);
 
     wsB.send(JSON.stringify({ t: "watch.start", trackName: track }));
@@ -181,7 +211,7 @@ describe("FR-40 watch wiring", () => {
       if (typeof event.data === "string")
         received.push(serverMessageSchema.parse(JSON.parse(event.data)));
     });
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
 
     wsA.send(JSON.stringify({ t: "watch.start", trackName: `screen:${crypto.randomUUID()}:1` }));
     await vi.waitFor(() => {
@@ -203,7 +233,7 @@ describe("FR-40 watch wiring", () => {
       if (typeof event.data === "string")
         received.push(serverMessageSchema.parse(JSON.parse(event.data)));
     });
-    ws.send(JSON.stringify({ t: "voice.join" }));
+    ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     const track = await seedScreen(stub, member);
 
     ws.send(JSON.stringify({ t: "watch.start", trackName: track }));
@@ -226,7 +256,7 @@ describe("FR-40 watch wiring", () => {
     const meta = metaFor(a.userId);
     await seed(stub, a, meta);
     const wsA = await connect(stub, a.userId);
-    wsA.send(JSON.stringify({ t: "voice.join" }));
+    wsA.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
     const track = await seedScreen(stub, a);
 
     wsA.send(

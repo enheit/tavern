@@ -1,6 +1,6 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Trash2Icon } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import type { ErrorCode, Member, Recording } from "@tavern/shared";
 import { ApiErrorBody, RecordingsResponse } from "@tavern/shared";
@@ -20,6 +20,7 @@ import { RecordingPlayer } from "@/features/recordings/RecordingPlayer";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { authTransport } from "@/lib/authTransport";
 import { connectRoom } from "@/lib/wsClient";
+import { useInfiniteScroll } from "@/lib/useInfiniteScroll";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
@@ -75,9 +76,18 @@ export function RecordingsTab({ serverId }: { serverId: string }) {
     (s) => s.servers.find((sv) => sv.id === serverId)?.adminUserId ?? null,
   );
 
-  const query = useQuery({
+  const query = useInfiniteQuery({
     queryKey: recordingsKey(serverId),
-    queryFn: () => apiClient.get(`/api/servers/${serverId}/recordings`, RecordingsResponse),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      apiClient.get(
+        `/api/servers/${serverId}/recordings?offset=${pageParam}&limit=30`,
+        RecordingsResponse,
+      ),
+    getNextPageParam: (lastPage, pages) =>
+      lastPage.hasMore
+        ? pages.reduce((total, page) => total + page.recordings.length, 0)
+        : undefined,
   });
 
   const invalidate = useCallback((): void => {
@@ -93,7 +103,19 @@ export function RecordingsTab({ serverId }: { serverId: string }) {
     onSuccess: invalidate,
   });
 
-  const recordings = (query.data?.recordings ?? []).toSorted((a, b) => b.startedAt - a.startedAt);
+  const recordings = useMemo(
+    () => query.data?.pages.flatMap((page) => page.recordings) ?? [],
+    [query.data],
+  );
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useInfiniteScroll({
+    scrollRef,
+    sentinelRef,
+    hasNextPage: query.hasNextPage,
+    isFetchingNextPage: query.isFetchingNextPage,
+    fetchNextPage: query.fetchNextPage,
+  });
   const canManage = (rec: Recording): boolean =>
     selfId !== null && (rec.startedBy === selfId || selfId === adminUserId);
 
@@ -109,7 +131,11 @@ export function RecordingsTab({ serverId }: { serverId: string }) {
   }
 
   return (
-    <div data-testid="recordings-tab" className="flex h-full min-h-0 flex-col overflow-y-auto">
+    <div
+      ref={scrollRef}
+      data-testid="recordings-tab"
+      className="flex h-full min-h-0 flex-col overflow-y-auto"
+    >
       <ul className="flex flex-col">
         {recordings.map((rec) => (
           <RecordingRow
@@ -123,6 +149,7 @@ export function RecordingsTab({ serverId }: { serverId: string }) {
           />
         ))}
       </ul>
+      <div ref={sentinelRef} data-testid="recordings-sentinel" className="h-px" />
     </div>
   );
 }

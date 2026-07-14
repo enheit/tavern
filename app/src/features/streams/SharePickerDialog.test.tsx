@@ -21,9 +21,16 @@ vi.mock("@/platform/types", () => ({ platform: platformMock }));
 
 import { SharePickerDialog } from "@/features/streams/SharePickerDialog";
 
-function renderPicker(): { onStart: ReturnType<typeof vi.fn> } {
+function renderPicker(initialPreset?: "1080p30-50"): { onStart: ReturnType<typeof vi.fn> } {
   const onStart = vi.fn();
-  render(<SharePickerDialog open onOpenChange={vi.fn()} onStart={onStart} />);
+  render(
+    <SharePickerDialog
+      open
+      onOpenChange={vi.fn()}
+      onStart={onStart}
+      {...(initialPreset === undefined ? {} : { initialPreset })}
+    />,
+  );
   return { onStart };
 }
 
@@ -63,6 +70,18 @@ describe("FR-28 share picker", () => {
     fireEvent.click(trigger);
     await waitFor(() => expect(screen.queryByTestId("preset-option-1080p30")).not.toBeNull());
     expect(document.querySelectorAll('[data-testid^="preset-option-"]')).toHaveLength(12);
+  });
+
+  it("selects the data tier before capture", async () => {
+    platformMock.kind = "web";
+    platformMock.os = "web";
+    const { onStart } = renderPicker("1080p30-50");
+
+    expect((await screen.findByTestId("share-data-tier")).textContent).toContain("50%");
+    fireEvent.click(screen.getByTestId("share-start"));
+    expect(onStart).toHaveBeenCalledWith(
+      expect.objectContaining({ preset: "1080p30-50", sourceId: null }),
+    );
   });
 
   it("desktop always requests audio and does not expose an audio switch", async () => {

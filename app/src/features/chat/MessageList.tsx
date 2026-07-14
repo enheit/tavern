@@ -36,6 +36,7 @@ export function MessageList({ serverId, active = true }: { serverId: string; act
   const self = useSessionStore((s) => s.profile);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const messageContentRef = useRef<HTMLUListElement | null>(null);
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null);
   const atBottomRef = useRef(true);
@@ -132,6 +133,22 @@ export function MessageList({ serverId, active = true }: { serverId: string; act
     return () => observer.disconnect();
   }, [hasNewer, hasOlder, loadNewer, loadOlder]);
 
+  // Attachments reserve their expected dimensions, but their rendered size can still change after
+  // React commits (for example once a GIF decodes or responsive styles clamp it). Follow that change
+  // only when the existing scroll policy says the reader is already at the bottom.
+  useEffect(() => {
+    const root = scrollRef.current;
+    const content = messageContentRef.current;
+    if (!active || root === null || content === null || typeof ResizeObserver === "undefined")
+      return;
+    const observer = new ResizeObserver(() => {
+      if (!atBottomRef.current) return;
+      root.scrollTop = root.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [active]);
+
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
@@ -182,7 +199,7 @@ export function MessageList({ serverId, active = true }: { serverId: string; act
             <Spinner />
           </div>
         ) : null}
-        <ul className="flex flex-col">
+        <ul ref={messageContentRef} className="flex flex-col">
           {messages.map((message) => (
             <MessageRow
               key={message.id}

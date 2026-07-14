@@ -8,18 +8,32 @@ export class FakeRtcSender {
   encodings: RTCRtpEncodingParameters[];
   readonly replaceTrackArgs: (MediaStreamTrack | null)[] = [];
   setParametersCount = 0;
+  degradationPreference: RTCDegradationPreference | undefined;
+  statsReport: Array<Record<string, unknown>> = [];
 
   constructor(track: MediaStreamTrack | null, encodings: RTCRtpEncodingParameters[]) {
     this.track = track;
     this.encodings = encodings;
   }
 
-  getParameters(): { encodings: RTCRtpEncodingParameters[] } {
-    return { encodings: this.encodings };
+  getParameters(): {
+    encodings: RTCRtpEncodingParameters[];
+    degradationPreference?: RTCDegradationPreference;
+  } {
+    return {
+      encodings: this.encodings,
+      ...(this.degradationPreference === undefined
+        ? {}
+        : { degradationPreference: this.degradationPreference }),
+    };
   }
 
-  setParameters(params: { encodings: RTCRtpEncodingParameters[] }): Promise<void> {
+  setParameters(params: {
+    encodings: RTCRtpEncodingParameters[];
+    degradationPreference?: RTCDegradationPreference;
+  }): Promise<void> {
     this.encodings = params.encodings;
+    this.degradationPreference = params.degradationPreference;
     this.setParametersCount += 1;
     return Promise.resolve();
   }
@@ -28,6 +42,15 @@ export class FakeRtcSender {
     this.replaceTrackArgs.push(track);
     this.track = track;
     return Promise.resolve();
+  }
+
+  getStats(): Promise<{ forEach(cb: (stat: Record<string, unknown>) => void): void }> {
+    const entries = this.statsReport;
+    return Promise.resolve({
+      forEach(cb: (stat: Record<string, unknown>) => void): void {
+        for (const stat of entries) cb(stat);
+      },
+    });
   }
 }
 
@@ -105,6 +128,10 @@ export class FakeRtcPeerConnection {
     const set = this.listeners.get(type) ?? new Set();
     set.add(cb);
     this.listeners.set(type, set);
+  }
+
+  removeEventListener(type: string, cb: (ev: unknown) => void): void {
+    this.listeners.get(type)?.delete(cb);
   }
 
   // Minimal RTCStatsReport stand-in: tests push plain stat records; the sessions only use forEach.

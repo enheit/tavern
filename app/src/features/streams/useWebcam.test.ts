@@ -77,10 +77,29 @@ function makeDeps(
 }
 
 beforeEach(() => {
+  sessionStorage.clear();
   useWebcamStore.setState({ active: false, trackName: null, stream: null });
 });
 
 describe("FR-29 webcam publish", () => {
+  it("starts, replaces, and stops the teaser for a confirmed RTC publication", async () => {
+    const { session, port, signal } = await makePublisher();
+    const previewId = "123e4567-e89b-42d3-a456-426614174000";
+    signal.publishResponse = { ...signal.publishResponse, publicationId: previewId };
+    port.last().setConnectionState("connected");
+    const publication = { replaceTrack: vi.fn(), stop: vi.fn() };
+    const preview = vi.fn(() => publication);
+    const { deps, cams } = makeDeps(session, { preview });
+    const controller = new WebcamController(deps);
+
+    await controller.start();
+    expect(preview).toHaveBeenCalledWith("srv", previewId, cams[0]);
+    await controller.switchDevice("cam-2");
+    expect(publication.replaceTrack).toHaveBeenCalledWith(cams[1]);
+    await controller.stop();
+    expect(publication.stop).toHaveBeenCalledTimes(1);
+  });
+
   it("start calls publishSession.publishCam and publishes cam:{userId}", async () => {
     const { session, port } = await makePublisher();
     const publishCam = vi.spyOn(session, "publishCam");
@@ -92,10 +111,14 @@ describe("FR-29 webcam publish", () => {
     // §App-D webcam: fixed h = 1000 kbps @ 30fps; l = 150 kbps @ 15fps scaled 720→180.
     expect(port.last().transceivers[0]?.init.sendEncodings).toEqual([
       { rid: "h", maxBitrate: 1_000_000, maxFramerate: 30 },
+      { rid: "i", maxBitrate: 350_000, maxFramerate: 30, scaleResolutionDownBy: 2 },
       { rid: "l", maxBitrate: 150_000, maxFramerate: 15, scaleResolutionDownBy: 720 / 180 },
     ]);
     expect(useWebcamStore.getState().active).toBe(true);
     expect(useWebcamStore.getState().trackName).toBe(`cam:${USER}`);
+    // Live capture is scoped to this document. Starting a webcam must not save any state that a
+    // reload could turn back into an active control or a second capture request.
+    expect(sessionStorage.getItem("tavern.voiceSession.v1")).toBeNull();
   });
 
   it("stream.start payload is kind webcam with preset 720p30", async () => {

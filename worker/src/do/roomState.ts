@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { DEFAULT_SCREEN_PRESET, LIMITS, PresetIdSchema, serverMessageSchema } from "@tavern/shared";
+import {
+  DEFAULT_SCREEN_PRESET,
+  LIMITS,
+  PresetIdSchema,
+  SCREEN_RIDS,
+  SCREEN_SIMULCAST_PROFILE,
+  WatchDeliverySchema,
+  serverMessageSchema,
+} from "@tavern/shared";
 import type {
   CostStatus,
   ErrorCode,
@@ -10,18 +18,28 @@ import type {
   Poll,
   PresetId,
   RecordingState,
+  ScreenRid,
+  ScreenSimulcastProfile,
   ServerMessage,
   StreamInfo,
+  StreamPreview,
   UserProfile,
   VoiceMember,
   VoiceState,
+  WatchDelivery,
 } from "@tavern/shared";
+import { voiceAvatarToStorage } from "../lib/voiceAvatar";
 import type { ChatReadState } from "./chat";
 import { rowToMember } from "./sql";
 import type { CostMeter } from "./costMeter";
 
 // The per-connection identity stashed on the hibernatable WebSocket (ids only, 16 KB cap — §A2/§6.2).
-export type ConnAttachment = { userId: string; connId: string; hello: boolean };
+export type ConnAttachment = {
+  userId: string;
+  connId: string;
+  hello: boolean;
+  mediaResume?: boolean;
+};
 
 // The server metadata snapshot the DO serves in `hello.ok` — written in full by /internal/member-join,
 // `nickname` patched by /internal/server-updated. Persisted in ctx.storage KV under `meta`.
@@ -39,27 +57,61 @@ export type RtcKind = z.infer<typeof rtcKindSchema>;
 // builds this from the client body (deriving `kind` from the track-name grammar); the DO is the sole
 // authority on voice membership (G1), the share cap (G4), and pull grants + the egress kill (G5).
 export const rtcAuthorizeReqSchema = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("session.new"), userId: z.string(), sessionId: z.string() }),
   z.object({
-    op: z.literal("publish"),
+    op: z.literal("session.new"),
+    userId: z.string(),
+    sessionId: z.string(),
+    mediaReadyVersion: z.literal(2),
+  }),
+  z.object({
+    op: z.literal("publish.reserve"),
     userId: z.string(),
     sessionId: z.string(),
     tracks: z.array(
-      z.object({ trackName: z.string(), kind: rtcKindSchema, preset: PresetIdSchema.optional() }),
+      z.object({
+        trackName: z.string(),
+        kind: rtcKindSchema,
+        preset: PresetIdSchema.optional(),
+        simulcastProfile: z.literal(SCREEN_SIMULCAST_PROFILE).optional(),
+      }),
     ),
+  }),
+  z.object({
+    op: z.literal("publish.accept"),
+    userId: z.string(),
+    sessionId: z.string(),
+    publicationId: z.uuid(),
+  }),
+  z.object({
+    op: z.literal("publish.commit"),
+    userId: z.string(),
+    sessionId: z.string(),
+    publicationId: z.uuid(),
+  }),
+  z.object({
+    op: z.literal("publish.abort"),
+    userId: z.string(),
+    sessionId: z.string(),
+    publicationId: z.uuid(),
   }),
   z.object({
     op: z.literal("pull"),
     userId: z.string(),
     tracks: z.array(
-      z.object({ trackName: z.string(), preferredRid: z.enum(["h", "l"]).optional() }),
+      z.object({ trackName: z.string(), preferredRid: z.enum(SCREEN_RIDS).optional() }),
     ),
   }),
   z.object({
     op: z.literal("layer"),
     userId: z.string(),
     trackName: z.string(),
-    preferredRid: z.enum(["h", "l"]),
+    preferredRid: z.enum(SCREEN_RIDS),
+  }),
+  z.object({
+    op: z.literal("delivery"),
+    userId: z.string(),
+    trackName: z.string(),
+    delivery: WatchDeliverySchema,
   }),
   z.object({ op: z.literal("close"), userId: z.string(), trackNames: z.array(z.string()) }),
 ]);
@@ -68,7 +120,12 @@ export type RtcAuthorizeReq = z.infer<typeof rtcAuthorizeReqSchema>;
 // `publisherSessions` maps each pulled trackName → its publisher's SFU sessionId so the route can build
 // the SFU RemoteTrackReqs — the client never learns another user's sessionId (only what the SFU echoes).
 export type RtcAuthorizeRes =
-  | { ok: true; publisherSessions?: Record<string, string> }
+  | {
+      ok: true;
+      publisherSessions?: Record<string, string>;
+      simulcastProfiles?: Record<string, ScreenSimulcastProfile>;
+      publicationId?: string;
+    }
   | { ok: false; error: ErrorCode };
 
 // One registered SFU track. `preset`/`hasAudio` are set for the video kinds (drive the StreamInfo +
@@ -79,15 +136,37 @@ type RtcTrackReg = {
   kind: RtcKind;
   preset?: PresetId;
   hasAudio?: boolean;
+  simulcastProfile?: ScreenSimulcastProfile;
+  publicationId?: string;
+  preview?: StreamPreview;
+  previewUploadAt?: number;
 };
 
 // The per-room RTC registry (KV `rtc`): SFU session ownership, published tracks (for pull resolution +
 // the G4 cap), and viewer watch grants (viewerId → trackName → charged rid; seeded by WS watch.start,
 // S8.2). Read/written on each authorize (no in-memory mirror — it is not in the sync hello snapshot).
 export type RtcRegistry = {
-  sessions: Record<string, string>;
+  sessions: Record<string, { userId: string; mediaReadyVersion: 2 }>;
   tracks: Record<string, RtcTrackReg>;
-  grants: Record<string, Record<string, "h" | "l">>;
+  pending: Record<string, PendingPublication>;
+  grants: Record<string, Record<string, ScreenRid>>;
+  deliveries: Record<string, Record<string, WatchDelivery>>;
+  // A persisted, idempotent deletion queue. R2 work happens later in ServerRoom, never while the RTC
+  // registry is being mutated, and alarm retries survive Durable Object eviction or a failed delete.
+  previewCleanup?: string[];
+};
+
+type PendingPublication = {
+  userId: string;
+  sessionId: string;
+  tracks: Array<{
+    trackName: string;
+    kind: RtcKind;
+    preset?: PresetId;
+    simulcastProfile?: ScreenSimulcastProfile;
+  }>;
+  expiresAt: number;
+  accepted: boolean;
 };
 
 type HelloOk = Extract<ServerMessage, { t: "hello.ok" }>;
@@ -106,6 +185,7 @@ function toProfile(member: Member): UserProfile {
     displayName: member.displayName,
     color: member.color,
     ...(member.avatarKey === undefined ? {} : { avatarKey: member.avatarKey }),
+    ...(member.voiceAvatar === undefined ? {} : { voiceAvatar: member.voiceAvatar }),
   };
 }
 
@@ -206,9 +286,11 @@ export class RoomState {
     return this.status;
   }
 
-  async setStatus(text: string): Promise<void> {
+  async setStatus(text: string): Promise<boolean> {
+    if (this.status === text) return false;
     this.status = text;
     await this.ctx.storage.put("status", text);
+    return true;
   }
 
   // ---- Voice (FR-18/24/26). Mutators are synchronous (in-memory mirror + SQLite); the caller awaits
@@ -220,10 +302,16 @@ export class RoomState {
 
   // Idempotent join: a repeat from the same user returns the current snapshot unchanged. The first
   // member opens a `voice_sessions` row + starts the session timer (FR-24).
-  voiceJoin(userId: string, now: number): VoiceState {
+  voiceJoin(userId: string, now: number, mediaReadyVersion: 2 = 2): VoiceState {
     if (this.voice.members.some((m) => m.userId === userId)) return this.voice;
     const wasEmpty = this.voice.members.length === 0;
-    const member: VoiceMember = { userId, muted: false, deafened: false };
+    const member: VoiceMember = {
+      userId,
+      muted: false,
+      deafened: false,
+      micSeq: 0,
+      mediaReadyVersion,
+    };
     this.voice = {
       members: [...this.voice.members, member],
       sessionStartedAt: wasEmpty ? now : this.voice.sessionStartedAt,
@@ -257,8 +345,15 @@ export class RoomState {
 
   // Relays a member's self mute/deafen flags (FR-26; no server-side audio semantics). No-op if the
   // user is not currently in voice.
-  setVoiceFlags(userId: string, flags: { muted: boolean; deafened: boolean }): VoiceState {
-    if (!this.voice.members.some((m) => m.userId === userId)) return this.voice;
+  setVoiceFlags(
+    userId: string,
+    flags: { muted: boolean; deafened: boolean },
+  ): { snapshot: VoiceState; changed: boolean } {
+    const current = this.voice.members.find((member) => member.userId === userId);
+    if (current === undefined) return { snapshot: this.voice, changed: false };
+    if (current.muted === flags.muted && current.deafened === flags.deafened) {
+      return { snapshot: this.voice, changed: false };
+    }
     this.voice = {
       ...this.voice,
       members: this.voice.members.map((m) =>
@@ -267,7 +362,7 @@ export class RoomState {
         m.userId === userId ? { ...m, muted: flags.muted, deafened: flags.deafened } : m,
       ),
     };
-    return this.voice;
+    return { snapshot: this.voice, changed: true };
   }
 
   // A mic track (re)registered for `userId` (op:publish below): bump the member's micSeq so peers
@@ -291,13 +386,44 @@ export class RoomState {
   // (`voiceMemberIds`) so a test/producer that seeds voice straight into storage is honored.
 
   private async readRtc(): Promise<RtcRegistry> {
-    const stored = await this.ctx.storage.get<RtcRegistry>("rtc");
-    if (stored === undefined) return { sessions: {}, tracks: {}, grants: {} };
+    const stored = await this.ctx.storage.get<{
+      sessions?: Record<string, string | { userId: string; mediaReadyVersion?: number }>;
+      tracks?: Record<string, RtcTrackReg>;
+      pending?: Record<string, PendingPublication>;
+      grants?: Record<string, Record<string, ScreenRid>>;
+      deliveries?: Record<string, Record<string, WatchDelivery>>;
+      previewCleanup?: string[];
+    }>("rtc");
+    if (stored === undefined) {
+      return { sessions: {}, tracks: {}, pending: {}, grants: {}, deliveries: {} };
+    }
+    const sessions: RtcRegistry["sessions"] = {};
+    for (const [sessionId, value] of Object.entries(stored.sessions ?? {})) {
+      if (typeof value !== "string" && value.mediaReadyVersion === 2) {
+        sessions[sessionId] = { userId: value.userId, mediaReadyVersion: 2 };
+      }
+    }
     return {
-      sessions: { ...stored.sessions },
+      sessions,
       tracks: { ...stored.tracks },
+      pending: { ...stored.pending },
       grants: { ...stored.grants },
+      deliveries: { ...stored.deliveries },
+      ...(stored.previewCleanup === undefined
+        ? {}
+        : { previewCleanup: [...stored.previewCleanup] }),
     };
+  }
+
+  private prunePending(reg: RtcRegistry, at: number): boolean {
+    let changed = false;
+    for (const [publicationId, publication] of Object.entries(reg.pending)) {
+      if (publication.expiresAt <= at) {
+        delete reg.pending[publicationId];
+        changed = true;
+      }
+    }
+    return changed;
   }
 
   private async writeRtc(reg: RtcRegistry): Promise<void> {
@@ -309,6 +435,11 @@ export class RoomState {
     return (voice?.members ?? []).map((m) => m.userId);
   }
 
+  private async voiceMember(userId: string): Promise<VoiceMember | undefined> {
+    const voice = await this.ctx.storage.get<VoiceState>("voice");
+    return voice?.members.find((member) => member.userId === userId);
+  }
+
   // Read-only registry snapshot (tests + S8.x inspection).
   async rtcSnapshot(): Promise<RtcRegistry> {
     return this.readRtc();
@@ -316,11 +447,15 @@ export class RoomState {
 
   // Grants a viewer the right to pull a stream (G1) at a charged rid — seeded by WS watch.start (S8.2)
   // and by tests. The pull authorize checks this; the cost meter charges the recorded rid.
-  async rtcAddGrant(viewerId: string, trackName: string, rid: "h" | "l"): Promise<void> {
+  async rtcAddGrant(viewerId: string, trackName: string, rid: ScreenRid): Promise<void> {
     const reg = await this.readRtc();
     const grants = reg.grants[viewerId] ?? {};
+    const deliveries = reg.deliveries[viewerId] ?? {};
+    if (grants[trackName] === rid && deliveries[trackName] !== undefined) return;
     grants[trackName] = rid;
     reg.grants[viewerId] = grants;
+    deliveries[trackName] = "video";
+    reg.deliveries[viewerId] = deliveries;
     await this.writeRtc(reg);
   }
 
@@ -329,10 +464,30 @@ export class RoomState {
   async rtcRemoveGrant(viewerId: string, trackName: string): Promise<void> {
     const reg = await this.readRtc();
     const grants = reg.grants[viewerId];
-    if (grants === undefined || grants[trackName] === undefined) return;
-    delete grants[trackName];
-    if (Object.keys(grants).length === 0) delete reg.grants[viewerId];
+    const deliveries = reg.deliveries[viewerId];
+    const hadGrant = grants?.[trackName] !== undefined;
+    const hadDelivery = deliveries?.[trackName] !== undefined;
+    if (!hadGrant && !hadDelivery) return;
+    if (grants !== undefined) {
+      delete grants[trackName];
+      if (Object.keys(grants).length === 0) delete reg.grants[viewerId];
+    }
+    if (deliveries !== undefined) {
+      delete deliveries[trackName];
+      if (Object.keys(deliveries).length === 0) delete reg.deliveries[viewerId];
+    }
     await this.writeRtc(reg);
+  }
+
+  private removeTrackDeliveries(reg: RtcRegistry, trackName: string): boolean {
+    let changed = false;
+    for (const [viewerId, deliveries] of Object.entries(reg.deliveries)) {
+      if (deliveries[trackName] === undefined) continue;
+      delete deliveries[trackName];
+      if (Object.keys(deliveries).length === 0) delete reg.deliveries[viewerId];
+      changed = true;
+    }
+    return changed;
   }
 
   // FR-27 on-the-fly preset switch (S8.4): update the registry preset for a SCREEN track the caller
@@ -343,6 +498,7 @@ export class RoomState {
     const reg = await this.readRtc();
     const track = reg.tracks[trackName];
     if (track === undefined || track.userId !== userId || track.kind !== "screen") return false;
+    if (track.preset === preset) return true;
     reg.tracks[trackName] = { ...track, preset };
     await this.writeRtc(reg);
     return true;
@@ -401,6 +557,7 @@ export class RoomState {
     preset: PresetId | undefined,
     userId: string,
     hasScreenAudio: boolean,
+    preview: StreamPreview | undefined,
   ): StreamInfo | null {
     if (kind === "screen") {
       return {
@@ -409,11 +566,19 @@ export class RoomState {
         userId,
         hasAudio: hasScreenAudio,
         preset: preset ?? DEFAULT_SCREEN_PRESET,
+        ...(preview === undefined ? {} : { preview }),
       };
     }
     if (kind === "cam") {
       // Webcam is the fixed 720p30 h-layer (App-D); no stream audio.
-      return { trackName, kind: "webcam", userId, hasAudio: false, preset: "720p30" };
+      return {
+        trackName,
+        kind: "webcam",
+        userId,
+        hasAudio: false,
+        preset: "720p30",
+        ...(preview === undefined ? {} : { preview }),
+      };
     }
     return null;
   }
@@ -434,10 +599,102 @@ export class RoomState {
         track.preset,
         track.userId,
         track.hasAudio ?? false,
+        track.preview,
       );
       if (info !== null) streams.push(info);
     }
     return streams;
+  }
+
+  private videoTrackForPreview(
+    reg: RtcRegistry,
+    previewId: string,
+  ): [trackName: string, track: RtcTrackReg] | null {
+    for (const entry of Object.entries(reg.tracks)) {
+      const track = entry[1];
+      if (track.publicationId === previewId && (track.kind === "screen" || track.kind === "cam")) {
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  // First half of the preview write: prove that the opaque RTC publication is still a live video
+  // owned by the caller, then persist the rate-limit timestamp before the Worker touches R2.
+  async authorizeStreamPreview(
+    userId: string,
+    previewId: string,
+    at: number,
+  ): Promise<{ ok: true; trackName: string; preset: PresetId } | { ok: false; error: ErrorCode }> {
+    const reg = await this.readRtc();
+    const found = this.videoTrackForPreview(reg, previewId);
+    if (found === null) return { ok: false, error: "not_found" };
+    const [trackName, track] = found;
+    if (track.userId !== userId) return { ok: false, error: "forbidden" };
+    if (
+      track.previewUploadAt !== undefined &&
+      at - track.previewUploadAt < LIMITS.streamPreviewMinUploadIntervalMs
+    ) {
+      return { ok: false, error: "rate_limited" };
+    }
+    reg.tracks[trackName] = { ...track, previewUploadAt: at };
+    await this.writeRtc(reg);
+    return { ok: true, trackName, preset: track.preset ?? DEFAULT_SCREEN_PRESET };
+  }
+
+  // Second half: only advertise a version after the Worker has successfully replaced the R2 object.
+  // The preset rides the update so clients that predate previews still process this known frame.
+  async commitStreamPreview(
+    userId: string,
+    previewId: string,
+    version: string,
+    at: number,
+  ): Promise<{ ok: true } | { ok: false; error: ErrorCode }> {
+    const reg = await this.readRtc();
+    const found = this.videoTrackForPreview(reg, previewId);
+    if (found === null) return { ok: false, error: "not_found" };
+    const [trackName, track] = found;
+    if (track.userId !== userId || track.previewUploadAt === undefined) {
+      return { ok: false, error: "forbidden" };
+    }
+    const preview = { id: previewId, version };
+    reg.tracks[trackName] = { ...track, preview };
+    await this.writeRtc(reg);
+    this.broadcast({
+      t: "stream.updated",
+      trackName,
+      preset: track.preset ?? DEFAULT_SCREEN_PRESET,
+      preview,
+      at,
+    });
+    return { ok: true };
+  }
+
+  private queueStreamPreviewCleanup(reg: RtcRegistry, track: RtcTrackReg): void {
+    const previewId = track.publicationId;
+    if (previewId === undefined) return;
+    const pending = reg.previewCleanup ?? [];
+    if (!pending.includes(previewId)) reg.previewCleanup = [...pending, previewId];
+  }
+
+  async pendingStreamPreviewCleanup(): Promise<string[]> {
+    const reg = await this.readRtc();
+    return [...(reg.previewCleanup ?? [])];
+  }
+
+  async completeStreamPreviewCleanup(previewId: string): Promise<void> {
+    const reg = await this.readRtc();
+    const pending = reg.previewCleanup ?? [];
+    if (!pending.includes(previewId)) return;
+    const remaining = pending.filter((id) => id !== previewId);
+    if (remaining.length === 0) delete reg.previewCleanup;
+    else reg.previewCleanup = remaining;
+    await this.writeRtc(reg);
+  }
+
+  async hasPendingStreamPreviewCleanup(): Promise<boolean> {
+    const reg = await this.readRtc();
+    return (reg.previewCleanup?.length ?? 0) > 0;
   }
 
   // The single authorize entry (dispatched from ServerRoom's /internal/rtc/authorize). Ordering pins
@@ -445,23 +702,81 @@ export class RoomState {
   async rtcAuthorize(req: RtcAuthorizeReq, meter: CostMeter, at: number): Promise<RtcAuthorizeRes> {
     const inVoice = (await this.voiceMemberIds()).includes(req.userId);
     const reg = await this.readRtc();
+    const pruned = this.prunePending(reg, at);
+    if (pruned) await this.writeRtc(reg);
     switch (req.op) {
       case "session.new": {
         if (!inVoice) return { ok: false, error: "not_in_voice" };
-        reg.sessions[req.sessionId] = req.userId;
+        const member = await this.voiceMember(req.userId);
+        if (member?.mediaReadyVersion !== 2) {
+          return { ok: false, error: "voice_client_update_required" };
+        }
+        reg.sessions[req.sessionId] = { userId: req.userId, mediaReadyVersion: 2 };
         await this.writeRtc(reg);
         return { ok: true };
       }
-      case "publish": {
+      case "publish.reserve": {
         if (!inVoice) return { ok: false, error: "not_in_voice" };
-        // G4: server-wide concurrent screen-share cap.
-        const currentScreens = Object.values(reg.tracks).filter((t) => t.kind === "screen").length;
-        const newScreens = req.tracks.filter((t) => t.kind === "screen").length;
-        if (currentScreens + newScreens > LIMITS.maxConcurrentScreenShares) {
+        if (reg.sessions[req.sessionId]?.userId !== req.userId) {
+          return { ok: false, error: "forbidden" };
+        }
+        const screenNames = new Set<string>();
+        for (const [trackName, track] of Object.entries(reg.tracks)) {
+          if (track.kind === "screen") screenNames.add(trackName);
+        }
+        for (const publication of Object.values(reg.pending)) {
+          for (const track of publication.tracks)
+            if (track.kind === "screen") screenNames.add(track.trackName);
+        }
+        for (const track of req.tracks)
+          if (track.kind === "screen") screenNames.add(track.trackName);
+        if (screenNames.size > LIMITS.maxConcurrentScreenShares) {
           return { ok: false, error: "share_cap" };
         }
-        const hasScreenAudio = req.tracks.some((t) => t.kind === "screenAudio");
-        for (const t of req.tracks) {
+        const publicationId = crypto.randomUUID();
+        reg.pending[publicationId] = {
+          userId: req.userId,
+          sessionId: req.sessionId,
+          tracks: req.tracks.map((track) => ({
+            trackName: track.trackName,
+            kind: track.kind,
+            ...(track.preset === undefined ? {} : { preset: track.preset }),
+            ...(track.simulcastProfile === undefined
+              ? {}
+              : { simulcastProfile: track.simulcastProfile }),
+          })),
+          expiresAt: at + 30_000,
+          accepted: false,
+        };
+        await this.writeRtc(reg);
+        return { ok: true, publicationId };
+      }
+      case "publish.accept": {
+        const publication = reg.pending[req.publicationId];
+        if (
+          publication === undefined ||
+          publication.userId !== req.userId ||
+          publication.sessionId !== req.sessionId ||
+          reg.sessions[req.sessionId]?.userId !== req.userId
+        )
+          return { ok: false, error: "forbidden" };
+        publication.accepted = true;
+        await this.writeRtc(reg);
+        return { ok: true };
+      }
+      case "publish.commit": {
+        const publication = reg.pending[req.publicationId];
+        if (
+          publication === undefined ||
+          !publication.accepted ||
+          publication.userId !== req.userId ||
+          publication.sessionId !== req.sessionId ||
+          reg.sessions[req.sessionId]?.userId !== req.userId ||
+          !inVoice
+        )
+          return { ok: false, error: "forbidden" };
+        const hasScreenAudio = publication.tracks.some((track) => track.kind === "screenAudio");
+        for (const t of publication.tracks) {
           const preset =
             t.preset ??
             (t.kind === "screen" ? DEFAULT_SCREEN_PRESET : t.kind === "cam" ? "720p30" : undefined);
@@ -473,35 +788,53 @@ export class RoomState {
             ...(t.kind === "screen" || t.kind === "cam"
               ? { hasAudio: t.kind === "screen" ? hasScreenAudio : false }
               : {}),
+            ...(t.simulcastProfile === undefined ? {} : { simulcastProfile: t.simulcastProfile }),
+            ...(t.kind === "screen" || t.kind === "cam"
+              ? { publicationId: req.publicationId }
+              : {}),
           };
         }
+        delete reg.pending[req.publicationId];
         await this.writeRtc(reg);
         // Registration success → stream.added for the video kinds. A mic registration broadcasts a
         // fresh voice.state with the member's micSeq bumped: peers use it both as the "mic is now
         // pullable" signal (first publish — the join-time broadcast raced this registration) and as
         // the re-pull trigger when a rejoin/recovery re-registered mic:{uid} under a NEW SFU session
         // (existing pulls point at the dead one; nothing else ever tells the peers).
-        if (req.tracks.some((t) => t.kind === "mic")) {
+        if (publication.tracks.some((t) => t.kind === "mic")) {
           const snapshot = this.bumpMicSeq(req.userId);
           if (snapshot !== null) {
             await this.persistVoice();
             this.broadcast({ t: "voice.state", voice: snapshot, at });
           }
         }
-        for (const t of req.tracks) {
+        for (const t of publication.tracks) {
           const stream = this.streamInfoFor(
             t.trackName,
             t.kind,
             t.preset,
             req.userId,
             hasScreenAudio,
+            undefined,
           );
           if (stream !== null) this.broadcast({ t: "stream.added", stream, at });
         }
         return { ok: true };
       }
+      case "publish.abort": {
+        const publication = reg.pending[req.publicationId];
+        if (publication === undefined) return { ok: true };
+        if (publication.userId !== req.userId || publication.sessionId !== req.sessionId) {
+          return { ok: false, error: "forbidden" };
+        }
+        delete reg.pending[req.publicationId];
+        await this.writeRtc(reg);
+        return { ok: true };
+      }
       case "pull": {
         const publisherSessions: Record<string, string> = {};
+        const simulcastProfiles: Record<string, ScreenSimulcastProfile> = {};
+        const costBlocked = await meter.isBlocked(at);
         for (const t of req.tracks) {
           const reg2 = reg.tracks[t.trackName];
           if (reg2 === undefined) return { ok: false, error: "pull_denied" };
@@ -519,18 +852,52 @@ export class RoomState {
             if (reg.grants[req.userId]?.[grantTrack] === undefined) {
               return { ok: false, error: "pull_denied" };
             }
-            if (meter.isBlocked(at)) return { ok: false, error: "cost_cap" };
+            if (costBlocked) return { ok: false, error: "cost_cap" };
           }
           publisherSessions[t.trackName] = reg2.sessionId;
+          if (reg2.simulcastProfile !== undefined) {
+            simulcastProfiles[t.trackName] = reg2.simulcastProfile;
+          }
         }
-        return { ok: true, publisherSessions };
+        return {
+          ok: true,
+          publisherSessions,
+          ...(Object.keys(simulcastProfiles).length === 0 ? {} : { simulcastProfiles }),
+        };
       }
       case "layer": {
         const grants = reg.grants[req.userId];
-        if (grants !== undefined && grants[req.trackName] !== undefined) {
+        if (
+          grants !== undefined &&
+          grants[req.trackName] !== undefined &&
+          grants[req.trackName] !== req.preferredRid
+        ) {
           grants[req.trackName] = req.preferredRid;
           await this.writeRtc(reg);
           await meter.setWatcherLayer(req.userId, req.trackName, req.preferredRid, at);
+        }
+        return { ok: true };
+      }
+      case "delivery": {
+        const grant = reg.grants[req.userId]?.[req.trackName];
+        const track = reg.tracks[req.trackName];
+        if (
+          grant === undefined ||
+          track === undefined ||
+          (track.kind !== "screen" && track.kind !== "cam")
+        ) {
+          return { ok: false, error: "pull_denied" };
+        }
+        if (req.delivery === "audio" && track.hasAudio !== true) {
+          return { ok: false, error: "bad_request" };
+        }
+        const deliveries = reg.deliveries[req.userId] ?? {};
+        const current = deliveries[req.trackName] ?? "video";
+        if (current !== req.delivery) {
+          deliveries[req.trackName] = req.delivery;
+          reg.deliveries[req.userId] = deliveries;
+          await this.writeRtc(reg);
+          await meter.setWatcherDelivery(req.userId, req.trackName, req.delivery, at);
         }
         return { ok: true };
       }
@@ -543,8 +910,10 @@ export class RoomState {
           const reg2 = reg.tracks[name];
           if (reg2 === undefined || reg2.userId !== req.userId) continue;
           delete reg.tracks[name];
+          this.removeTrackDeliveries(reg, name);
           changed = true;
           if (reg2.kind === "screen" || reg2.kind === "cam") {
+            this.queueStreamPreviewCleanup(reg, reg2);
             this.broadcast({ t: "stream.removed", trackName: name, at });
           }
         }
@@ -567,22 +936,34 @@ export class RoomState {
   async rtcCleanupFor(userId: string, meter: CostMeter, at: number): Promise<void> {
     const reg = await this.readRtc();
     let changed = false;
-    for (const [sessionId, owner] of Object.entries(reg.sessions)) {
-      if (owner === userId) {
+    for (const [sessionId, session] of Object.entries(reg.sessions)) {
+      if (session.userId === userId) {
         delete reg.sessions[sessionId];
+        changed = true;
+      }
+    }
+    for (const [publicationId, publication] of Object.entries(reg.pending)) {
+      if (publication.userId === userId) {
+        delete reg.pending[publicationId];
         changed = true;
       }
     }
     for (const [name, track] of Object.entries(reg.tracks)) {
       if (track.userId !== userId) continue;
       delete reg.tracks[name];
+      this.removeTrackDeliveries(reg, name);
       changed = true;
       if (track.kind === "screen" || track.kind === "cam") {
+        this.queueStreamPreviewCleanup(reg, track);
         this.broadcast({ t: "stream.removed", trackName: name, at });
       }
     }
     if (reg.grants[userId] !== undefined) {
       delete reg.grants[userId];
+      changed = true;
+    }
+    if (reg.deliveries[userId] !== undefined) {
+      delete reg.deliveries[userId];
       changed = true;
     }
     if (changed) {
@@ -595,30 +976,36 @@ export class RoomState {
 
   upsertMember(member: MemberInit): void {
     this.ctx.storage.sql.exec(
-      `INSERT INTO members (user_id, username, display_name, color, avatar_key, is_admin, joined_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO members
+         (user_id, username, display_name, color, avatar_key, voice_avatar, is_admin, joined_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(user_id) DO UPDATE SET
          username = excluded.username, display_name = excluded.display_name,
          color = excluded.color, avatar_key = excluded.avatar_key,
+         voice_avatar = excluded.voice_avatar,
          is_admin = excluded.is_admin, joined_at = excluded.joined_at`,
       member.userId,
       member.username,
       member.displayName,
       member.color,
       member.avatarKey ?? null,
+      voiceAvatarToStorage(member.voiceAvatar ?? null),
       member.isAdmin ? 1 : 0,
       member.joinedAt,
     );
   }
 
-  // Patches the cached profile columns (username/display_name/color/avatar_key) of an existing member.
+  // Patches every cached profile column of an existing member.
   updateProfile(profile: UserProfile): void {
     this.ctx.storage.sql.exec(
-      `UPDATE members SET username = ?, display_name = ?, color = ?, avatar_key = ? WHERE user_id = ?`,
+      `UPDATE members
+       SET username = ?, display_name = ?, color = ?, avatar_key = ?, voice_avatar = ?
+       WHERE user_id = ?`,
       profile.username,
       profile.displayName,
       profile.color,
       profile.avatarKey ?? null,
+      voiceAvatarToStorage(profile.voiceAvatar ?? null),
       profile.userId,
     );
   }
@@ -641,8 +1028,14 @@ export class RoomState {
   listMembers(): Member[] {
     return this.ctx.storage.sql
       .exec<Record<string, SqlStorageValue>>(
-        `SELECT user_id, username, display_name, color, avatar_key, is_admin, joined_at
-         FROM members ORDER BY joined_at ASC`,
+        `SELECT m.user_id, m.username, m.display_name, m.color, m.avatar_key, m.voice_avatar,
+                m.is_admin, m.joined_at, i.id AS market_item_id, i.name AS market_item_name,
+                p.price_paid AS market_price_paid, p.purchased_at AS market_purchased_at
+         FROM members m
+         LEFT JOIN market_equipped_icons e ON e.user_id = m.user_id
+         LEFT JOIN market_items i ON i.id = e.item_id
+         LEFT JOIN market_purchases p ON p.item_id = i.id AND p.buyer_id = m.user_id
+         ORDER BY m.joined_at ASC`,
       )
       .toArray()
       .map((row) => rowToMember(row, this.presenceOf(String(row["user_id"]))));

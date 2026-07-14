@@ -4,14 +4,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer, username } from "better-auth/plugins";
 import { drizzle } from "drizzle-orm/d1";
 import * as schema from "./db/auth-schema";
-
-// Optional static base URL (wrangler `vars` in prod/e2e; .dev.vars locally). Not a generated
-// binding in every config, hence the manual augmentation (KILL_SWITCH_DISABLED precedent).
-declare global {
-  interface Env {
-    BETTER_AUTH_URL?: string;
-  }
-}
+import { requiredEnv } from "./env";
 
 // Per-request factory — NEVER module scope (PLAN §3.4): the D1 binding lives on `env`, which only
 // exists per request under workerd. Each request builds a fresh instance bound to that request's DB.
@@ -27,7 +20,7 @@ declare global {
 export function createAuth(env: Env) {
   return betterAuth({
     database: drizzleAdapter(drizzle(env.DB, { schema }), { provider: "sqlite" }),
-    secret: env.BETTER_AUTH_SECRET,
+    secret: requiredEnv(env.BETTER_AUTH_SECRET, "BETTER_AUTH_SECRET"),
     emailAndPassword: { enabled: true, minPasswordLength: 8 },
     user: {
       additionalFields: {
@@ -36,6 +29,7 @@ export function createAuth(env: Env) {
         // Gray was the old placeholder default; every account now starts with a distinct name color.
         color: { type: "string", input: false, defaultValue: () => randomUserColor() },
         avatarKey: { type: "string", required: false, input: false },
+        voiceAvatar: { type: "string", required: false, input: false },
       },
     },
     // The shared contract (S0.2 `UserProfile.userId = z.uuid()`, and the UUID id-space every
@@ -67,11 +61,8 @@ export function createAuth(env: Env) {
     // (username+password + bearer only), so the value only needs to be consistent; cross-origin
     // CSRF stays governed by trustedOrigins. The dynamic allowedHosts form is NOT usable here:
     // it hard-fails every direct server-side auth.api call (no request headers to resolve from).
-    // When the env var is absent (e.g. the vitest pool, which injects its own bindings), better-
-    // auth falls back to deriving the origin from the request — prior behavior, warning included.
-    ...(env.BETTER_AUTH_URL !== undefined && env.BETTER_AUTH_URL !== ""
-      ? { baseURL: env.BETTER_AUTH_URL }
-      : {}),
+    // Both production and the named e2e environment declare the binding in wrangler.jsonc.
+    baseURL: env.BETTER_AUTH_URL,
     // session left at defaults (7d expiresIn / 1d updateAge) — do not override (PLAN §3.4/step task 2).
   });
 }

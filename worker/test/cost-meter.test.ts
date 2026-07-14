@@ -38,13 +38,13 @@ describe("§8 G5 cost meter", () => {
     });
   });
 
-  it("l-layer watched 3600s = 112,500,000 bytes (250 kbps × 1000/8 × 3600)", async () => {
+  it("480p15 l-layer watched 3600s = 45,000,000 bytes (100 kbps × 1000/8 × 3600)", async () => {
     const viewer = crypto.randomUUID();
     await runInDurableObject(freshRoom(), async (_i, state) => {
       const meter = new CostMeter(state, {});
       await meter.openWatch(viewer, "screen:pub:1", "480p15", "l", T0);
       await meter.closeWatch(viewer, "screen:pub:1", T0 + 3_600_000);
-      expect(sumEgress(state)).toBe(112_500_000);
+      expect(sumEgress(state)).toBe(45_000_000);
     });
   });
 
@@ -55,8 +55,23 @@ describe("§8 G5 cost meter", () => {
       await meter.openWatch(viewer, "screen:pub:1", "1080p30", "h", T0);
       await meter.setWatcherLayer(viewer, "screen:pub:1", "l", T0 + 300_000); // 300s at h
       await meter.closeWatch(viewer, "screen:pub:1", T0 + 600_000); // 300s at l
-      // h: 3500*1000/8*300 = 131,250,000 ; l: 250*1000/8*300 = 9,375,000
-      expect(sumEgress(state)).toBe(140_625_000);
+      // h: 3500*1000/8*300 = 131,250,000 ; l: 350*1000/8*300 = 13,125,000
+      expect(sumEgress(state)).toBe(144_375_000);
+    });
+  });
+
+  it("audio-only saver intervals keep the watch open but add zero video egress", async () => {
+    const viewer = crypto.randomUUID();
+    const trackName = "screen:pub:1";
+    await runInDurableObject(freshRoom(), async (_i, state) => {
+      const meter = new CostMeter(state, {});
+      await meter.openWatch(viewer, trackName, "1080p30", "h", T0);
+      await meter.setWatcherDelivery(viewer, trackName, "audio", T0 + 100_000);
+      await meter.setWatcherDelivery(viewer, trackName, "video", T0 + 300_000);
+      await meter.closeWatch(viewer, trackName, T0 + 400_000);
+
+      // 100s video + 200s audio-only + 100s video = 200s charged at 3500 kbps.
+      expect(sumEgress(state)).toBe(87_500_000);
     });
   });
 
@@ -155,15 +170,16 @@ describe("§8 G5 cost meter", () => {
     });
   });
 
-  it("tick flushes an open watch's running segment into egress_log", async () => {
+  it("tick projects an open watch without writing its running segment", async () => {
     const viewer = crypto.randomUUID();
     await runInDurableObject(freshRoom(), async (_i, state) => {
       const meter = new CostMeter(state, {});
       await meter.openWatch(viewer, "screen:pub:1", "1080p30", "h", T0);
       const warned = await meter.tick(T0 + 60_000);
       expect(warned).toBe(false);
-      // 3500 kbps × 1000/8 × 60 = 26,250,000
-      expect(sumEgress(state)).toBe(26_250_000);
+      expect(sumEgress(state)).toBe(0);
+      // 3500 kbps × 1000/8 × 60 = 26,250,000 projected bytes.
+      expect(await meter.usedGB(T0 + 60_000)).toBe(0.02625);
     });
   });
 
@@ -183,6 +199,7 @@ describe("§8 G5 cost meter", () => {
       await state.storage.put("cost:open", {
         [`${member}|screen:pub:1`]: { preset: "1080p30", rid: "h", since },
       });
+      await state.storage.put("voice:disconnects", { [member]: 0 });
       await state.storage.setAlarm(Date.now() + 3_600_000); // future → only the explicit fire triggers
     });
 

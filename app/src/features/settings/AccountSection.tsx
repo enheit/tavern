@@ -1,4 +1,4 @@
-import type { ErrorCode, PatchProfileRequest } from "@tavern/shared";
+import type { ErrorCode, PatchProfileRequest, VoiceAvatarConfig } from "@tavern/shared";
 import { ApiErrorBody, LIMITS, USER_COLORS, UserProfile } from "@tavern/shared";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -8,15 +8,18 @@ import { Label } from "@/components/ui/label";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { authTransport } from "@/lib/authTransport";
 import { errorMessage } from "@/lib/errorMessage";
+import { UserAvatar } from "@/features/users/UserAvatar";
 import { AvatarTooLargeError, resizeToWebp, UnsupportedImageError } from "@/lib/imageResize";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { useSessionStore } from "@/stores/session";
+import { VoiceAvatarEditor } from "./VoiceAvatarEditor";
 
 interface ProfileForm {
   displayName: string;
   username: string;
   color: string;
+  voiceAvatar: VoiceAvatarConfig | null;
 }
 
 // Swatch palette = the shared non-gray USER_COLORS (gray is intentionally not selectable); a free hex
@@ -54,16 +57,19 @@ async function postAvatar(blob: Blob): Promise<string> {
 // FR-03/FR-04/FR-05 profile editor: displayName, username (lowercased), name color (swatches + hex),
 // avatar upload. One Save button persists the DIRTY profile fields via PATCH; the avatar posts on its
 // own file-select. Live propagation to other clients arrives server-side as `member.update`.
-export function AccountSection() {
+export function AccountSection({ onSaved }: { onSaved?: () => void }) {
   const profile = useSessionStore((s) => s.profile);
+  const avatarRevision = useSessionStore((s) => s.avatarRevision);
   const { register, handleSubmit, setValue, watch, reset, formState } = useForm<ProfileForm>({
     defaultValues: {
       displayName: profile?.displayName ?? "",
       username: profile?.username ?? "",
       color: profile?.color ?? USER_COLORS[0],
+      voiceAvatar: profile?.voiceAvatar ?? null,
     },
   });
   const color = watch("color");
+  const voiceAvatar = watch("voiceAvatar");
   const usernameField = register("username", { required: true, pattern: LIMITS.usernameRe });
   const colorField = register("color", { required: true, pattern: LIMITS.colorRe });
 
@@ -73,11 +79,13 @@ export function AccountSection() {
     if (dirty.displayName) payload.displayName = values.displayName;
     if (dirty.username) payload.username = values.username;
     if (dirty.color) payload.color = values.color;
+    if (dirty.voiceAvatar !== undefined) payload.voiceAvatar = values.voiceAvatar;
     try {
       const updated = await apiClient.patch("/api/me/profile", UserProfile, payload);
       useSessionStore.getState().setAuthed(updated);
       reset(values);
       toast(m.common_saved());
+      onSaved?.();
     } catch (err) {
       if (err instanceof ApiError) toast(errorMessage(err.code));
     }
@@ -89,8 +97,7 @@ export function AccountSection() {
     if (file === undefined) return;
     try {
       const avatarKey = await postAvatar(await resizeToWebp(file));
-      // Reflect the new avatar immediately (header reads profile.avatarKey to decide whether to render
-      // the image). The media URL is stable per-user; the served etag changes so the fresh bytes load.
+      // Reflect the new avatar immediately across the account preview and shell profile control.
       useSessionStore.getState().patchProfile({ avatarKey });
       toast(m.common_saved());
     } catch (err) {
@@ -100,8 +107,42 @@ export function AccountSection() {
     }
   };
 
+  if (profile === null) return null;
+
   return (
-    <form data-testid="settings-account" onSubmit={onSubmit} className="flex flex-col gap-4 py-2">
+    <form data-testid="settings-account" onSubmit={onSubmit} className="flex flex-col gap-5 py-2">
+      <div className="flex flex-col items-center gap-2">
+        <Label>{m.settings_account_avatar()}</Label>
+        <UserAvatar
+          profile={profile}
+          revision={avatarRevision}
+          testId="settings-account-avatar"
+          className="size-20 text-2xl"
+        />
+        <label
+          data-testid="avatar-label"
+          className={cn(
+            "inline-flex w-fit cursor-pointer items-center rounded-lg border border-input px-2.5 py-1 text-sm hover:bg-muted",
+          )}
+        >
+          {m.settings_account_change_avatar()}
+          <input
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            data-testid="avatar-input"
+            className="hidden"
+            onChange={(event) => void onAvatarChange(event)}
+          />
+        </label>
+      </div>
+      <VoiceAvatarEditor
+        userId={profile.userId}
+        profileColor={color}
+        value={voiceAvatar}
+        onChange={(next) =>
+          setValue("voiceAvatar", next, { shouldDirty: true, shouldValidate: true })
+        }
+      />
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="settings-display-name">{m.settings_account_display_name()}</Label>
         <Input
@@ -164,24 +205,6 @@ export function AccountSection() {
             {m.errors_color_invalid()}
           </p>
         )}
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label>{m.settings_account_avatar()}</Label>
-        <label
-          data-testid="avatar-label"
-          className={cn(
-            "inline-flex w-fit cursor-pointer items-center rounded-lg border border-input px-2.5 py-1 text-sm hover:bg-muted",
-          )}
-        >
-          {m.settings_account_change_avatar()}
-          <input
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            data-testid="avatar-input"
-            className="hidden"
-            onChange={(event) => void onAvatarChange(event)}
-          />
-        </label>
       </div>
       <Button type="submit" data-testid="settings-account-save" disabled={!formState.isDirty}>
         {m.common_save()}

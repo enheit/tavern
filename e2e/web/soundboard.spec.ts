@@ -51,7 +51,6 @@ async function seedRoom(
       const page = await context.newPage();
       await page.goto(`/?e2e=1`);
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId("controls-bar")).toBeVisible();
       await expect(page.getByTestId("workspace-tab-soundboard")).toBeVisible();
       return { user, context, page };
     }),
@@ -99,17 +98,19 @@ async function openSoundboard(client: Client): Promise<void> {
 // Uploads beep.mp3 via the panel's upload dialog; resolves once the multipart POST returns 201.
 async function uploadSound(client: Client, name: string): Promise<void> {
   await client.page.getByTestId("soundboard-upload-open").click();
-  await client.page.getByTestId("upload-file").setInputFiles({
+  await client.page.getByTestId("sound-editor-file").setInputFiles({
     name: "beep.mp3",
     mimeType: "audio/mpeg",
     buffer: BEEP_MP3,
   });
-  await client.page.getByTestId("upload-name").fill(name);
+  await client.page.getByTestId("sound-editor-name").fill(name);
+  await client.page.getByTestId("sound-editor-emoji").click();
+  await client.page.getByRole("gridcell", { name: "Grinning face", exact: true }).click();
   const posted = client.page.waitForResponse(
     (res) =>
       res.url().endsWith("/sounds") && res.request().method() === "POST" && res.status() === 201,
   );
-  await client.page.getByTestId("upload-submit").click();
+  await client.page.getByTestId("sound-editor-save").click();
   await posted;
 }
 
@@ -124,7 +125,10 @@ async function soundId(client: Client): Promise<string> {
 
 async function playCount(client: Client, id: string): Promise<number> {
   return client.page.evaluate(
-    (sid) => window.__tavernTestAudio?.soundboardPlays.filter((p) => p.soundId === sid).length ?? 0,
+    (sid) =>
+      window.__tavernTestAudio?.soundboardPlays.filter(
+        (play) => play.soundId === sid && play.mode === "shared",
+      ).length ?? 0,
     id,
   );
 }
@@ -154,6 +158,42 @@ test.describe("FR-36 soundboard e2e", () => {
     }
   });
 
+  test("outside voice a click is a local preview and does not increment the counter", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    test.setTimeout(90_000);
+    const { clients } = await seedRoom(browser, baseURL, api, ["a"]);
+    const [a] = clients;
+    if (!a) throw new Error("expected one client");
+    try {
+      await openSoundboard(a);
+      await uploadSound(a, "preview-only");
+      const id = await soundId(a);
+      await a.page.getByTestId(`sound-${id}`).evaluate((button) => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        }
+      });
+
+      await expect
+        .poll(() =>
+          a.page.evaluate(
+            (soundId_) =>
+              window.__tavernTestAudio?.soundboardPlays.filter(
+                (play) => play.soundId === soundId_ && play.mode === "local-preview",
+              ).length ?? 0,
+            id,
+          ),
+        )
+        .toBe(1);
+      await expect(a.page.getByTestId(`sound-plays-${id}`)).toHaveText("0");
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
   test("A plays → both clients log a soundboardPlay within 500ms and playCount shows 1 on both", async ({
     browser,
     baseURL,
@@ -172,7 +212,11 @@ test.describe("FR-36 soundboard e2e", () => {
       const id = await soundId(a);
       await expect(b.page.getByTestId(`sound-${id}`)).toBeVisible({ timeout: 10_000 });
 
-      await a.page.getByTestId(`sound-${id}`).click();
+      await a.page.getByTestId(`sound-${id}`).evaluate((button) => {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        }
+      });
 
       // Both clients record a play (the sender plays on its own broadcast receipt — single code path).
       await expect.poll(() => playCount(a, id), { timeout: 10_000 }).toBe(1);
@@ -223,6 +267,35 @@ test.describe("FR-36 soundboard e2e", () => {
     }
   });
 
+  test("a stop button ends the active sound for every voice member", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    test.setTimeout(90_000);
+    const { clients } = await seedRoom(browser, baseURL, api, ["a", "b"]);
+    const [a, b] = clients;
+    if (!a || !b) throw new Error("expected two clients");
+    try {
+      await joinVoice(a);
+      await joinVoice(b);
+      await openSoundboard(a);
+      await openSoundboard(b);
+      await uploadSound(a, "stoppable");
+      const id = await soundId(a);
+      await expect(b.page.getByTestId(`sound-${id}`)).toBeVisible();
+      await a.page.getByTestId(`sound-${id}`).click();
+      await expect(a.page.getByTestId(`sound-stop-${id}`)).toBeVisible();
+      await expect(b.page.getByTestId(`sound-stop-${id}`)).toBeVisible();
+
+      await b.page.getByTestId(`sound-stop-${id}`).click();
+      await expect(a.page.getByTestId(`sound-stop-${id}`)).toBeHidden();
+      await expect(b.page.getByTestId(`sound-stop-${id}`)).toBeHidden();
+    } finally {
+      await closeClients(clients);
+    }
+  });
+
   test("soundboard volume persists across reload", async ({ browser, baseURL, api }) => {
     test.setTimeout(90_000);
     const { serverId, clients } = await seedRoom(browser, baseURL, api, ["a"]);
@@ -249,7 +322,7 @@ test.describe("FR-36 soundboard e2e", () => {
       // Persisted locally (settings.volumes.v1) → survives a fresh boot (full reload via "/").
       await a.page.goto(`/?e2e=1`);
       await expect(a.page).toHaveURL(new RegExp(`/s/${serverId}$`));
-      await expect(a.page.getByTestId("controls-bar")).toBeVisible();
+      await expect(a.page.getByTestId("workspace-tab-soundboard")).toBeVisible();
       await expect.poll(stored).toBe(2);
     } finally {
       await closeClients(clients);

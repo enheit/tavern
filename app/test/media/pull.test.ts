@@ -75,6 +75,29 @@ describe("FR-19 pull flow", () => {
     expect(removeIdx).toBeGreaterThan(addIdx);
   });
 
+  it("answers an immediate SFU offer before releasing a closed remote-track mapping", async () => {
+    await connect();
+    await session.addRemoteTracks([{ trackName: "mic:u2" }]);
+    signal.closeResponse = {
+      requiresImmediateRenegotiation: true,
+      tracks: [],
+      sessionDescription: { type: "offer", sdp: "close-offer" },
+    };
+    log.clear();
+
+    await session.removeRemoteTracks(["mic:u2"]);
+
+    expect(log.entries).toEqual([
+      "closeTracks",
+      "setRemoteDescription",
+      "createAnswer",
+      "setLocalDescription",
+      "renegotiate",
+    ]);
+    expect(port.last().remoteDescription).toEqual({ type: "offer", sdp: "close-offer" });
+    await expect(session.setLayer("mic:u2", "h")).rejects.toThrow("no pulled track");
+  });
+
   it("preferredRid is forwarded on the initial pull", async () => {
     await connect();
     await session.addRemoteTracks([{ trackName: "mic:u2", preferredRid: "l" }]);

@@ -1,10 +1,21 @@
 import { useEffect, useState } from "react";
-import type { BasePresetId, PresetId, ScreenAccessStatus, ScreenSource } from "@tavern/shared";
+import type {
+  BasePresetId,
+  DataTier,
+  PresetId,
+  ScreenAccessStatus,
+  ScreenSource,
+} from "@tavern/shared";
 import {
   BASE_PRESET_IDS,
+  DATA_TIERS,
   DEFAULT_SCREEN_PRESET,
   PORTAL_SOURCE_ID,
   PRESET_IDS,
+  basePresetOf,
+  isBasePresetId,
+  tierOf,
+  withTier,
 } from "@tavern/shared";
 import { Button } from "@/components/ui/button";
 import {
@@ -50,17 +61,27 @@ export function isPreset(value: unknown): value is PresetId {
   return typeof value === "string" && PRESET_IDS.some((id) => id === value);
 }
 
+function isDataTier(value: number): value is DataTier {
+  return DATA_TIERS.some((candidate) => candidate === value);
+}
+
 interface SharePickerDialogProps {
   open: boolean;
   onOpenChange(open: boolean): void;
   onStart(sel: ShareSelection): void;
+  initialPreset?: PresetId;
 }
 
 // FR-28 source/quality picker. Every share requests audio: desktop uses OS loopback or the Linux
 // venmic / pactl fallback (media/capture.ts), while web capture delegates the actual audio grant to
 // the browser's native picker. Desktop Wayland ("portal" sourceMode) has no grid because enumerated
 // ids die with each portal session; its OS ScreenCast dialog chooses the source at capture time.
-export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDialogProps) {
+export function SharePickerDialog({
+  open,
+  onOpenChange,
+  onStart,
+  initialPreset = DEFAULT_SCREEN_PRESET,
+}: SharePickerDialogProps) {
   const isDesktop = platform.kind === "desktop";
   const portalPicker = isDesktop && platform.capture.sourceMode === "portal";
   const [sources, setSources] = useState<ScreenSource[]>([]);
@@ -68,6 +89,10 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
   const [preset, setPreset] = useState<PresetId>(DEFAULT_SCREEN_PRESET);
   // Defaults to "granted" so the permission hint never flashes while the real status loads.
   const [accessStatus, setAccessStatus] = useState<ScreenAccessStatus>("granted");
+
+  useEffect(() => {
+    if (open) setPreset(initialPreset);
+  }, [initialPreset, open]);
 
   useEffect(() => {
     if (!open || !isDesktop) return;
@@ -162,10 +187,12 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
           <div className="flex flex-col gap-1.5">
             <span className="text-sm font-medium">{m.streams_share_quality()}</span>
             <Select
-              value={preset}
+              value={basePresetOf(preset)}
               items={PRESET_ITEMS}
               onValueChange={(value) => {
-                if (isPreset(value)) setPreset(value);
+                if (typeof value === "string" && isBasePresetId(value)) {
+                  setPreset(withTier(value, tierOf(preset)));
+                }
               }}
             >
               <SelectTrigger data-testid="share-preset" className="w-full">
@@ -175,6 +202,30 @@ export function SharePickerDialog({ open, onOpenChange, onStart }: SharePickerDi
                 {BASE_PRESET_IDS.map((id) => (
                   <SelectItem key={id} value={id} data-testid={`preset-option-${id}`}>
                     {PRESET_ITEMS[id]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium">{m.streams_share_data_budget()}</span>
+            <Select
+              value={String(tierOf(preset))}
+              items={{ "100": "100%", "75": "75%", "50": "50%", "35": "35%" }}
+              onValueChange={(value) => {
+                const parsed = Number(value);
+                if (isDataTier(parsed)) {
+                  setPreset(withTier(basePresetOf(preset), parsed));
+                }
+              }}
+            >
+              <SelectTrigger data-testid="share-data-tier" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {DATA_TIERS.map((value) => (
+                  <SelectItem key={value} value={String(value)}>
+                    {value}%
                   </SelectItem>
                 ))}
               </SelectContent>

@@ -13,6 +13,9 @@ function sound(over: Partial<Sound> = {}): Sound {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     name: "clip",
+    emoji: "🔊",
+    gain: 1,
+    sourceFileName: "clip.mp3",
     uploaderId: "22222222-2222-4222-8222-222222222222",
     durationMs: 5000,
     trimStartMs: 0,

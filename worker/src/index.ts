@@ -8,6 +8,7 @@ import { meRoute } from "./routes/me";
 import { mediaRoute } from "./routes/media";
 import { serversRoute } from "./routes/servers";
 import { soundsRoute } from "./routes/sounds";
+import { marketRoute } from "./routes/market";
 import { recordingsRoute } from "./routes/recordings";
 import { screenshotsRoute } from "./routes/screenshots";
 import { screenshotViewRoute } from "./routes/screenshotView";
@@ -17,7 +18,10 @@ import { wsTicketRoute } from "./routes/wsTicket";
 import { rtcRoute } from "./routes/rtc";
 import { gifsRoute } from "./routes/gifs";
 import { testSeedRoute } from "./routes/testSeed";
+import { qoeRoute } from "./routes/qoe";
+import { streamPreviewsRoute } from "./routes/streamPreviews";
 import { ServerRoom } from "./do/ServerRoom";
+import { refreshCloudflareUsage } from "./lib/cloudflareUsage";
 
 const app = new Hono<{ Bindings: Env; Variables: AuthVars }>();
 
@@ -36,6 +40,7 @@ app.use(
     allowHeaders: ["Content-Type", "Authorization"],
     exposeHeaders: ["set-auth-token"],
     credentials: true,
+    maxAge: 86_400,
   }),
 );
 
@@ -68,6 +73,10 @@ app.route("/api/servers", serversRoute);
 // applied inside the router; the paths (`/:id/sounds…`) do not overlap serversRoute's.
 app.route("/api/servers", soundsRoute);
 
+// Per-server, one-of-one market inventory. Listing/purchase/equip are member-scoped; item management
+// is admin-only inside the router. Uploaded icons are normalized before reaching R2.
+app.route("/api/servers", marketRoute);
+
 // Recordings (S9.3, FR-25): multipart upload open/part/complete/abort + list/delete per-server
 // recordings. requireMember is applied inside the router; the DO enforces starter/in-voice authz. Its
 // paths (`/:id/recordings…`) do not overlap serversRoute's or soundsRoute's.
@@ -76,6 +85,10 @@ app.route("/api/servers", recordingsRoute);
 // Screenshots (§ screenshots tab): member-gated list/capture/delete of stream stills. requireMember is
 // applied inside the router; its paths (`/:id/screenshots…`) don't overlap the other /api/servers routers.
 app.route("/api/servers", screenshotsRoute);
+
+// Authenticated, member-only stream teaser upload/read. The id is an active RTC publication id; the
+// room authorizes the publisher before R2 writes and advertises versions through stream.updated.
+app.route("/api/servers", streamPreviewsRoute);
 
 // PUBLIC screenshot image bytes (capability URL keyed by two UUIDs) — no auth so the still opens in a
 // plain browser tab (web) or the OS browser (Electron). Distinct from /api/servers/:id/screenshots.
@@ -92,6 +105,10 @@ app.route("/api/chat-images", chatImageViewRoute);
 // RTC proxy to the Cloudflare Realtime SFU (S7.1, A3): session/tracks/renegotiate/close + ICE creds.
 // Membership + the rtc rate limit are applied inside the router; the DO enforces §8 caps.
 app.route("/api/rtc", rtcRoute);
+
+// Anonymous media QoE batches. Auth is used only for abuse control; the Analytics Engine row has no
+// user/server/session/track identifiers by contract.
+app.route("/api/qoe", qoeRoute);
 
 // GIF picker search proxy (§ GIF picker): GET /api/gifs/search → Klipy, normalized. requireAuth is
 // applied inside the router (search is not server-scoped, so any authed user may query).
@@ -119,5 +136,23 @@ app.route("/api/__test", testSeedRoute);
 // Hono's default notFound is plain text; the app-wide envelope is { error: ErrorCode }.
 app.notFound((c) => c.json({ error: "not_found" satisfies ErrorCode }, 404));
 
-export default app;
+export async function scheduled(
+  controller: ScheduledController,
+  env: Env,
+  _ctx: ExecutionContext,
+): Promise<void> {
+  try {
+    await refreshCloudflareUsage(env, controller.cron === "17 2 * * *");
+  } catch (error: unknown) {
+    controller.noRetry();
+    console.error("Cloudflare usage scheduled refresh failed", {
+      cron: controller.cron,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+// Hono is the existing fetch handler. Extend that owned application object with the Worker scheduled
+// handler so direct app.fetch tests continue to exercise the exact production request surface.
+export default Object.assign(app, { scheduled });
 export { ServerRoom };

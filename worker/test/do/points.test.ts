@@ -29,6 +29,30 @@ describe("server points ledger", () => {
     });
   });
 
+  it("projects leaderboard reads and identical eligibility without rewriting the ledger", async () => {
+    const userId = crypto.randomUUID();
+    await runInDurableObject(freshRoom(), (_instance, state) => {
+      const points = new PointsModule(state.storage.sql);
+      const eligibility = { conversation: [userId], streaming: [], watching: [] };
+      points.replaceSources(eligibility, T0);
+
+      expect(points.leaderboard([userId], T0 + 2 * 60_000)).toEqual([{ userId, balance: 10 }]);
+      points.replaceSources(eligibility, T0 + 2 * 60_000);
+
+      const source = state.storage.sql
+        .exec<{ started_at: number }>(
+          `SELECT started_at FROM point_sources WHERE user_id = ? AND source = 'conversation'`,
+          userId,
+        )
+        .one();
+      const accounts = state.storage.sql
+        .exec<{ count: number }>(`SELECT COUNT(*) AS count FROM point_accounts`)
+        .one();
+      expect(source.started_at).toBe(T0);
+      expect(accounts.count).toBe(0);
+    });
+  });
+
   it("does not award conversation points to a solo member", async () => {
     const userId = crypto.randomUUID();
     await runInDurableObject(freshRoom(), (_instance, state) => {

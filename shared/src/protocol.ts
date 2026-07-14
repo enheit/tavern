@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { LIMITS } from "./limits";
 import { errorCodeSchema } from "./errors";
+import { PointLeaderboardEntry } from "./api";
 import {
   PresetIdSchema,
   UserProfile,
@@ -9,9 +10,11 @@ import {
   StreamInfo,
   RecordingState,
   CostStatus,
+  StreamPreview,
   ChatMessage,
   GifAttachment,
   ImageAttachment,
+  EquippedMarketIcon,
   ReactionEmoji,
   ChatReaction,
   ActivityEntry,
@@ -23,7 +26,12 @@ import {
 const trackName = z.string().min(1).max(128);
 
 // ---- Client → Server ----
-const hello = z.object({ t: z.literal("hello"), proto: z.literal(1) });
+const hello = z.object({
+  t: z.literal("hello"),
+  proto: z.literal(1),
+  mediaResume: z.boolean().optional(),
+  mediaReset: z.boolean().optional(),
+});
 const chatSend = z.object({
   t: z.literal("chat.send"),
   // Empty body is valid only when a `gif` or `image` accompanies it (a pure-attachment send). The DO
@@ -61,7 +69,10 @@ const chatReactionSet = z.object({
   emoji: ReactionEmoji,
   reacted: z.boolean(),
 });
-const voiceJoin = z.object({ t: z.literal("voice.join") });
+// Voice media is a two-phase protocol. Version 2 clients acknowledge the browser's real WebRTC
+// connection before the room advertises their mic to peers; older clients must update rather than
+// reintroduce the publish/pull race.
+const voiceJoin = z.object({ t: z.literal("voice.join"), mediaReadyVersion: z.literal(2) });
 const voiceLeave = z.object({ t: z.literal("voice.leave") });
 const voiceStateClient = z.object({
   t: z.literal("voice.state"),
@@ -84,6 +95,7 @@ const streamStop = z.object({ t: z.literal("stream.stop"), trackName });
 const watchStart = z.object({ t: z.literal("watch.start"), trackName });
 const watchStop = z.object({ t: z.literal("watch.stop"), trackName });
 const soundPlay = z.object({ t: z.literal("sound.play"), soundId: z.uuid() });
+const soundStop = z.object({ t: z.literal("sound.stop"), soundId: z.uuid() });
 const recStart = z.object({ t: z.literal("rec.start") });
 const recStop = z.object({ t: z.literal("rec.stop") });
 // Shared server status (§ header status): any connected member may set the free-text status (≤128
@@ -154,6 +166,7 @@ export const clientMessageSchema = z.discriminatedUnion("t", [
   watchStart,
   watchStop,
   soundPlay,
+  soundStop,
   recStart,
   recStop,
   statusSet,
@@ -252,6 +265,7 @@ const streamUpdated = z.object({
   t: z.literal("stream.updated"),
   trackName,
   preset: PresetIdSchema,
+  preview: StreamPreview.optional(),
   at: z.number(),
 });
 const streamRemoved = z.object({ t: z.literal("stream.removed"), trackName, at: z.number() });
@@ -272,6 +286,13 @@ const soundPlayed = z.object({
   // panel (and its query cache) being mounted — the voice controller plays straight off this receipt.
   trimStartMs: z.number(),
   trimEndMs: z.number(),
+  gain: z.number().min(LIMITS.soundGainMin).max(LIMITS.soundGainMax),
+});
+const soundStopped = z.object({
+  t: z.literal("sound.stopped"),
+  soundId: z.uuid(),
+  byUserId: z.uuid(),
+  at: z.number(),
 });
 const soundUpdated = z.object({ t: z.literal("sound.updated"), at: z.number() });
 // The "screenshots list changed" nudge — broadcast after a screenshot is captured or deleted so every
@@ -305,12 +326,20 @@ const costUpdate = z.object({
 const pointsUpdated = z.object({
   t: z.literal("points.updated"),
   points: PointSnapshot,
+  pointLeaderboard: z.array(PointLeaderboardEntry),
   at: z.number(),
 });
 const pollUpdated = z.object({
   t: z.literal("poll.updated"),
   poll: Poll,
   requestId: z.uuid().optional(),
+  at: z.number(),
+});
+const marketUpdated = z.object({ t: z.literal("market.updated"), at: z.number() });
+const memberIconUpdated = z.object({
+  t: z.literal("member.icon.updated"),
+  userId: z.uuid(),
+  icon: EquippedMarketIcon.nullable(),
   at: z.number(),
 });
 
@@ -336,6 +365,7 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
   streamRemoved,
   watchState,
   soundPlayed,
+  soundStopped,
   soundUpdated,
   screenshotUpdated,
   recState,
@@ -346,6 +376,8 @@ export const serverMessageSchema = z.discriminatedUnion("t", [
   costUpdate,
   pointsUpdated,
   pollUpdated,
+  marketUpdated,
+  memberIconUpdated,
 ]);
 export type ServerMessage = z.infer<typeof serverMessageSchema>;
 

@@ -1,29 +1,17 @@
 import { LIMITS } from "@tavern/shared";
-import { LogOutIcon, SettingsIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
-import { buttonVariants } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { ServerSettingsDialog } from "@/features/admin/ServerSettingsDialog";
-import { useAuth } from "@/features/auth/useAuth";
 import { ServerSwitcher } from "@/features/servers/ServerSwitcher";
 import { UpdatePill } from "@/features/shell/UpdatePill";
-import { SettingsDialog } from "@/features/settings/SettingsDialog";
 import { cn } from "@/lib/utils";
 import type { WsStatus } from "@/lib/wsClient";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
-import { useSessionStore } from "@/stores/session";
 
-// The pinned header (§7.6): server switcher (left), spacer, connection dot, user menu. Every child is
-// driven by a store selector — no props.
-export function Header({ serverId }: { serverId: string }) {
+// The pinned header (§7.6): server switcher, connection status, updates, and server administration.
+export function Header() {
   return (
     <header
       data-testid="app-header"
@@ -41,7 +29,6 @@ export function Header({ serverId }: { serverId: string }) {
         <UpdatePill />
         <AdminSettings />
         <ConnectionDot />
-        <UserMenu serverId={serverId} />
       </div>
     </header>
   );
@@ -152,64 +139,5 @@ function ConnectionDot() {
       title={label}
       className={cn("size-2.5 shrink-0 rounded-full", CONN_DOT[status])}
     />
-  );
-}
-
-// FR-11 client-side logout + the FR-16/settings entry point (opens the controlled SettingsDialog).
-function UserMenu({ serverId }: { serverId: string }) {
-  const { logout } = useAuth();
-  const profile = useSessionStore((s) => s.profile);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  // Optimistically render the uploaded avatar (same pattern as the member chips); fall back to the
-  // colored initial when there's no avatar yet or the image 404s. Keyed to avatarKey so a fresh
-  // upload re-attempts the load instead of staying stuck on a previous failure.
-  const [avatarFailed, setAvatarFailed] = useState(false);
-  const initial = profile !== null ? profile.displayName.charAt(0) : "";
-  const showAvatar = profile !== null && profile.avatarKey !== undefined && !avatarFailed;
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          data-testid="user-menu"
-          aria-label={m.settings_title()}
-          className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "rounded-full")}
-        >
-          {showAvatar ? (
-            <img
-              key={profile.avatarKey}
-              src={`/api/media/avatars/${profile.userId}.webp`}
-              alt={profile.displayName}
-              data-testid="user-menu-avatar"
-              onError={() => setAvatarFailed(true)}
-              className="size-6 rounded-full bg-muted object-cover"
-            />
-          ) : (
-            <span
-              data-testid="user-menu-initial"
-              className="flex size-6 items-center justify-center rounded-full text-xs font-medium text-white"
-              style={{ backgroundColor: profile?.color ?? "#71717a" }}
-            >
-              {initial}
-            </span>
-          )}
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem data-testid="user-menu-settings" onClick={() => setSettingsOpen(true)}>
-            <SettingsIcon />
-            {m.shell_user_menu_settings()}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            data-testid="user-menu-logout"
-            onClick={() => {
-              void logout();
-            }}
-          >
-            <LogOutIcon />
-            {m.shell_user_menu_logout()}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <SettingsDialog serverId={serverId} open={settingsOpen} onOpenChange={setSettingsOpen} />
-    </>
   );
 }

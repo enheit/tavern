@@ -3,11 +3,13 @@
 # Chromium creates its session-bus connection before Tavern's JavaScript runs. A compositor or
 # terminal restarted inside the same login session can therefore leave AppImages with a stale
 # DBUS_SESSION_BUS_ADDRESS (commonly /tmp/dbus-*), making the Wayland ScreenCast portal unreachable.
-# Repair only a missing/stale path address; abstract, autolaunch, TCP, and live custom sockets are
-# valid session layouts and must be left alone.
-session_bus_address_is_stale() {
+# Some launch environments instead set the known-invalid sentinel "disabled:", which Chromium
+# rejects before it can contact the portal. Repair missing, stale, or known-invalid addresses;
+# abstract, autolaunch, TCP, and live custom sockets are valid session layouts and must be left alone.
+session_bus_address_needs_repair() {
   address=$1
   [ -n "$address" ] || return 0
+  [ "$address" = "disabled:" ] && return 0
 
   old_ifs=$IFS
   IFS=';'
@@ -36,7 +38,7 @@ runtime_dir=${XDG_RUNTIME_DIR:-"/run/user/$(id -u)"}
 runtime_bus="$runtime_dir/bus"
 runtime_owner=$(stat -c %u "$runtime_dir" 2>/dev/null || stat -f %u "$runtime_dir" 2>/dev/null || true)
 
-if session_bus_address_is_stale "${DBUS_SESSION_BUS_ADDRESS:-}"; then
+if session_bus_address_needs_repair "${DBUS_SESSION_BUS_ADDRESS:-}"; then
   if [ -S "$runtime_bus" ] && [ "$runtime_owner" = "$(id -u)" ]; then
     DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime_bus"
     export DBUS_SESSION_BUS_ADDRESS

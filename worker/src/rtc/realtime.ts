@@ -1,4 +1,6 @@
 import { z } from "zod";
+import type { ScreenRid } from "@tavern/shared";
+import { requiredEnv } from "../env";
 import { createRealtimeMock } from "./realtimeMock";
 
 // Typed client for the Cloudflare Realtime SFU HTTP API (PLAN §7.1). This is the ONLY path from the
@@ -20,13 +22,10 @@ const RETRY_DELAYS_MS = [150, 400];
 
 export type SessionDescription = { sdp: string; type: "offer" | "answer" };
 export type LocalTrackReq = { location: "local"; mid: string; trackName: string };
-// Simulcast selection passed to the SFU. priorityOrdering/ridNotAvailable "none" PIN the preferred
-// layer: without them the SFU's automatic mode ("asciibetical") keeps down-switching a watcher to
-// the 270p l layer whenever its bandwidth estimate dips below the h cap — measured flapping
-// 270↔1080 every few seconds on the 2026-07-11 quality probe, which is exactly the "fullscreen
-// looks like mush" bug. Layer choice is UI intent (grid=l, focus/fullscreen=h), never the SFU's.
+// Simulcast selection passed to the SFU. v2 screen publishers use h/i/l and Cloudflare's ordered
+// fallback; legacy publishers remain pinned because they have no useful intermediate rung.
 export type SimulcastPrefs = {
-  preferredRid: "h" | "l";
+  preferredRid: ScreenRid;
   priorityOrdering?: "none" | "asciibetical";
   ridNotAvailable?: "none" | "asciibetical";
 };
@@ -68,8 +67,8 @@ export interface RealtimeClient {
 }
 
 type RealtimeEnv = {
-  REALTIME_APP_ID: string;
-  REALTIME_APP_SECRET: string;
+  REALTIME_APP_ID?: string;
+  REALTIME_APP_SECRET?: string;
   TAVERN_SFU_MOCK?: string;
 };
 
@@ -225,5 +224,8 @@ function asResponse(parsed: z.infer<typeof tracksNewSchema>): TracksNewResponse 
 // media plane, PLAN §10); otherwise the real HTTP client bound to the app id + secret.
 export function createRealtimeClient(env: RealtimeEnv): RealtimeClient {
   if (env.TAVERN_SFU_MOCK === "1") return createRealtimeMock();
-  return new HttpRealtimeClient(env.REALTIME_APP_ID, env.REALTIME_APP_SECRET);
+  return new HttpRealtimeClient(
+    requiredEnv(env.REALTIME_APP_ID, "REALTIME_APP_ID"),
+    requiredEnv(env.REALTIME_APP_SECRET, "REALTIME_APP_SECRET"),
+  );
 }

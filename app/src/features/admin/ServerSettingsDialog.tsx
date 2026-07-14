@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { errorMessage } from "@/lib/errorMessage";
+import { MarketIcon } from "@/features/market/MarketIcon";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
@@ -293,6 +294,13 @@ function MembersSection({ serverId, selfId }: { serverId: string; selfId: string
             <span className="truncate text-sm" style={{ color: mem.color }}>
               {mem.displayName}
             </span>
+            {mem.marketIcon === undefined ? null : (
+              <MarketIcon
+                serverId={serverId}
+                itemId={mem.marketIcon.itemId}
+                name={mem.marketIcon.name}
+              />
+            )}
             {mem.userId !== selfId && (
               <Button
                 type="button"

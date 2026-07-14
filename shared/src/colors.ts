@@ -15,6 +15,23 @@ export const USER_COLORS = [
   "#f472b6", // pink
 ] as const;
 
+// Voice avatars keep the bright profile palette and add neutrals plus deeper clothing shades. This
+// is deliberately separate from USER_COLORS: black, gray, and white work well as clothing but read
+// as unassigned or low-contrast when used for names and presence indicators.
+export const VOICE_AVATAR_OUTFIT_COLORS = [
+  ...USER_COLORS,
+  "#18181b", // black
+  "#52525b", // gray
+  "#e4e4e7", // white
+  "#7f1d1d", // burgundy
+  "#92400e", // brown
+  "#166534", // forest
+  "#0f766e", // teal
+  "#1e3a8a", // navy
+  "#6b21a8", // plum
+  "#be185d", // berry
+] as const;
+
 // Random palette color — used as the better-auth `color` field default so every new user starts with
 // a distinct, non-gray name color instead of the old shared gray placeholder.
 export function randomUserColor(): string {

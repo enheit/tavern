@@ -1,10 +1,15 @@
 import { CostStatus, LIMITS, kbpsFor } from "@tavern/shared";
-import type { CostStatus as CostStatusType, PresetId } from "@tavern/shared";
+import type {
+  CostStatus as CostStatusType,
+  PresetId,
+  ScreenRid,
+  WatchDelivery,
+} from "@tavern/shared";
 import { z } from "zod";
 
 // §8 G5 egress meter + kill switch (day-one requirement, not polish). The DO accumulates ESTIMATED
-// egress = Σ active pulls × §App-D bitrate × dt, banked on watch release / rid-switch and on the S3.4
-// 60s alarm tick, into `egress_log(month)`. At egressWarnGB → cost.warning (once per month-bucket);
+// egress = Σ active pulls × §App-D bitrate × dt, banked on watch release / rid-switch and projected
+// while open, into `egress_log(month)`. At egressWarnGB → cost.warning (once per month-bucket);
 // at egressKillGB → new non-mic pulls are rejected (cost_cap); voice always flows. KILL_SWITCH_DISABLED
 // bypasses the kill only — the meter keeps counting so the group still sees the number.
 //
@@ -16,7 +21,13 @@ const BYTES_PER_GB = 1_000_000_000;
 
 // One open watch = one active pull being metered. Keyed by `${viewerId}|${trackName}` (viewerId is a
 // UUID and trackName is a colon-grammar name — neither contains '|', so the join is unambiguous).
-type OpenWatch = { preset: PresetId; rid: "h" | "l"; since: number };
+type OpenWatch = {
+  preset: PresetId;
+  rid: ScreenRid;
+  delivery: WatchDelivery;
+  since: number;
+};
+type StoredOpenWatch = Omit<OpenWatch, "delivery"> & { delivery?: WatchDelivery };
 type OpenWatches = Record<string, OpenWatch>;
 
 export type CostMeterEnv = { KILL_SWITCH_DISABLED?: string; TAVERN_TEST?: string };
@@ -41,15 +52,26 @@ function watchKey(viewerId: string, trackName: string): string {
 }
 
 // bytes for one metered segment (App-D bitrate × dt). kbps×1000/8 = bytes/s; ×(dtMs/1000) = bytes.
-function segmentBytes(preset: PresetId, rid: "h" | "l", sinceMs: number, nowMs: number): number {
+function segmentBytes(entry: OpenWatch, sinceMs: number, nowMs: number): number {
+  if (entry.delivery === "audio") return 0;
   const dtSeconds = Math.max(0, nowMs - sinceMs) / 1000;
-  return Math.round(((kbpsFor(preset, rid) * 1000) / 8) * dtSeconds);
+  return Math.round(((kbpsFor(entry.preset, entry.rid) * 1000) / 8) * dtSeconds);
 }
 
 // UTC month bucket 'YYYY-MM' (egress_log PRIMARY KEY).
 function monthOf(nowMs: number): string {
   const d = new Date(nowMs);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function monthStart(nowMs: number): number {
+  const d = new Date(nowMs);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+}
+
+function nextMonth(nowMs: number): number {
+  const d = new Date(nowMs);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
 }
 
 export class CostMeter {
@@ -63,8 +85,13 @@ export class CostMeter {
   }
 
   private async readOpen(): Promise<OpenWatches> {
-    const stored = await this.ctx.storage.get<OpenWatches>(OPEN_KEY);
-    return stored === undefined ? {} : { ...stored };
+    const stored = await this.ctx.storage.get<Record<string, StoredOpenWatch>>(OPEN_KEY);
+    if (stored === undefined) return {};
+    const open: OpenWatches = {};
+    for (const [key, entry] of Object.entries(stored)) {
+      open[key] = { ...entry, delivery: entry.delivery ?? "video" };
+    }
+    return open;
   }
 
   private async writeOpen(open: OpenWatches): Promise<void> {
@@ -88,18 +115,28 @@ export class CostMeter {
     return row === undefined ? 0 : Number(row.bytes);
   }
 
+  private addSegment(entry: OpenWatch, at: number): void {
+    let cursor = Math.min(entry.since, at);
+    while (cursor < at) {
+      const end = Math.min(at, nextMonth(cursor));
+      this.addBytes(monthOf(cursor), segmentBytes(entry, cursor, end));
+      cursor = end;
+    }
+  }
+
   // Opens a metered pull (called at grant/watch.start, S8.2). A duplicate keeps the earlier clock.
   async openWatch(
     viewerId: string,
     trackName: string,
     preset: PresetId,
-    rid: "h" | "l",
+    rid: ScreenRid,
     since: number,
+    delivery: WatchDelivery = "video",
   ): Promise<void> {
     const open = await this.readOpen();
     const key = watchKey(viewerId, trackName);
     if (key in open) return;
-    open[key] = { preset, rid, since };
+    open[key] = { preset, rid, delivery, since };
     await this.writeOpen(open);
   }
 
@@ -109,15 +146,33 @@ export class CostMeter {
   async setWatcherLayer(
     viewerId: string,
     trackName: string,
-    rid: "h" | "l",
+    rid: ScreenRid,
     at: number,
   ): Promise<void> {
     const open = await this.readOpen();
     const key = watchKey(viewerId, trackName);
     const entry = open[key];
     if (entry === undefined) return;
-    this.addBytes(monthOf(entry.since), segmentBytes(entry.preset, entry.rid, entry.since, at));
-    open[key] = { preset: entry.preset, rid, since: at };
+    if (entry.rid === rid) return;
+    this.addSegment(entry, at);
+    open[key] = { ...entry, rid, since: at };
+    await this.writeOpen(open);
+  }
+
+  // Presentation-only audio mode keeps the watch/stat grant alive while eliminating VIDEO egress.
+  // Bank the previous delivery segment first so each interval is charged exactly once.
+  async setWatcherDelivery(
+    viewerId: string,
+    trackName: string,
+    delivery: WatchDelivery,
+    at: number,
+  ): Promise<void> {
+    const open = await this.readOpen();
+    const key = watchKey(viewerId, trackName);
+    const entry = open[key];
+    if (entry === undefined || entry.delivery === delivery) return;
+    this.addSegment(entry, at);
+    open[key] = { ...entry, delivery, since: at };
     await this.writeOpen(open);
   }
 
@@ -134,8 +189,9 @@ export class CostMeter {
       if (sep < 0 || key.slice(sep + 1) !== trackName) continue;
       const entry = open[key];
       if (entry === undefined) continue;
-      this.addBytes(monthOf(entry.since), segmentBytes(entry.preset, entry.rid, entry.since, at));
-      open[key] = { preset, rid: entry.rid, since: at };
+      if (entry.preset === preset) continue;
+      this.addSegment(entry, at);
+      open[key] = { ...entry, preset, since: at };
       changed = true;
     }
     if (changed) await this.writeOpen(open);
@@ -147,7 +203,7 @@ export class CostMeter {
     const key = watchKey(viewerId, trackName);
     const entry = open[key];
     if (entry === undefined) return;
-    this.addBytes(monthOf(entry.since), segmentBytes(entry.preset, entry.rid, entry.since, at));
+    this.addSegment(entry, at);
     delete open[key];
     await this.writeOpen(open);
   }
@@ -161,7 +217,7 @@ export class CostMeter {
       if (!key.startsWith(prefix)) continue;
       const entry = open[key];
       if (entry !== undefined) {
-        this.addBytes(monthOf(entry.since), segmentBytes(entry.preset, entry.rid, entry.since, at));
+        this.addSegment(entry, at);
       }
       delete open[key];
       changed = true;
@@ -177,38 +233,45 @@ export class CostMeter {
     for (const key of Object.keys(open)) {
       const entry = open[key];
       if (entry === undefined) continue;
-      this.addBytes(monthOf(entry.since), segmentBytes(entry.preset, entry.rid, entry.since, now));
-      open[key] = { preset: entry.preset, rid: entry.rid, since: now };
+      this.addSegment(entry, now);
+      open[key] = { ...entry, since: now };
       changed = true;
     }
     if (changed) await this.writeOpen(open);
   }
 
-  usedGB(now: number): number {
-    return this.bytesForMonth(monthOf(now)) / BYTES_PER_GB;
+  async usedGB(now: number): Promise<number> {
+    const month = monthOf(now);
+    const start = monthStart(now);
+    const open = await this.readOpen();
+    let bytes = this.bytesForMonth(month);
+    for (const entry of Object.values(open)) {
+      const since = Math.max(entry.since, start);
+      if (since < now) bytes += segmentBytes(entry, since, now);
+    }
+    return bytes / BYTES_PER_GB;
   }
 
   // Kill switch: block non-mic pulls once egress ≥ killGB. KILL_SWITCH_DISABLED=1 bypasses the block
   // (the meter itself keeps counting regardless — this only gates the pull decision).
-  isBlocked(now: number): boolean {
+  async isBlocked(now: number): Promise<boolean> {
     if (this.env.KILL_SWITCH_DISABLED === "1") return false;
-    return this.usedGB(now) >= LIMITS.egressKillGB;
+    return (await this.usedGB(now)) >= LIMITS.egressKillGB;
   }
 
   // Emits true the FIRST time usage reaches warnGB in a given month-bucket, then false (idempotent via
   // the persisted warned-month marker) — "cost.warning once per month" (§8 G5).
   async maybeWarn(now: number): Promise<boolean> {
-    if (this.usedGB(now) < LIMITS.egressWarnGB) return false;
+    if ((await this.usedGB(now)) < LIMITS.egressWarnGB) return false;
     const month = monthOf(now);
     if ((await this.ctx.storage.get<string>(WARNED_KEY)) === month) return false;
     await this.ctx.storage.put(WARNED_KEY, month);
     return true;
   }
 
-  // Alarm-tick seam (§S3.4 alarm): flush open watches, then report whether the warn threshold was newly
-  // crossed this month — ServerRoom broadcasts cost.warning iff true.
+  // Alarm-tick seam: project open watches and report whether the warn threshold was newly crossed.
+  // No interval is banked or re-baselined here.
   async tick(now: number): Promise<boolean> {
-    await this.flush(now);
     return this.maybeWarn(now);
   }
 
@@ -228,12 +291,12 @@ export class CostMeter {
     return Response.json({});
   }
 
-  // Synchronous snapshot for hello.ok.costStatus (egress_log is sync SQL; no open-watch read needed).
-  status(now: number): CostStatusType {
+  async status(now: number): Promise<CostStatusType> {
+    const usedGB = await this.usedGB(now);
     return CostStatus.parse({
-      usedGB: this.usedGB(now),
+      usedGB,
       capGB: LIMITS.egressKillGB,
-      blocked: this.isBlocked(now),
+      blocked: this.env.KILL_SWITCH_DISABLED !== "1" && usedGB >= LIMITS.egressKillGB,
     });
   }
 }

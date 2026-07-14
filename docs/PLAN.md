@@ -287,11 +287,15 @@ tests. Test files reference FR ids in `describe()` strings so coverage is greppa
   the soundboard volume. Local, persisted.
 - **FR-32 Auto-layout** of tiles on the canvas exactly per §App-C (from `images/`). AC: unit tests
   lock the table for n=1..12; e2e screenshot-asserts 2-stream side-by-side.
-- **FR-33 Viewers always pull the high simulcast layer** — grid, focused, and fullscreen tiles all
-  receive best quality; focus/fullscreen is a layout toggle only (amended 2026-07-12; originally
-  quality followed tile size). The `tracks/update` layer-switch path stays wired (a future
-  data-saver toggle) but the default UI never downswitches. AC: `getStats` resolution on an
-  UNFOCUSED grid tile reaches the high layer; no layer switch issued on focus/unfocus.
+- **FR-33 Watch lifetime is independent from presentation.** Grid/focus/fullscreen reparenting never
+  stops or re-creates a logical watch. A visible Tavern window keeps watched streams at `h` even when
+  keyboard focus is on another monitor. In theater fullscreen, the selected stream stays `h`; other
+  watched streams keep their grant/session but enter saver delivery (audio-only when `hasAudio`,
+  otherwise `l`). A hidden/minimized document applies the same saver rule and restores video on the
+  existing watch when visible. The publisher remains live even with zero viewers; only its muted local
+  preview is detached while Tavern lacks focus. AC: fullscreen round-trip preserves every watch,
+  thumbnail promotion never sends `watch.stop`, a never-watched stream creates no pull, and monitor-two
+  playback does not downshift merely because `document.hasFocus()` is false.
 
 ### 1.6 Soundboard
 
@@ -773,6 +777,7 @@ soundboard: number 0..2, mutedUsers: userId[] }` (the localStorage `settings.vol
 | `POST /api/rtc/:serverId/tracks` | member-in-voice | publish (`location:'local'`) or pull (`location:'remote'`); Worker enforces §8 caps; DO registers publishes / meters pulls |
 | `PUT /api/rtc/:serverId/renegotiate` | member-in-voice | passthrough |
 | `PUT /api/rtc/:serverId/tracks/update` | member-in-voice | simulcast layer switch (FR-33); DO reprices the watch grant (`op:'layer'`) for the cost meter |
+| `PUT /api/rtc/:serverId/watch/delivery` | member-in-voice | `{trackName,delivery:'video'|'audio'}` for an existing grant; persists saver delivery without ending the logical watch |
 | `POST /api/rtc/:serverId/close` | member-in-voice | closes tracks/session; DO unregisters |
 | `GET /api/rtc/ice` | session | `{ iceServers }` — STUN + short-lived TURN creds from CF |
 
@@ -817,8 +822,10 @@ Per client in voice, exactly three kinds of RTCPeerConnection:
    tracks are added/removed on the same session (`tracks/new` + renegotiate). Client = offerer.
 2. **voicePullPC** (1 per client): pulls ALL remote mic tracks; add/remove on member join/leave
    via `tracks/new`(remote)+renegotiate. SFU = offerer, client = answerer (do not invert).
-3. **watchPC** (1 per watched stream): pulls that stream's video (+audio if `hasAudio`). Created
-   on watch, closed on unwatch — isolates renegotiation churn per FR-30/33.
+3. **watchPC** (1 per watched stream): pulls that stream's video (+audio if `hasAudio`). Created on
+   watch and closed only on explicit unwatch, stream removal, room change, or replaced room snapshot —
+   never on tile unmount/reparent. Saver delivery may close/re-add only its remote video track while
+   retaining the same watchPC, audio companion, server grant, and watch-stat interval.
 
 Track naming (registered in the DO, broadcast via `stream.added`):
 `mic:{userId}` · `screen:{userId}:{n}` · `screenAudio:{userId}:{n}` · `cam:{userId}` (n = stable
@@ -833,7 +840,8 @@ SFU mechanics (verified against the live OpenAPI spec — deviations are R1 stop
 - Any response with `requiresImmediateRenegotiation:true` (typical on pulls/closes) MUST be
   answered immediately: `setRemoteDescription(offer)` → `createAnswer` → `PUT renegotiate`.
 - Viewer layer switch (FR-33) = `PUT .../tracks/update` with `simulcast: { preferredRid }` on the
-  existing pull — no PC teardown.
+  existing pull — no PC teardown. Audio-only saver mode uses `tracks/close` for the video mid; any
+  immediate SFU offer is answered before the mid mapping is released, and restore re-adds the video.
 - Tracks are garbage-collected after ~30s without packets. Therefore self-mute = `track.enabled =
   false` (silence frames keep flowing); NEVER `replaceTrack(null)` to pause a published track.
 - Rate limit: 50 API calls/sec per session — irrelevant at our scale but the Worker proxy still
@@ -848,9 +856,10 @@ pair from the SFU app id/secret — both provisioned in S7.1, both stored per R7
 
 Screen shares and webcams publish **two simulcast layers** (`h` = the chosen preset, `l` = the
 pinned low layer) via `addTransceiver(track, { direction:'sendonly', sendEncodings:[{rid:'h',…},
-{rid:'l', scaleResolutionDownBy,…}] })`. Watchers: every watched tile → `h` from the initial pull
-(FR-33 amended — `tracks/update` stays as the unused downswitch mechanism), voice-only users →
-nothing (FR-30). Publisher preset changes (FR-27)
+{rid:'l', scaleResolutionDownBy,…}] })`. Watchers start at `h`; reliable hidden/minimized or theater
+saver state switches video-only streams to `l`, while an audio-carrying stream retains only its audio
+companion until restored. Unfocused-but-visible windows remain `h`; voice-only users pull no stream
+video (FR-30). Publisher preset changes (FR-27)
 = `applyConstraints` on the capture track (frame-rate ceiling only) + `RTCRtpSender.setParameters`
 (maxBitrate/maxFramerate/scaleResolutionDownBy on both rids) — never re-create the track. Amended
 S12.4: RESOLUTION is owned by the encoder scales computed from the acquisition height — a
@@ -935,12 +944,15 @@ case for this product shape is $600+/mo; capped it is ~free. Therefore:
   watch click). Enforced client-side AND rejected server-side (Worker refuses pulls of tracks the
   DO doesn't map to an active voice membership / watch grant).
 - **G2 maxBitrate on every encoding** per §App-D. Missing maxBitrate = review-blocking bug.
-- **G3 Simulcast mandatory** for screen+webcam; every watcher pulls `h` (FR-33 amended — the `l`
-  layer stays published for a future data-saver toggle).
+- **G3 Simulcast mandatory** for screen+webcam; every watcher initially pulls `h`. Reliable saver
+  states may switch video-only watches to `l`; focus loss alone never does so because a second-monitor
+  Tavern window remains visible.
 - **G4 Concurrent screen-share cap**: `LIMITS.maxConcurrentScreenShares = 4` per server; 5th
   `stream.start` → `error{code:'share_cap'}`.
-- **G5 Egress meter**: DO accumulates estimated egress (Σ active pulls × §App-D bitrate × dt,
-  computed on watch start/stop/tick) into `egress_log`. At `LIMITS.egressWarnGB=700`/month →
+- **G5 Egress meter**: DO accumulates estimated video egress (Σ video deliveries × §App-D bitrate ×
+  dt, segmented on watch start/stop, rid change, and video↔audio delivery change) into `egress_log`.
+  Audio-only saver intervals add zero to this video estimate without closing watch stats. At
+  `LIMITS.egressWarnGB=700`/month →
   `cost.warning` broadcast (UI banner). At `LIMITS.egressKillGB=900` → new pulls rejected
   (`cost_cap`), voice stays up. Env override `KILL_SWITCH_DISABLED=1` for emergencies.
 - **G6 Free-tier awareness**: within 1TB/mo everything is $0; the meter exists so the group

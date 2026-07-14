@@ -54,17 +54,18 @@ const streamInfo = {
   userId: UUID,
   hasAudio: true,
   preset: "1080p30",
+  preview: { id: UUID, version: "preview-v1" },
 };
 
 const clientFixtures = [
-  { t: "hello", proto: 1 },
+  { t: "hello", proto: 1, mediaReset: true },
   { t: "chat.send", body: "hi", nonce: UUID },
   { t: "chat.history", requestId: UUID, mode: "initial", limit: 30 },
   { t: "chat.read", messageId: 1 },
   { t: "chat.edit", requestId: UUID, messageId: 1, body: "updated" },
   { t: "chat.delete", requestId: UUID, messageId: 1 },
   { t: "chat.reaction.set", requestId: UUID, messageId: 1, emoji: "😀", reacted: true },
-  { t: "voice.join" },
+  { t: "voice.join", mediaReadyVersion: 2 },
   { t: "voice.leave" },
   { t: "voice.state", muted: false, deafened: false },
   { t: "stream.start", kind: "screen", trackName: track, preset: "1080p30" },
@@ -73,6 +74,7 @@ const clientFixtures = [
   { t: "watch.start", trackName: track },
   { t: "watch.stop", trackName: track },
   { t: "sound.play", soundId: UUID },
+  { t: "sound.stop", soundId: UUID },
   { t: "rec.start" },
   { t: "rec.stop" },
   { t: "status.set", text: "brb in 5" },
@@ -142,29 +144,44 @@ const serverFixtures = [
   { t: "member.left", userId: UUID, at: 1 },
   { t: "voice.state", voice, at: 1 },
   { t: "stream.added", stream: streamInfo, at: 1 },
-  { t: "stream.updated", trackName: track, preset: "720p30", at: 1 },
+  {
+    t: "stream.updated",
+    trackName: track,
+    preset: "720p30",
+    preview: { id: UUID, version: "preview-v2" },
+    at: 1,
+  },
   { t: "stream.removed", trackName: track, at: 1 },
-  { t: "sound.played", soundId: UUID, byUserId: UUID, at: 1, trimStartMs: 0, trimEndMs: 1500 },
+  {
+    t: "sound.played",
+    soundId: UUID,
+    byUserId: UUID,
+    at: 1,
+    trimStartMs: 0,
+    trimEndMs: 1500,
+    gain: 1,
+  },
+  { t: "sound.stopped", soundId: UUID, byUserId: UUID, at: 1 },
   { t: "sound.updated", at: 1 },
   { t: "rec.state", recording, at: 1 },
   { t: "server.updated", nickname: "tavern", at: 1 },
   { t: "status.updated", text: "brb in 5", at: 1 },
   { t: "kicked", at: 1 },
   { t: "cost.warning", usedGB: 1, capGB: 2, at: 1 },
-  { t: "points.updated", points, at: 1 },
+  { t: "points.updated", points, pointLeaderboard: [{ userId: UUID, balance: 10 }], at: 1 },
   { t: "poll.updated", poll, at: 1 },
 ];
 
 describe("App-A protocol round-trips", () => {
   it("parses all client message fixtures", () => {
-    expect(clientFixtures.length).toBe(26);
+    expect(clientFixtures.length).toBe(27);
     for (const f of clientFixtures) {
       expect(() => parseClientMessage(f)).not.toThrow();
     }
   });
 
   it("parses all server message fixtures", () => {
-    expect(serverFixtures.length).toBe(28);
+    expect(serverFixtures.length).toBe(29);
     for (const f of serverFixtures) {
       expect(() => parseServerMessage(f)).not.toThrow();
     }

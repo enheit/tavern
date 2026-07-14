@@ -2,6 +2,20 @@ import { authTransport } from "@/lib/authTransport";
 import { platform } from "@/platform/types";
 import type { AudioGraph } from "./audioGraph";
 
+export type SoundboardPlaybackMode = "shared" | "local-preview" | "editor-preview";
+
+export interface PlayableSound {
+  id: string;
+  trimStartMs: number;
+  trimEndMs: number;
+  gain: number;
+}
+
+interface ActivePlayback {
+  cancelled: boolean;
+  promise: Promise<void>;
+}
+
 // FR-36 soundboard playback. On a `sound.played` broadcast, each in-voice client fetches the mp3
 // (Cache API-backed), decodes it PER play (no decoded-buffer cache — §7.4), and plays the
 // [trimStart,trimEnd] slice through the graph's `sbGain` (never injected into WebRTC — A7). The class
@@ -9,31 +23,123 @@ import type { AudioGraph } from "./audioGraph";
 export class SoundboardPlayer {
   private readonly graph: AudioGraph;
   private readonly fetchSound: (soundId: string) => Promise<ArrayBuffer>;
+  private readonly activePlaybacks = new Map<string, ActivePlayback>();
 
   constructor(deps: { graph: AudioGraph; fetchSound: (soundId: string) => Promise<ArrayBuffer> }) {
     this.graph = deps.graph;
     this.fetchSound = deps.fetchSound;
   }
 
-  async play(sound: { id: string; trimStartMs: number; trimEndMs: number }): Promise<void> {
+  async play(sound: PlayableSound, mode: SoundboardPlaybackMode = "shared"): Promise<void> {
+    await this.playOnce(sound, mode, async () =>
+      platform.isE2E ? null : await this.fetchSound(sound.id),
+    );
+  }
+
+  async playBytes(
+    bytes: ArrayBuffer,
+    sound: PlayableSound,
+    mode: SoundboardPlaybackMode,
+    onStarted?: () => void,
+  ): Promise<void> {
+    await this.playOnce(sound, mode, async () => bytes, onStarted);
+  }
+
+  private async playOnce(
+    sound: PlayableSound,
+    mode: SoundboardPlaybackMode,
+    loadBytes: () => Promise<ArrayBuffer | null>,
+    onStarted?: () => void,
+  ): Promise<void> {
+    const key = `${mode}:${sound.id}`;
+    const existing = this.activePlaybacks.get(key);
+    if (existing !== undefined) {
+      await existing.promise;
+      return;
+    }
+    const playback: ActivePlayback = { cancelled: false, promise: Promise.resolve() };
+    playback.promise = (async () => {
+      try {
+        const bytes = await loadBytes();
+        if (playback.cancelled) return;
+        await this.playBytesInternal(bytes, sound, mode, playback, onStarted);
+      } finally {
+        if (this.activePlaybacks.get(key) === playback) this.activePlaybacks.delete(key);
+      }
+    })();
+    this.activePlaybacks.set(key, playback);
+    await playback.promise;
+  }
+
+  private async playBytesInternal(
+    bytes: ArrayBuffer | null,
+    sound: PlayableSound,
+    mode: SoundboardPlaybackMode,
+    playback: ActivePlayback,
+    onStarted?: () => void,
+  ): Promise<void> {
     // §10 e2e: record the play instead of producing audible output (deterministic under fake media —
     // the FR-36 cross-client sync AC reads window.__tavernTestAudio.soundboardPlays). The array
     // identity is stable (S7.4 owns it); this is the SOLE consumer of the soundboardPlays field.
     if (platform.isE2E && typeof window !== "undefined") {
+      if (playback.cancelled) return;
       // oxlint-disable-next-line no-underscore-dangle -- the pinned §10 e2e hook global window.__tavernTestAudio
-      window.__tavernTestAudio?.soundboardPlays.push({ soundId: sound.id, at: Date.now() });
+      window.__tavernTestAudio?.soundboardPlays.push({
+        soundId: sound.id,
+        at: Date.now(),
+        mode,
+        trimStartMs: sound.trimStartMs,
+        trimEndMs: sound.trimEndMs,
+        gain: sound.gain,
+      });
+      onStarted?.();
       return;
     }
-    const bytes = await this.fetchSound(sound.id);
+    if (bytes === null) throw new Error("Sound bytes are unavailable");
     const buffer = await this.graph.decode(bytes);
-    // Concurrent/overlapping plays are allowed — the graph tracks each live source node.
-    await this.graph.playSoundboard(buffer, sound.trimStartMs, sound.trimEndMs);
+    if (playback.cancelled) return;
+    await this.graph.playSoundboard(
+      buffer,
+      sound.trimStartMs,
+      sound.trimEndMs,
+      sound.gain,
+      mode,
+      sound.id,
+      onStarted,
+    );
   }
 
   // Cuts every live soundboard source (deafen-on and voice leave). Delegates to the graph, which owns
   // the live BufferSourceNodes (§7.3 one AudioContext).
   stopAll(): void {
+    this.cancelPlaybacks((key) => key.startsWith("shared:"));
     this.graph.stopSoundboard();
+  }
+
+  stop(soundId: string): void {
+    this.cancelPlayback(`shared:${soundId}`);
+    this.graph.stopSoundboard(soundId);
+  }
+
+  stopPreview(soundId?: string): void {
+    if (soundId === undefined) this.cancelPlaybacks((key) => !key.startsWith("shared:"));
+    else this.cancelPlayback(`local-preview:${soundId}`);
+    this.graph.stopSoundboardPreview(soundId);
+  }
+
+  private cancelPlayback(key: string): void {
+    const playback = this.activePlaybacks.get(key);
+    if (playback === undefined) return;
+    playback.cancelled = true;
+    this.activePlaybacks.delete(key);
+  }
+
+  private cancelPlaybacks(matches: (key: string) => boolean): void {
+    for (const [key, playback] of this.activePlaybacks) {
+      if (!matches(key)) continue;
+      playback.cancelled = true;
+      this.activePlaybacks.delete(key);
+    }
   }
 }
 

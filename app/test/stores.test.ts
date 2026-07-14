@@ -179,8 +179,20 @@ const cases: ReducerCase[] = [
   },
   {
     name: "stream.updated",
-    frame: { t: "stream.updated", trackName: "screen:u1:1", preset: "720p30", at: 1 },
-    check: (s) => expect(s.streams[0]?.preset).toBe("720p30"),
+    frame: {
+      t: "stream.updated",
+      trackName: "screen:u1:1",
+      preset: "720p30",
+      preview: {
+        id: "123e4567-e89b-42d3-a456-426614174000",
+        version: "preview-v1",
+      },
+      at: 1,
+    },
+    check: (s) => {
+      expect(s.streams[0]?.preset).toBe("720p30");
+      expect(s.streams[0]?.preview?.version).toBe("preview-v1");
+    },
   },
   {
     name: "stream.removed",
@@ -233,7 +245,13 @@ const cases: ReducerCase[] = [
       at: 1,
       trimStartMs: 0,
       trimEndMs: 500,
+      gain: 1,
     },
+    check: (s) => expect(s.members).toHaveLength(1),
+  },
+  {
+    name: "sound.stopped",
+    frame: { t: "sound.stopped", soundId: "s1", byUserId: "u1", at: 1 },
     check: (s) => expect(s.members).toHaveLength(1),
   },
   {
@@ -249,8 +267,8 @@ const cases: ReducerCase[] = [
 ];
 
 describe("§App-A room reducer", () => {
-  it("covers every server→client frame type exactly once (20 types)", () => {
-    expect(new Set(cases.map((c) => c.frame.t)).size).toBe(20);
+  it("covers every server→client frame type exactly once (21 types)", () => {
+    expect(new Set(cases.map((c) => c.frame.t)).size).toBe(21);
   });
 
   for (const c of cases) {

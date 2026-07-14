@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { watchSpeaking } from "@/media/levelMeter";
+import { normalizeVoiceLevel, watchSpeaking } from "@/media/levelMeter";
 
 // Drive the rAF loop by hand: capture the scheduled callback and step it with a controlled clock,
 // filling the analyser buffer with a synthetic constant amplitude (RMS of a constant = the constant).
@@ -85,5 +85,27 @@ describe("FR-23 speaking detection", () => {
     expect(events).toEqual([true]);
     stop();
     expect(cancelAnimationFrame).toHaveBeenCalledWith(1);
+  });
+
+  it("publishes normalized animation energy every frame and resets it on unsubscribe", () => {
+    const levels: number[] = [];
+    amplitude = 0.1;
+    const stop = watchSpeaking(analyserAt(), () => undefined, {
+      onLevel: (level) => levels.push(level),
+    });
+
+    frameAt(0);
+    expect(levels).toEqual([1]);
+
+    amplitude = 0;
+    frameAt(16);
+    expect(levels.at(-1)).toBe(0);
+
+    amplitude = 0.05;
+    frameAt(32);
+    expect(levels.at(-1)).toBeCloseTo(normalizeVoiceLevel(0.05, 0.02));
+
+    stop();
+    expect(levels.at(-1)).toBe(0);
   });
 });

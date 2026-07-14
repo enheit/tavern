@@ -25,6 +25,10 @@ const seedPointsBody = z.object({
   userId: z.uuid(),
   balance: z.number().int().nonnegative(),
 });
+const removeMembersBody = z.object({
+  serverId: z.uuid(),
+  userIds: z.array(z.uuid()).min(1).max(10),
+});
 
 export const testSeedRoute = new Hono<{ Bindings: Env; Variables: AuthVars }>();
 
@@ -82,6 +86,30 @@ testSeedRoute.post("/seed-points", async (c) => {
   if (!res.ok) return c.json({ error: "not_found" satisfies ErrorCode }, 404);
   const body: unknown = await res.json();
   return c.json(body);
+});
+
+// Local/e2e crowd cleanup. Directly seeded memberships still need the same DO eviction as an admin
+// kick; deleting only D1 would leave stale people in the room snapshot. This route exists only when
+// TAVERN_TEST=1 and performs both source-of-truth deletion and cache/socket eviction in that order.
+testSeedRoute.post("/remove-members", async (c) => {
+  if (c.env.TAVERN_TEST !== "1") return c.json({ error: "not_found" satisfies ErrorCode }, 404);
+  const parsed = removeMembersBody.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  const { serverId, userIds } = parsed.data;
+  const stub = c.env.SERVER_ROOM.get(c.env.SERVER_ROOM.idFromName(serverId));
+  await Promise.all(
+    userIds.map(async (userId) => {
+      await c.env.DB.prepare("DELETE FROM memberships WHERE user_id = ? AND server_id = ?")
+        .bind(userId, serverId)
+        .run();
+      await stub.fetch("https://do.internal/internal/kick", {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Tavern-Internal": "1" },
+        body: JSON.stringify({ userId, by: userId }),
+      });
+    }),
+  );
+  return c.json({ removed: userIds.length });
 });
 
 // Mock-SFU state readout (Task-1 diagnostics): the mock keeps its published-track registry in

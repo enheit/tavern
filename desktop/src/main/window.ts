@@ -75,6 +75,10 @@ export function installNavigationGuards(contents: WebContents): void {
 
 export function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
+    // Size the renderer, not the native frame. On Windows the title bar otherwise consumes part of
+    // the requested 800px window height, leaving the viewport too short for the persistent chat
+    // layout until the user manually enlarges the window.
+    useContentSize: true,
     width: 1280,
     height: 800,
     minWidth: 940,

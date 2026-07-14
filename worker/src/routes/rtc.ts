@@ -4,14 +4,21 @@ import { z } from "zod";
 import {
   IceServersResponse,
   LIMITS,
+  RtcPublicationRequest,
   RtcClosePayload,
   RtcRenegotiateRequest,
+  RtcSessionRequest,
   RtcTracksLocalRequest,
   RtcTracksResponse,
+  RtcWatchDeliveryRequest,
+  RtcWatchDeliveryResponse,
+  SCREEN_RIDS,
+  SCREEN_SIMULCAST_PROFILE,
   errorCodeSchema,
 } from "@tavern/shared";
-import type { ErrorCode } from "@tavern/shared";
+import type { ErrorCode, ScreenRid, ScreenSimulcastProfile } from "@tavern/shared";
 import type { AuthVars } from "../middleware";
+import { requiredEnv } from "../env";
 import { RealtimeError, createRealtimeClient } from "../rtc/realtime";
 import type { RemoteTrackReq, SimulcastPrefs, TracksNewResponse } from "../rtc/realtime";
 import type { RtcAuthorizeReq, RtcKind } from "../do/roomState";
@@ -39,16 +46,22 @@ function invariant<T>(value: T | null | undefined, message: string): T {
 }
 
 // Maps an authorize/route ErrorCode to its HTTP status.
-function statusFor(code: ErrorCode): 400 | 401 | 403 | 429 {
+function statusFor(code: ErrorCode): 400 | 401 | 403 | 426 | 429 {
   if (code === "unauthorized") return 401;
   if (code === "bad_request") return 400;
+  if (code === "voice_client_update_required") return 426;
   if (code === "rtc_rate_limited") return 429;
   return 403; // forbidden · not_in_voice · share_cap · pull_denied · cost_cap
 }
 
 // The DO authorize response (validated at the DO→Worker boundary, §9.8).
 const rtcAuthorizeResSchema = z.union([
-  z.object({ ok: z.literal(true), publisherSessions: z.record(z.string(), z.string()).optional() }),
+  z.object({
+    ok: z.literal(true),
+    publisherSessions: z.record(z.string(), z.string()).optional(),
+    simulcastProfiles: z.record(z.string(), z.literal(SCREEN_SIMULCAST_PROFILE)).optional(),
+    publicationId: z.uuid().optional(),
+  }),
   z.object({ ok: z.literal(false), error: errorCodeSchema }),
 ]);
 type AuthorizeResult = z.infer<typeof rtcAuthorizeResSchema>;
@@ -62,7 +75,7 @@ const rtcPullBody = z.object({
     z.object({
       location: z.literal("remote"),
       trackName: z.string(),
-      simulcast: z.object({ preferredRid: z.enum(["h", "l"]) }).optional(),
+      simulcast: z.object({ preferredRid: z.enum(SCREEN_RIDS) }).optional(),
     }),
   ),
 });
@@ -75,7 +88,7 @@ const rtcUpdateBody = z.object({
     z.object({
       mid: z.string(),
       trackName: z.string().optional(),
-      simulcast: z.object({ preferredRid: z.enum(["h", "l"]) }),
+      simulcast: z.object({ preferredRid: z.enum(SCREEN_RIDS) }),
     }),
   ),
 });
@@ -85,14 +98,26 @@ function isShareCounter(v: string | undefined): boolean {
   return v !== undefined && /^[1-9][0-9]*$/.test(v);
 }
 
-// Pin the client-requested simulcast layer at the SFU. Both "none"s disable the SFU's automatic
-// asciibetical mode, which otherwise down-switches a watcher to the 250 kbps / 270p l layer every
-// time its bandwidth estimate dips below the h cap (measured 270↔1080 flapping on the quality
-// probe) — the direct cause of "fullscreen looks terrible at 1080p60". Layer choice is UI intent:
-// every watched tile asks for h from the initial pull (FR-33 amended, always-h policy); the SFU
-// must follow, not guess.
-function pinnedSimulcast(preferredRid: "h" | "l"): SimulcastPrefs {
+// Legacy two-layer publishers remain pinned: their only fallback is the visibly poor old low layer.
+// A profile-aware v2 publisher has a cadence-preserving middle rung, so pullSimulcast can safely let
+// Cloudflare fall back h → i → l as bandwidth changes instead of freezing or jumping straight to l.
+function pinnedSimulcast(preferredRid: ScreenRid): SimulcastPrefs {
   return { preferredRid, priorityOrdering: "none", ridNotAvailable: "none" };
+}
+
+function pullSimulcast(
+  preferredRid: ScreenRid,
+  profile: ScreenSimulcastProfile | undefined,
+  env: Env,
+): SimulcastPrefs {
+  if (profile === SCREEN_SIMULCAST_PROFILE && env.SFU_ADAPTATION_MODE === "adaptive") {
+    return {
+      preferredRid,
+      priorityOrdering: "asciibetical",
+      ridNotAvailable: "asciibetical",
+    };
+  }
+  return pinnedSimulcast(preferredRid);
 }
 
 // Track-name grammar (§7.1) → kind, AND ownership check (a client may only publish tracks named for
@@ -136,8 +161,9 @@ async function authorize(
 }
 
 // TracksNewResponse (SFU shape) → the pinned client-facing RtcTracksResponse.
-function toClientResponse(sfu: TracksNewResponse): unknown {
+function toClientResponse(sfu: TracksNewResponse, publicationId?: string): unknown {
   return RtcTracksResponse.parse({
+    ...(publicationId === undefined ? {} : { publicationId }),
     requiresImmediateRenegotiation: sfu.requiresImmediateRenegotiation,
     tracks: sfu.tracks.map((t) => ({
       trackName: t.trackName ?? "",
@@ -192,7 +218,13 @@ async function buildIceServers(env: Env, userId: string): Promise<IceServer[]> {
   if (env.TAVERN_SFU_MOCK === "1") return [STUN_SERVER];
   const cached = iceCache.get(userId);
   if (cached !== undefined && cached.expiresAt > Date.now()) return cached.servers;
-  const servers = [STUN_SERVER, ...(await fetchTurnIceServers(env))];
+  const servers = [
+    STUN_SERVER,
+    ...(await fetchTurnIceServers({
+      TURN_KEY_ID: requiredEnv(env.TURN_KEY_ID, "TURN_KEY_ID"),
+      TURN_KEY_API_TOKEN: requiredEnv(env.TURN_KEY_API_TOKEN, "TURN_KEY_API_TOKEN"),
+    })),
+  ];
   iceCache.set(userId, { servers, expiresAt: Date.now() + ICE_TTL_MS });
   return servers;
 }
@@ -263,9 +295,17 @@ rtcRoute.get("/ice", async (c) => {
 rtcRoute.post("/:serverId/session", rtcMember, async (c) => {
   const userId = invariant(c.get("userId"), "rtcMember guarantees userId");
   const serverId = invariant(c.req.param("serverId"), "route guarantees :serverId");
+  const body = RtcSessionRequest.safeParse(await c.req.json());
+  if (!body.success)
+    return c.json({ error: "voice_client_update_required" satisfies ErrorCode }, 426);
   const client = createRealtimeClient(c.env);
   const { sessionId } = await client.newSession();
-  const auth = await authorize(c.env, serverId, { op: "session.new", userId, sessionId });
+  const auth = await authorize(c.env, serverId, {
+    op: "session.new",
+    userId,
+    sessionId,
+    mediaReadyVersion: body.data.mediaReadyVersion,
+  });
   if (!auth.ok) return c.json({ error: auth.error }, statusFor(auth.error));
   return c.json({ sessionId });
 });
@@ -287,29 +327,84 @@ rtcRoute.post("/:serverId/tracks", rtcMember, async (c) => {
 
   const publish = RtcTracksLocalRequest.safeParse(raw);
   if (publish.success) {
-    const tracks: Array<{ trackName: string; kind: RtcKind }> = [];
+    const tracks: Array<{
+      trackName: string;
+      kind: RtcKind;
+      preset?: (typeof publish.data.tracks)[number]["preset"];
+      simulcastProfile?: (typeof publish.data.tracks)[number]["simulcastProfile"];
+    }> = [];
     for (const t of publish.data.tracks) {
       const kind = kindFromTrackName(t.trackName, userId);
       if (kind === null) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
-      tracks.push({ trackName: t.trackName, kind });
+      tracks.push({
+        trackName: t.trackName,
+        kind,
+        ...(kind === "screen" && t.preset !== undefined ? { preset: t.preset } : {}),
+        ...(kind === "screen" && t.simulcastProfile !== undefined
+          ? { simulcastProfile: t.simulcastProfile }
+          : {}),
+      });
     }
-    // DO authorize + register FIRST (in-voice, G4, grammar) — then the SFU. On SFU failure, a
-    // compensating close op unregisters (§6.1 task 5).
-    const auth = await authorize(c.env, serverId, { op: "publish", userId, sessionId, tracks });
+    // Reserve policy capacity before contacting the SFU, but do not make the tracks pullable yet.
+    // The client can commit this opaque publication only after its browser PeerConnection is connected.
+    const auth = await authorize(c.env, serverId, {
+      op: "publish.reserve",
+      userId,
+      sessionId,
+      tracks,
+    });
     if (!auth.ok) return c.json({ error: auth.error }, statusFor(auth.error));
+    const publicationId = invariant(
+      auth.publicationId,
+      "publish reservation returns a publication id",
+    );
     try {
       const sfu = await client.newLocalTracks(
         sessionId,
         publish.data.sessionDescription,
-        publish.data.tracks,
+        publish.data.tracks.map((t) => ({
+          location: t.location,
+          mid: t.mid,
+          trackName: t.trackName,
+        })),
       );
-      return c.json(toClientResponse(sfu));
-    } catch (err: unknown) {
-      console.error("SFU publish failed; compensating close", err);
-      await authorize(c.env, serverId, {
-        op: "close",
+      const expected = new Set(tracks.map((track) => track.trackName));
+      const accepted =
+        sfu.tracks.length === expected.size &&
+        sfu.tracks.every(
+          (track) =>
+            track.trackName !== undefined &&
+            expected.has(track.trackName) &&
+            track.errorCode === undefined,
+        );
+      if (!accepted) {
+        await authorize(c.env, serverId, { op: "publish.abort", userId, sessionId, publicationId });
+        console.error(
+          JSON.stringify({ event: "rtc.publish_rejected", serverId, sessionId, publicationId }),
+        );
+        return c.json({ error: "bad_request" satisfies ErrorCode }, 502);
+      }
+      const acceptedByRoom = await authorize(c.env, serverId, {
+        op: "publish.accept",
         userId,
-        trackNames: tracks.map((t) => t.trackName),
+        sessionId,
+        publicationId,
+      });
+      if (!acceptedByRoom.ok) {
+        await authorize(c.env, serverId, { op: "publish.abort", userId, sessionId, publicationId });
+        return c.json({ error: acceptedByRoom.error }, statusFor(acceptedByRoom.error));
+      }
+      return c.json(toClientResponse(sfu, publicationId));
+    } catch (err: unknown) {
+      console.error(
+        JSON.stringify({ event: "rtc.publish_failed", serverId, sessionId, publicationId }),
+        err,
+      );
+      await authorize(c.env, serverId, {
+        op: "publish.abort",
+        userId,
+        sessionId,
+        publicationId,
       });
       return c.json({ error: "bad_request" satisfies ErrorCode }, 502);
     }
@@ -327,6 +422,7 @@ rtcRoute.post("/:serverId/tracks", rtcMember, async (c) => {
     });
     if (!auth.ok) return c.json({ error: auth.error }, statusFor(auth.error));
     const publisherSessions = auth.publisherSessions ?? {};
+    const simulcastProfiles = auth.simulcastProfiles ?? {};
     const remoteReqs: RemoteTrackReq[] = pull.data.tracks.map((t) => ({
       location: "remote",
       sessionId: invariant(
@@ -336,13 +432,56 @@ rtcRoute.post("/:serverId/tracks", rtcMember, async (c) => {
       trackName: t.trackName,
       ...(t.simulcast === undefined
         ? {}
-        : { simulcast: pinnedSimulcast(t.simulcast.preferredRid) }),
+        : {
+            simulcast: pullSimulcast(
+              t.simulcast.preferredRid,
+              simulcastProfiles[t.trackName],
+              c.env,
+            ),
+          }),
     }));
     const sfu = await client.newRemoteTracks(sessionId, remoteReqs);
     return c.json(toClientResponse(sfu));
   }
 
   return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+});
+
+// The browser, not the SFU HTTP response, knows when ICE/DTLS is genuinely connected. Only this
+// acknowledgement transitions a reserved local publication into the pullable room registry.
+rtcRoute.post("/:serverId/tracks/ready", rtcMember, async (c) => {
+  const userId = invariant(c.get("userId"), "rtcMember guarantees userId");
+  const serverId = invariant(c.req.param("serverId"), "route guarantees :serverId");
+  const sessionId = c.req.query("session");
+  if (sessionId === undefined) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  const body = RtcPublicationRequest.safeParse(await c.req.json());
+  if (!body.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  const auth = await authorize(c.env, serverId, {
+    op: "publish.commit",
+    userId,
+    sessionId,
+    publicationId: body.data.publicationId,
+  });
+  if (!auth.ok) return c.json({ error: auth.error }, statusFor(auth.error));
+  return c.json({});
+});
+
+// Abort is idempotent. It releases a reservation when SDP application or browser connection fails.
+rtcRoute.post("/:serverId/tracks/abort", rtcMember, async (c) => {
+  const userId = invariant(c.get("userId"), "rtcMember guarantees userId");
+  const serverId = invariant(c.req.param("serverId"), "route guarantees :serverId");
+  const sessionId = c.req.query("session");
+  if (sessionId === undefined) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  const body = RtcPublicationRequest.safeParse(await c.req.json());
+  if (!body.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  const auth = await authorize(c.env, serverId, {
+    op: "publish.abort",
+    userId,
+    sessionId,
+    publicationId: body.data.publicationId,
+  });
+  if (!auth.ok) return c.json({ error: auth.error }, statusFor(auth.error));
+  return c.json({});
 });
 
 // PUT /api/rtc/:serverId/renegotiate (member): membership only, straight SFU passthrough (no DO call).
@@ -392,6 +531,30 @@ rtcRoute.put("/:serverId/tracks/update", rtcMember, async (c) => {
   return c.json({});
 });
 
+// PUT /api/rtc/:serverId/watch/delivery: persist whether an active watch is receiving video or only
+// its audio companion. This does not start/stop a watch; the existing grant remains the source of
+// truth, so restoring video can reuse the same logical watch without changing watch statistics.
+rtcRoute.put("/:serverId/watch/delivery", rtcMember, async (c) => {
+  const userId = invariant(c.get("userId"), "rtcMember guarantees userId");
+  const serverId = invariant(c.req.param("serverId"), "route guarantees :serverId");
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  }
+  const body = RtcWatchDeliveryRequest.safeParse(raw);
+  if (!body.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  const auth = await authorize(c.env, serverId, {
+    op: "delivery",
+    userId,
+    trackName: body.data.trackName,
+    delivery: body.data.delivery,
+  });
+  if (!auth.ok) return c.json({ error: auth.error }, statusFor(auth.error));
+  return c.json(RtcWatchDeliveryResponse.parse(body.data));
+});
+
 // POST /api/rtc/:serverId/close (member): SFU tracks/close passthrough (force:true when the client is
 // gone). The DO registry cleanup is driven by WS stream.stop/watch.stop + the disconnect sweep.
 rtcRoute.post("/:serverId/close", rtcMember, async (c) => {
@@ -400,11 +563,13 @@ rtcRoute.post("/:serverId/close", rtcMember, async (c) => {
   const body = RtcClosePayload.safeParse(await c.req.json());
   if (!body.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
   const client = createRealtimeClient(c.env);
-  await client.closeTracks(
+  const response = await client.closeTracks(
     sessionId,
     body.data.tracks.map((t) => t.mid),
     body.data.sessionDescription,
     body.data.force,
   );
-  return c.json({});
+  // A remote-track close can require the browser to answer a fresh SFU offer. Forward the validated
+  // response instead of discarding it so PullSession can complete that negotiation on its queue.
+  return c.json(toClientResponse(response));
 });

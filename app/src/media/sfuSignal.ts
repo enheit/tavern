@@ -1,4 +1,5 @@
 import { IceServersResponse, RtcSessionResponse, RtcTracksResponse } from "@tavern/shared";
+import type { PresetId, ScreenRid, ScreenSimulcastProfile } from "@tavern/shared";
 import type { ApiClient } from "@/lib/apiClient";
 
 // Thin apiClient wrapper over the §6.1 rtc routes. The client sends only its own (puller/publisher)
@@ -10,12 +11,19 @@ export interface SfuSignal {
     serverId: string,
     sessionId: string,
     offer: RTCSessionDescriptionInit,
-    tracks: Array<{ mid: string; trackName: string }>,
+    tracks: Array<{
+      mid: string;
+      trackName: string;
+      preset?: PresetId;
+      simulcastProfile?: ScreenSimulcastProfile;
+    }>,
   ): Promise<RtcTracksResponse>;
+  confirmPublishedTracks(serverId: string, sessionId: string, publicationId: string): Promise<void>;
+  abortPublishedTracks(serverId: string, sessionId: string, publicationId: string): Promise<void>;
   pullTracks(
     serverId: string,
     sessionId: string,
-    tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>,
+    tracks: Array<{ trackName: string; preferredRid?: ScreenRid }>,
   ): Promise<RtcTracksResponse>;
   renegotiate(
     serverId: string,
@@ -27,29 +35,84 @@ export interface SfuSignal {
     sessionId: string,
     mid: string,
     trackName: string,
-    preferredRid: "h" | "l",
+    preferredRid: ScreenRid,
   ): Promise<void>;
   closeTracks(
     serverId: string,
     sessionId: string,
     mids: string[],
     offer?: RTCSessionDescriptionInit,
-  ): Promise<void>;
+  ): Promise<RtcTracksResponse>;
   getIceServers(): Promise<RTCIceServer[]>;
 }
 
-// Accepts any ack body and yields void — the renegotiate / tracks-update / close routes resolve to
-// void per the pinned SfuSignal interface (no shared response schema; the client applied the SDP).
+// Accepts any ack body and yields void — publish acknowledgement, renegotiate, and tracks-update
+// resolve to empty objects. Track close is different: Cloudflare may require an immediate SDP
+// exchange, so that response is validated with RtcTracksResponse below.
 const voidParser = { safeParse: () => ({ success: true as const, data: undefined }) };
+const ICE_CACHE_MS = 20 * 60_000;
+type IceCacheEntry = {
+  servers: RTCIceServer[] | null;
+  expiresAt: number;
+  pending: Promise<RTCIceServer[]> | null;
+};
+const iceCache = new WeakMap<ApiClient, IceCacheEntry>();
+
+async function cachedIceServers(api: ApiClient): Promise<RTCIceServer[]> {
+  const now = Date.now();
+  const cached = iceCache.get(api);
+  if (cached !== undefined && cached.servers !== null && cached.expiresAt > now) {
+    return cached.servers;
+  }
+  if (cached?.pending) return cached.pending;
+
+  const pending = api.get("/api/rtc/ice", IceServersResponse).then(({ iceServers }) =>
+    iceServers.map((server) => ({
+      urls: server.urls,
+      ...(server.username === undefined ? {} : { username: server.username }),
+      ...(server.credential === undefined ? {} : { credential: server.credential }),
+    })),
+  );
+  iceCache.set(api, {
+    servers: cached?.servers ?? null,
+    expiresAt: cached?.expiresAt ?? 0,
+    pending,
+  });
+  try {
+    const servers = await pending;
+    iceCache.set(api, { servers, expiresAt: Date.now() + ICE_CACHE_MS, pending: null });
+    return servers;
+  } catch (error) {
+    iceCache.delete(api);
+    throw error;
+  }
+}
 
 export function createSfuSignal(api: ApiClient): SfuSignal {
   return {
-    newSession: (serverId) => api.post(`/api/rtc/${serverId}/session`, RtcSessionResponse),
+    newSession: (serverId) =>
+      api.post(`/api/rtc/${serverId}/session`, RtcSessionResponse, { mediaReadyVersion: 2 }),
     publishTracks: (serverId, sessionId, offer, tracks) =>
       api.post(`/api/rtc/${serverId}/tracks?session=${sessionId}`, RtcTracksResponse, {
         sessionDescription: offer,
-        tracks: tracks.map((t) => ({ location: "local", mid: t.mid, trackName: t.trackName })),
+        tracks: tracks.map((t) => ({
+          location: "local",
+          mid: t.mid,
+          trackName: t.trackName,
+          ...(t.preset === undefined ? {} : { preset: t.preset }),
+          ...(t.simulcastProfile === undefined ? {} : { simulcastProfile: t.simulcastProfile }),
+        })),
       }),
+    confirmPublishedTracks: async (serverId, sessionId, publicationId) => {
+      await api.post(`/api/rtc/${serverId}/tracks/ready?session=${sessionId}`, voidParser, {
+        publicationId,
+      });
+    },
+    abortPublishedTracks: async (serverId, sessionId, publicationId) => {
+      await api.post(`/api/rtc/${serverId}/tracks/abort?session=${sessionId}`, voidParser, {
+        publicationId,
+      });
+    },
     pullTracks: (serverId, sessionId, tracks) =>
       api.post(`/api/rtc/${serverId}/tracks?session=${sessionId}`, RtcTracksResponse, {
         tracks: tracks.map((t) => ({
@@ -69,21 +132,12 @@ export function createSfuSignal(api: ApiClient): SfuSignal {
         tracks: [{ mid, trackName, simulcast: { preferredRid } }],
       });
     },
-    closeTracks: async (serverId, sessionId, mids, offer) => {
-      await api.post(`/api/rtc/${serverId}/close?session=${sessionId}`, voidParser, {
+    closeTracks: (serverId, sessionId, mids, offer) =>
+      api.post(`/api/rtc/${serverId}/close?session=${sessionId}`, RtcTracksResponse, {
         tracks: mids.map((mid) => ({ mid })),
         force: offer === undefined,
         ...(offer ? { sessionDescription: offer } : {}),
-      });
-    },
-    getIceServers: async () => {
-      const { iceServers } = await api.get("/api/rtc/ice", IceServersResponse);
-      // Omit absent credentials rather than pass `undefined` (exactOptionalPropertyTypes vs zod optional).
-      return iceServers.map((s) => ({
-        urls: s.urls,
-        ...(s.username === undefined ? {} : { username: s.username }),
-        ...(s.credential === undefined ? {} : { credential: s.credential }),
-      }));
-    },
+      }),
+    getIceServers: () => cachedIceServers(api),
   };
 }

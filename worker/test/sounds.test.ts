@@ -118,12 +118,28 @@ function uploadSound(
   bytes: Uint8Array,
   name: string,
   durationMs: number,
+  options: {
+    emoji?: string;
+    gain?: number;
+    trimStartRatio?: number;
+    trimEndRatio?: number;
+    method?: "POST" | "PUT";
+    soundId?: string;
+  } = {},
 ): Promise<Response> {
   const form = new FormData();
   form.append("file", new File([bytes], "sound.mp3", { type: "audio/mpeg" }));
   form.append("name", name);
+  form.append("emoji", options.emoji ?? "🔊");
+  form.append("gain", String(options.gain ?? 1));
   form.append("durationMs", String(durationMs));
-  return authed(token, `/api/servers/${serverId}/sounds`, { method: "POST", body: form });
+  form.append("trimStartRatio", String(options.trimStartRatio ?? 0));
+  form.append("trimEndRatio", String(options.trimEndRatio ?? 1));
+  const path =
+    options.method === "PUT" && options.soundId !== undefined
+      ? `/api/servers/${serverId}/sounds/${options.soundId}/source`
+      : `/api/servers/${serverId}/sounds`;
+  return authed(token, path, { method: options.method ?? "POST", body: form });
 }
 
 async function uploadOk(
@@ -187,6 +203,9 @@ describe("FR-34 soundboard upload", () => {
     expect(sound.durationMs).toBeGreaterThan(0);
     expect(sound.durationMs).toBeLessThanOrEqual(LIMITS.soundMaxDurationMs);
     expect(sound.playCount).toBe(0);
+    expect(sound.emoji).toBe("🔊");
+    expect(sound.gain).toBe(1);
+    expect(sound.sourceFileName).toBe("sound.mp3");
 
     const object = await env.MEDIA.get(`sounds/${serverId}/${sound.id}.mp3`);
     expect(object).not.toBeNull();
@@ -201,6 +220,25 @@ describe("FR-34 soundboard upload", () => {
       expect(Number(row["trim_start_ms"])).toBe(0);
       expect(Number(row["trim_end_ms"])).toBe(Number(row["duration_ms"]));
     });
+  });
+
+  it("stores the initial trim and volume selected in the editor", async () => {
+    const { serverId, tokens } = await freshServer();
+    const response = await uploadSound(
+      nth(tokens, 0),
+      serverId,
+      b64ToBytes(BEEP_B64),
+      "cropped",
+      1000,
+      { emoji: "🎺", gain: 1.4, trimStartRatio: 0.2, trimEndRatio: 0.8 },
+    );
+    expect(response.status).toBe(201);
+    const body: { sound: unknown } = await response.json();
+    const sound = Sound.parse(body.sound);
+    expect(sound.emoji).toBe("🎺");
+    expect(sound.gain).toBe(1.4);
+    expect(sound.trimStartMs).toBeCloseTo(sound.durationMs * 0.2, -1);
+    expect(sound.trimEndMs).toBeCloseTo(sound.durationMs * 0.8, -1);
   });
 });
 
@@ -261,6 +299,41 @@ describe("FR-35 permissions", () => {
     expect(Sound.parse(body.sound).name).toBe("byadmin");
   });
 
+  it("replaces the source with a new immutable id and resets play history", async () => {
+    const { serverId, tokens } = await freshServer();
+    const owner = nth(tokens, 0);
+    const sound = await uploadOk(owner, serverId, b64ToBytes(BEEP_B64), "original", 1000);
+    const oldKey = `sounds/${serverId}/${sound.id}.mp3`;
+    await runInDurableObject(roomStub(serverId), (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO sound_plays(sound_id, user_id, created_at) VALUES (?, ?, ?)`,
+        sound.id,
+        sound.uploaderId,
+        Date.now(),
+      );
+    });
+
+    const response = await uploadSound(owner, serverId, b64ToBytes(BEEP_B64), "replacement", 1000, {
+      method: "PUT",
+      soundId: sound.id,
+      emoji: "🎉",
+      gain: 0.75,
+      trimStartRatio: 0.1,
+      trimEndRatio: 0.9,
+    });
+    expect(response.status).toBe(200);
+    const body: { sound: unknown } = await response.json();
+    const replacement = Sound.parse(body.sound);
+
+    expect(replacement.id).not.toBe(sound.id);
+    expect(replacement.name).toBe("replacement");
+    expect(replacement.emoji).toBe("🎉");
+    expect(replacement.gain).toBe(0.75);
+    expect(replacement.playCount).toBe(0);
+    expect(await env.MEDIA.get(oldKey)).toBeNull();
+    expect(await env.MEDIA.get(`sounds/${serverId}/${replacement.id}.mp3`)).not.toBeNull();
+  });
+
   it("another non-admin member gets 403 forbidden", async () => {
     const { serverId, tokens } = await freshServer(3);
     const sound = await uploadOk(nth(tokens, 1), serverId, b64ToBytes(BEEP_B64), "b-sound", 1000);
@@ -308,8 +381,10 @@ describe("FR-37 list ordering", () => {
     await runInDurableObject(roomStub(serverId), (_instance, state) => {
       const seedSound = (id: string, createdAt: number): void => {
         state.storage.sql.exec(
-          `INSERT INTO sounds (id, name, uploader_id, r2_key, duration_ms, trim_start_ms, trim_end_ms, created_at)
-           VALUES (?, ?, ?, ?, 1000, 0, 1000, ?)`,
+          `INSERT INTO sounds (
+             id, name, emoji, gain, source_file_name, uploader_id, r2_key,
+             duration_ms, trim_start_ms, trim_end_ms, created_at)
+           VALUES (?, ?, '🔊', 1, 'seed.mp3', ?, ?, 1000, 0, 1000, ?)`,
           id,
           id.slice(0, 8),
           uploader,

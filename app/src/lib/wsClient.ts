@@ -1,8 +1,10 @@
 import type { ClientMessage, ServerMessage } from "@tavern/shared";
 import { LIMITS, serverMessageSchema, WsTicketResponse } from "@tavern/shared";
 import { roomStore } from "@/stores/room";
+import { useMediaStore } from "@/stores/media";
 import { useServersStore } from "@/stores/servers";
-import { apiClient } from "./apiClient";
+import { ApiError, apiClient } from "./apiClient";
+import { clearMediaOwner, shouldResetMediaAfterNavigation } from "./mediaOwnership";
 
 // §6.2 / A4 / A6 — one WS per joined server. Connect flow: POST /api/ws-ticket → open the socket
 // with the ticket → send `hello` → expect `hello.ok` within helloTimeoutMs. Reconnect with
@@ -29,8 +31,8 @@ export interface WsConnection {
 // Same env var the apiClient uses; http→ws / https→wss.
 const wsBase: string = (import.meta.env.VITE_API_URL ?? location.origin).replace(/^http/, "ws");
 
-function backoffDelay(attempt: number): number {
-  const base = Math.min(1000 * 2 ** attempt, LIMITS.reconnectCapMs);
+function backoffDelay(attempt: number, capMs: number): number {
+  const base = Math.min(1000 * 2 ** attempt, capMs);
   return base * (0.8 + Math.random() * 0.4); // ±20% jitter (§6.2)
 }
 
@@ -49,9 +51,13 @@ class RoomConnection implements WsConnection {
   private helloTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private onlineListener: (() => void) | null = null;
   private readonly listeners = new Set<(m: ServerMessage) => void>();
+  private readonly resetAbandonedMedia: boolean;
 
-  constructor(private readonly serverId: string) {}
+  constructor(private readonly serverId: string) {
+    this.resetAbandonedMedia = shouldResetMediaAfterNavigation(serverId);
+  }
 
   // Kicks off the first connect. Called by connectRoom AFTER the instance is cached, so the
   // synchronous store write inside openOnce (setStatus → setConnState) cannot cause a re-entrant
@@ -85,6 +91,7 @@ class RoomConnection implements WsConnection {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearOnlineListener();
     this.ws?.close();
     this.setStatus("closed");
   }
@@ -107,7 +114,11 @@ class RoomConnection implements WsConnection {
         serverId: this.serverId,
       });
       ticket = res.ticket;
-    } catch {
+    } catch (error) {
+      if (error instanceof ApiError && [401, 403, 404].includes(error.status)) {
+        this.setStatus("closed");
+        return;
+      }
       // Ticket issuance failed (auth/network) — treat like a drop and back off.
       this.scheduleReconnect();
       return;
@@ -124,7 +135,14 @@ class RoomConnection implements WsConnection {
   }
 
   private onOpen(): void {
-    this.raw({ t: "hello", proto: 1 });
+    const media = useMediaStore.getState();
+    const mediaResume = media.inVoiceServerId === this.serverId && media.voiceStatus === "joined";
+    this.raw({
+      t: "hello",
+      proto: 1,
+      mediaResume,
+      mediaReset: !mediaResume && this.resetAbandonedMedia,
+    });
     this.helloTimer = setTimeout(() => {
       this.ws?.close();
     }, LIMITS.helloTimeoutMs);
@@ -152,6 +170,7 @@ class RoomConnection implements WsConnection {
       this.attempt = 0;
       this.setStatus("open");
       this.startPing();
+      if (this.resetAbandonedMedia) clearMediaOwner(this.serverId);
     }
     if (msg.t === "server.updated") {
       // FR-12: route the live rename through the servers store so the header dropdown list AND the
@@ -190,12 +209,41 @@ class RoomConnection implements WsConnection {
 
   private scheduleReconnect(): void {
     if (this.closedByUser) return;
-    const delay = backoffDelay(this.attempt);
+    if (!navigator.onLine) {
+      this.setStatus("reconnecting");
+      if (this.onlineListener === null) {
+        this.onlineListener = () => {
+          this.clearOnlineListener();
+          void this.openOnce();
+        };
+        window.addEventListener("online", this.onlineListener, { once: true });
+      }
+      return;
+    }
+    const active = useServersStore.getState().activeServerId === this.serverId;
+    const delay = backoffDelay(this.attempt, active ? LIMITS.reconnectCapMs : 5 * 60_000);
     this.attempt += 1;
     this.setStatus("reconnecting");
     this.reconnectTimer = setTimeout(() => {
       void this.openOnce();
     }, delay);
+  }
+
+  wake(): void {
+    if (this.closedByUser || this.status === "open" || this.status === "connecting") return;
+    if (useServersStore.getState().activeServerId !== this.serverId) return;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.clearOnlineListener();
+    void this.openOnce();
+  }
+
+  private clearOnlineListener(): void {
+    if (this.onlineListener === null) return;
+    window.removeEventListener("online", this.onlineListener);
+    this.onlineListener = null;
   }
 
   private clearSocketTimers(): void {
@@ -219,7 +267,10 @@ const rooms = new Map<string, RoomConnection>();
 // number of connections would be created for the same server.
 export function connectRoom(serverId: string): WsConnection {
   const existing = rooms.get(serverId);
-  if (existing) return existing;
+  if (existing) {
+    existing.wake();
+    return existing;
+  }
   const conn = new RoomConnection(serverId);
   rooms.set(serverId, conn);
   conn.start();

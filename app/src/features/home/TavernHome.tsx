@@ -13,7 +13,7 @@ import {
   TrophyIcon,
   UsersIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useStore } from "zustand";
 import { Button } from "@/components/ui/button";
@@ -35,9 +35,11 @@ function homeKey(serverId: string): readonly [string, string] {
 export function TavernHome({
   serverId,
   onOpenSoundboard,
+  active = true,
 }: {
   serverId: string;
   onOpenSoundboard: (() => void) | undefined;
+  active?: boolean;
 }) {
   const store = roomStore(serverId);
   const members = useStore(store, (state) => state.members);
@@ -49,11 +51,15 @@ export function TavernHome({
   const query = useQuery({
     queryKey: homeKey(serverId),
     queryFn: () => apiClient.get(`/api/servers/${serverId}/home`, TavernHomeResponse),
+    enabled: active,
   });
 
   const invalidate = useCallback((): void => {
-    void queryClient.invalidateQueries({ queryKey: homeKey(serverId) });
-  }, [queryClient, serverId]);
+    void queryClient.invalidateQueries({
+      queryKey: homeKey(serverId),
+      refetchType: active ? "active" : "none",
+    });
+  }, [active, queryClient, serverId]);
 
   useEffect(() => {
     const connection = connectRoom(serverId);
@@ -62,13 +68,24 @@ export function TavernHome({
       connection.on("screenshot.updated", invalidate),
       connection.on("sound.updated", invalidate),
       connection.on("rec.state", invalidate),
-      connection.on("points.updated", invalidate),
+      connection.on("points.updated", (message) => {
+        queryClient.setQueryData<TavernHomeData>(homeKey(serverId), (current) =>
+          current === undefined
+            ? current
+            : { ...current, pointLeaderboard: message.pointLeaderboard },
+        );
+      }),
     ]);
-  }, [serverId, invalidate]);
+  }, [serverId, invalidate, queryClient]);
 
-  const voiceMembers = voice.members
-    .map((voiceMember) => members.find((member) => member.userId === voiceMember.userId))
-    .filter((member): member is Member => member !== undefined);
+  const voiceMembers = useMemo(
+    () =>
+      voice.members.flatMap((voiceMember) => {
+        const profile = members.find((member) => member.userId === voiceMember.userId);
+        return profile === undefined ? [] : [{ profile, voice: voiceMember }];
+      }),
+    [members, voice.members],
+  );
 
   return (
     <main data-testid="tavern-home" className="h-full overflow-y-auto bg-background">
@@ -96,7 +113,7 @@ export function TavernHome({
           {voiceMembers.length > 0 && (
             <div className="flex -space-x-2" data-testid="home-live-avatars">
               {voiceMembers.slice(0, 8).map((member) => (
-                <HomeAvatar key={member.userId} member={member} />
+                <HomeAvatar key={member.profile.userId} member={member.profile} />
               ))}
             </div>
           )}
@@ -189,7 +206,7 @@ function HomeContent({
         </Section>
 
         <MembersSection serverId={serverId} members={members} />
-        <PointsLeaderboard data={data} members={members} locale={locale} />
+        <PointsLeaderboard serverId={serverId} data={data} members={members} locale={locale} />
       </div>
 
       <aside className="flex min-w-0 flex-col gap-4">
@@ -202,10 +219,12 @@ function HomeContent({
 }
 
 function PointsLeaderboard({
+  serverId,
   data,
   members,
   locale,
 }: {
+  serverId: string;
   data: TavernHomeData;
   members: Member[];
   locale: string;
@@ -224,9 +243,11 @@ function PointsLeaderboard({
             <li key={member.userId} className="flex items-center gap-3 px-3 py-2.5">
               <RankMarker rank={rank} />
               <HomeAvatar member={member} />
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                {member.displayName}
-              </span>
+              <UserProfileName
+                serverId={serverId}
+                member={member}
+                className="flex-1 text-sm font-medium"
+              />
               <span className="shrink-0 text-sm font-semibold tabular-nums">
                 {m.home_points({ count: balance.toLocaleString(locale) })}
               </span>

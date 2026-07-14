@@ -1,4 +1,4 @@
-import { Screenshot } from "@tavern/shared";
+import { LIMITS, Screenshot } from "@tavern/shared";
 import { TavernError } from "./soundboard";
 import type { Actor } from "./soundboard";
 
@@ -19,13 +19,24 @@ function rowToScreenshot(row: ScreenshotRow): Screenshot {
 }
 
 // Finalized screenshots, newest first (§ screenshots tab ordering).
-export function listScreenshots(sql: SqlStorage): Screenshot[] {
-  return sql
+export function listScreenshots(
+  sql: SqlStorage,
+  offset = 0,
+  limit?: number,
+): {
+  screenshots: Screenshot[];
+  hasMore: boolean;
+} {
+  const take = Math.min(Math.max(1, limit ?? LIMITS.historyPageSize), LIMITS.historyPageSize);
+  const rows = sql
     .exec<ScreenshotRow>(
-      `SELECT id, captured_by, created_at FROM screenshots ORDER BY created_at DESC`,
+      `SELECT id, captured_by, created_at FROM screenshots ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+      take + 1,
+      offset,
     )
     .toArray()
     .map(rowToScreenshot);
+  return { screenshots: rows.slice(0, take), hasMore: rows.length > take };
 }
 
 // Inserts a captured screenshot row. `r2Key` is the stored `{serverId}/screenshots/{id}.webp` object

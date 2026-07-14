@@ -57,6 +57,22 @@ describe("FR-19 publish flow", () => {
     expect(port.last().transceivers[0]?.init.sendEncodings).toBeUndefined();
   });
 
+  it("does not advertise a v2 publication until the browser peer connection is connected", async () => {
+    await connect();
+    signal.publishResponse = {
+      requiresImmediateRenegotiation: false,
+      publicationId: "00000000-0000-4000-8000-000000000001",
+      tracks: [],
+      sessionDescription: { type: "answer", sdp: "sfu-answer" },
+    };
+    const publishing = session.publishMic(fakeTrack("audio"));
+    await vi.waitFor(() => expect(port.last().remoteDescription).not.toBeNull());
+    expect(signal.confirmedPublications).toEqual([]);
+    port.last().setConnectionState("connected");
+    await publishing;
+    expect(signal.confirmedPublications).toEqual(["00000000-0000-4000-8000-000000000001"]);
+  });
+
   it("sequential publishes serialize on the queue (no interleaved createOffer)", async () => {
     await connect();
     await Promise.all([
@@ -80,33 +96,47 @@ describe("FR-19 publish flow", () => {
 });
 
 describe("FR-27 simulcast encodings", () => {
-  // fakeTrack has no getSettings → the acquisition height falls back to the preset height, so the
-  // h scale is exactly 1 (explicit — resolution is encoder-owned, S12.4) and l scales to ≈270.
-  const cases: { preset: PresetId; h: RTCRtpEncodingParameters; scale: number }[] = [
+  // fakeTrack has no getSettings → acquisition height falls back to the preset height.
+  const cases: { preset: PresetId; encodings: RTCRtpEncodingParameters[] }[] = [
     {
       preset: "1080p30",
-      h: { rid: "h", maxBitrate: 3_500_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
-      scale: 1080 / 270,
+      encodings: [
+        { rid: "h", maxBitrate: 3_500_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
+        { rid: "i", maxBitrate: 1_225_000, maxFramerate: 30, scaleResolutionDownBy: 2 },
+        { rid: "l", maxBitrate: 350_000, maxFramerate: 30, scaleResolutionDownBy: 4 },
+      ],
     },
     {
       preset: "480p15",
-      h: { rid: "h", maxBitrate: 400_000, maxFramerate: 15, scaleResolutionDownBy: 1 },
-      scale: 480 / 270,
+      encodings: [
+        { rid: "h", maxBitrate: 400_000, maxFramerate: 15, scaleResolutionDownBy: 1 },
+        { rid: "i", maxBitrate: 150_000, maxFramerate: 15, scaleResolutionDownBy: 2 },
+        { rid: "l", maxBitrate: 100_000, maxFramerate: 15, scaleResolutionDownBy: 480 / 180 },
+      ],
     },
     {
       preset: "1440p60",
-      h: { rid: "h", maxBitrate: 9_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
-      scale: 1440 / 270,
+      encodings: [
+        { rid: "h", maxBitrate: 9_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
+        { rid: "i", maxBitrate: 3_150_000, maxFramerate: 60, scaleResolutionDownBy: 2 },
+        { rid: "l", maxBitrate: 900_000, maxFramerate: 30, scaleResolutionDownBy: 4 },
+      ],
     },
   ];
 
   for (const c of cases) {
-    it(`${c.preset} → exact App-D h/l encodings`, async () => {
+    it(`${c.preset} → exact h/i/l encodings`, async () => {
       await connect();
-      await session.publishStream(fakeTrack("video"), null, c.preset);
-      expect(port.last().transceivers[0]?.init.sendEncodings).toEqual([
-        c.h,
-        { rid: "l", maxBitrate: 250_000, maxFramerate: 15, scaleResolutionDownBy: c.scale },
+      const track = fakeTrack("video");
+      const result = await session.publishStream(track, null, c.preset);
+      expect(port.last().transceivers[0]?.init.sendEncodings).toEqual(c.encodings);
+      expect(signal.published[0]?.tracks).toEqual([
+        {
+          mid: "0",
+          trackName: result.videoTrackName,
+          preset: c.preset,
+          simulcastProfile: "h_i_l_v2",
+        },
       ]);
     });
   }
@@ -125,18 +155,31 @@ describe("FR-27 simulcast encodings", () => {
     expect(log.entries.filter((e) => e === "createOffer")).toHaveLength(1);
   });
 
-  it("webcam publishes an h+l simulcast pair (App-D fixed 720p30)", async () => {
+  it("webcam publishes an h+i+l simulcast ladder (fixed 720p30)", async () => {
     await connect();
     await session.publishCam(fakeTrack("video"));
     expect(port.last().transceivers[0]?.init.sendEncodings).toEqual([
       { rid: "h", maxBitrate: 1_000_000, maxFramerate: 30 },
+      { rid: "i", maxBitrate: 350_000, maxFramerate: 30, scaleResolutionDownBy: 2 },
       { rid: "l", maxBitrate: 150_000, maxFramerate: 15, scaleResolutionDownBy: 720 / 180 },
     ]);
+  });
+
+  it("returns the confirmed RTC publication id to video preview owners", async () => {
+    await connect();
+    const publicationId = "00000000-0000-4000-8000-000000000001";
+    signal.publishResponse = { ...signal.publishResponse, publicationId };
+    port.last().setConnectionState("connected");
+
+    await expect(session.publishCam(fakeTrack("video"))).resolves.toEqual({
+      trackName: `cam:${USER}`,
+      previewId: publicationId,
+    });
   });
 });
 
 describe("FR-27 setPreset", () => {
-  it("applies fps-only applyConstraints + encoder re-scale via setParameters, createOffer NEVER called", async () => {
+  it("changes encoder policy without capture constraint churn or renegotiation", async () => {
     await connect();
     const video = fakeTrack("video");
     const { videoTrackName } = await session.publishStream(video, null, "1080p30");
@@ -144,24 +187,50 @@ describe("FR-27 setPreset", () => {
 
     await session.setPreset(videoTrackName, "480p15");
 
-    // Capture geometry is fixed at acquisition (S12.4): only the frame-rate ceiling reaches the
-    // capturer; resolution rides the encoder scales below.
-    expect(video.applyConstraints).toHaveBeenCalledWith({
-      frameRate: { ideal: 15, max: 15 },
-    });
+    expect(video.applyConstraints).not.toHaveBeenCalled();
     const sender = port.last().transceivers[0]?.sender;
     expect(sender?.setParametersCount).toBe(1);
-    // h re-priced AND re-scaled to the preset height from the acquisition height (fallback 1080);
-    // l re-derived to its ≈270 target. NO SDP op happened.
+    // All three layers are re-derived from the immutable 1080 acquisition geometry.
     expect(sender?.encodings[0]).toMatchObject({
       rid: "h",
       maxBitrate: 400_000,
       maxFramerate: 15,
       scaleResolutionDownBy: 1080 / 480,
     });
-    expect(sender?.encodings[1]).toMatchObject({ scaleResolutionDownBy: 1080 / 270 });
+    expect(sender?.encodings[1]).toMatchObject({
+      rid: "i",
+      maxBitrate: 150_000,
+      maxFramerate: 15,
+      scaleResolutionDownBy: 1080 / 240,
+    });
+    expect(sender?.encodings[2]).toMatchObject({
+      rid: "l",
+      maxBitrate: 100_000,
+      maxFramerate: 15,
+      scaleResolutionDownBy: 1080 / 180,
+    });
+    expect(sender?.degradationPreference).toBe("maintain-resolution");
+    expect(video.contentHint).toBe("detail");
     expect(log.entries).not.toContain("createOffer");
     expect(log.entries).not.toContain("setLocalDescription");
+  });
+
+  it("replaces an upward capture on the existing sender and rolls back on parameter failure", async () => {
+    await connect();
+    const oldTrack = fakeTrack("video");
+    const { videoTrackName } = await session.publishStream(oldTrack, null, "1080p30");
+    const sender = port.last().transceivers[0]?.sender;
+    if (!sender) throw new Error("video sender missing");
+    const nextTrack = fakeTrack("video");
+    vi.spyOn(sender, "setParameters").mockRejectedValueOnce(new Error("encoder rejected"));
+
+    await expect(session.replaceScreenTrack(videoTrackName, nextTrack, "1080p60")).rejects.toThrow(
+      "encoder rejected",
+    );
+
+    expect(sender.replaceTrackArgs).toEqual([nextTrack, oldTrack]);
+    expect(sender.track).toBe(oldTrack);
+    expect(signal.published).toHaveLength(1);
   });
 });
 

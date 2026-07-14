@@ -110,6 +110,29 @@ describe("FR-14 chat slice", () => {
     expect(sent.filter((frame) => frame.t === "chat.history")).toHaveLength(0);
   });
 
+  it("coalesces read-frontier updates while the server acknowledgement is in flight", () => {
+    const store = createRoomStore("s-read");
+
+    store.getState().markRead(10);
+    store.getState().markRead(10);
+    store.getState().markRead(9);
+    expect(sent.filter((frame) => frame.t === "chat.read")).toEqual([
+      { t: "chat.read", messageId: 10 },
+    ]);
+
+    store.getState().apply({
+      t: "chat.read-state",
+      lastReadMessageId: 10,
+      firstUnreadMessageId: 11,
+      unreadCount: 2,
+    });
+    store.getState().markRead(11);
+    expect(sent.filter((frame) => frame.t === "chat.read")).toEqual([
+      { t: "chat.read", messageId: 10 },
+      { t: "chat.read", messageId: 11 },
+    ]);
+  });
+
   it("keeps a gapped unread window intact when a foreign live message arrives", () => {
     const store = createRoomStore("s5");
     store.setState({

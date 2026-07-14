@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ClientMessage, ServerMessage, UserProfile, VoiceMember } from "@tavern/shared";
+import type { ClientMessage, ScreenRid, ServerMessage, VoiceMember } from "@tavern/shared";
 import { VoiceController, VoiceElsewhereError } from "@/features/voice/voiceController";
 import type { VoiceDeps } from "@/features/voice/voiceController";
 import { playUiSound } from "@/lib/uiSounds";
+import { MEDIA_OWNER_STORAGE_KEY } from "@/lib/mediaOwnership";
+import type { SpeakingOpts } from "@/media/levelMeter";
+import { clearVoiceLevels, readVoiceLevel } from "@/media/voiceLevelBus";
 import { useMediaStore } from "@/stores/media";
 import { resetRoomStores, roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
@@ -32,6 +35,32 @@ function zeroPoints() {
       watcherBonusPerMinute: 5,
       dailyCap: null,
     },
+  };
+}
+
+function helloSnapshot(
+  serverId: string,
+  voiceMembers: VoiceMember[],
+): Extract<ServerMessage, { t: "hello.ok" }> {
+  return {
+    t: "hello.ok",
+    status: "",
+    self: { userId: SELF, username: "self", displayName: "Self", color: "#123456" },
+    serverMeta: { id: serverId, nickname: "cave", adminUserId: SELF },
+    members: [],
+    voice: {
+      members: voiceMembers,
+      sessionStartedAt: voiceMembers.length > 0 ? 500 : null,
+    },
+    streams: [],
+    recording: { active: false },
+    lastMessageId: null,
+    lastReadMessageId: 0,
+    firstUnreadMessageId: null,
+    unreadCount: 0,
+    costStatus: { usedGB: 0, capGB: 900, blocked: false },
+    polls: [],
+    points: zeroPoints(),
   };
 }
 
@@ -89,6 +118,9 @@ class FakePublish {
   async setPreset(name: string, preset: string): Promise<void> {
     this.log.push(`publish.setPreset:${name}:${preset}`);
   }
+  async replaceScreenTrack(): Promise<void> {
+    this.log.push("publish.replaceScreenTrack");
+  }
   async close(): Promise<void> {
     this.log.push("publish.close");
     this.closed = true;
@@ -99,7 +131,7 @@ class FakePull {
   readonly log: string[];
   connected = false;
   closed = false;
-  readonly added: Array<Array<{ trackName: string; preferredRid?: "h" | "l" }>> = [];
+  readonly added: Array<Array<{ trackName: string; preferredRid?: ScreenRid }>> = [];
   readonly removed: string[][] = [];
   // Captured media-recovery listener — tests fire it directly.
   recoveryNeeded: (() => void) | null = null;
@@ -129,7 +161,7 @@ class FakePull {
     };
   }
   async addRemoteTracks(
-    tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>,
+    tracks: Array<{ trackName: string; preferredRid?: ScreenRid }>,
   ): Promise<void> {
     this.log.push("pull.addRemoteTracks");
     this.added.push(tracks);
@@ -151,7 +183,7 @@ class FakeGraph {
   sink: string | null = null;
   localAttachCount = 0;
   readonly userGains = new Map<string, number>();
-  readonly streamGains = new Map<string, number>();
+  readonly streamVolumes = new Map<string, number>();
   readonly detached: string[] = [];
   private readonly attached = new Set<string>();
   constructor(log: string[]) {
@@ -186,8 +218,8 @@ class FakeGraph {
   detachStreamAudio(streamKey: string): void {
     this.log.push(`graph.detachStream:${streamKey}`);
   }
-  setStreamGain(streamKey: string, gain: number): void {
-    this.streamGains.set(streamKey, gain);
+  setStreamVolume(streamKey: string, level: number): void {
+    this.streamVolumes.set(streamKey, level);
   }
   setDeafened(deafened: boolean): void {
     this.log.push(`graph.setDeafened:${deafened}`);
@@ -267,7 +299,13 @@ function makeHarness() {
     return localMic;
   });
   const retoggleMic = vi.fn(async () => nextMic);
-  const watchSpeaking = vi.fn(() => () => undefined);
+  let levelSink: ((level: number) => void) | null = null;
+  const watchSpeaking = vi.fn(
+    (_analyser: AnalyserNode, _cb: (speaking: boolean) => void, opts?: SpeakingOpts) => {
+      levelSink = opts?.onLevel ?? null;
+      return () => opts?.onLevel?.(0);
+    },
+  );
   const deps: VoiceDeps = {
     graph,
     createPublish: (_serverId, userId) => {
@@ -285,35 +323,35 @@ function makeHarness() {
     retoggleMic,
     watchSpeaking,
   };
-  return { log, publishes, pulls, graph, ws, getMic, retoggleMic, watchSpeaking, deps, localMic };
+  return {
+    log,
+    publishes,
+    pulls,
+    graph,
+    ws,
+    getMic,
+    retoggleMic,
+    watchSpeaking,
+    deps,
+    localMic,
+    emitVoiceLevel(level: number) {
+      if (levelSink === null) throw new Error("speaking watcher was not started");
+      levelSink(level);
+    },
+  };
 }
 
 function seedVoice(serverId: string, members: VoiceMember[]): void {
-  const self: UserProfile = {
-    userId: SELF,
-    username: "self",
-    displayName: "Self",
-    color: "#123456",
-  };
-  roomStore(serverId)
-    .getState()
-    .apply({
-      t: "hello.ok",
-      status: "",
-      self,
-      serverMeta: { id: serverId, nickname: "cave", adminUserId: SELF },
-      members: [],
-      voice: { members, sessionStartedAt: members.length > 0 ? 500 : null },
-      streams: [],
-      recording: { active: false },
-      lastMessageId: null,
-      lastReadMessageId: 0,
-      firstUnreadMessageId: null,
-      unreadCount: 0,
-      costStatus: { usedGB: 0, capGB: 900, blocked: false },
-      polls: [],
-      points: zeroPoints(),
-    });
+  roomStore(serverId).getState().apply(helloSnapshot(serverId, members));
+}
+
+function seedHarnessVoice(
+  harness: ReturnType<typeof makeHarness>,
+  serverId: string,
+  members: VoiceMember[],
+): void {
+  harness.ws.ackMembers = members;
+  seedVoice(serverId, members);
 }
 
 async function flush(): Promise<void> {
@@ -341,6 +379,7 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   resetRoomStores();
   vi.mocked(playUiSound).mockClear();
   useSessionStore.setState({
@@ -358,6 +397,7 @@ beforeEach(() => {
   useSettingsStore.setState({
     volumes: { v: 1, users: {}, streams: {}, soundboard: 1, mutedUsers: [] },
   });
+  clearVoiceLevels();
 });
 
 describe("FR-18 join/leave", () => {
@@ -383,6 +423,24 @@ describe("FR-18 join/leave", () => {
     expect(h.log).toContain("pull.connect");
     expect(useMediaStore.getState().voiceStatus).toBe("joined");
     expect(useMediaStore.getState().inVoiceServerId).toBe("A");
+    // No browser media is restored after reload. The only persisted value identifies which stale
+    // tab-owned server lifetime a replacement document must clear.
+    expect(sessionStorage.getItem("tavern.voiceSession.v1")).toBeNull();
+    expect(sessionStorage.getItem(MEDIA_OWNER_STORAGE_KEY)).toBe("A");
+  });
+
+  it("routes the analyser level to the animation bus and clears it on leave", async () => {
+    const h = makeHarness();
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", []);
+    await controller.join("A");
+
+    h.emitVoiceLevel(0.72);
+    expect(readVoiceLevel(SELF)).toBe(0.72);
+
+    await controller.leave();
+    expect(readVoiceLevel(SELF)).toBe(0);
+    expect(sessionStorage.getItem(MEDIA_OWNER_STORAGE_KEY)).toBeNull();
   });
 
   it("a slow microphone does not block receiving and attaching existing remote audio", async () => {
@@ -390,7 +448,7 @@ describe("FR-18 join/leave", () => {
     const mic = deferred<MediaStreamTrack>();
     h.deps.getMic = vi.fn(() => mic.promise);
     const controller = new VoiceController(h.deps);
-    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false }]);
+    seedHarnessVoice(h, "A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
 
     const joined = controller.join("A");
     await flush();
@@ -435,45 +493,41 @@ describe("FR-18 join/leave", () => {
     expect(useMediaStore.getState().voiceStatus).toBe("joined");
   });
 
-  it("mic pull retries until the joiner's publish registers the mic (S12.3 race)", async () => {
-    vi.useFakeTimers();
-    try {
-      const h = makeHarness();
-      const controller = new VoiceController(h.deps);
-      seedVoice("A", []);
-      await controller.join("A");
+  it("waits for the committed mic generation instead of retrying an unready publisher", async () => {
+    const h = makeHarness();
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", []);
+    await controller.join("A");
+    const pull = h.pulls[0];
+    if (!pull) throw new Error("expected the voice pull session");
 
-      const pull = h.pulls[0];
-      if (!pull) throw new Error("expected the voice pull session");
-      // voice.state announces REMOTE before their REST publish lands — the first two pulls 403.
-      let failures = 2;
-      const original = pull.addRemoteTracks.bind(pull);
-      pull.addRemoteTracks = async (tracks) => {
-        if (failures > 0 && tracks.some((t) => t.trackName === `mic:${REMOTE}`)) {
-          failures -= 1;
-          throw new Error("pull_denied");
-        }
-        return original(tracks);
-      };
-      h.ws.emit({
-        t: "voice.state",
-        voice: {
-          members: [
-            { userId: SELF, muted: false, deafened: false },
-            { userId: REMOTE, muted: false, deafened: false },
-          ],
-          sessionStartedAt: 1000,
-        },
-        at: 3000,
-      });
+    h.ws.emit({
+      t: "voice.state",
+      voice: {
+        members: [
+          { userId: SELF, muted: false, deafened: false, micSeq: 1 },
+          { userId: REMOTE, muted: false, deafened: false, micSeq: 0 },
+        ],
+        sessionStartedAt: 1000,
+      },
+      at: 3000,
+    });
+    await flush();
+    expect(pull.added).toEqual([]);
 
-      // Two failed attempts (0 ms, +500 ms), the third (+1000 ms) succeeds.
-      await vi.advanceTimersByTimeAsync(1500);
-      expect(failures).toBe(0);
-      expect(pull.added).toContainEqual([{ trackName: `mic:${REMOTE}` }]);
-    } finally {
-      vi.useRealTimers();
-    }
+    h.ws.emit({
+      t: "voice.state",
+      voice: {
+        members: [
+          { userId: SELF, muted: false, deafened: false, micSeq: 1 },
+          { userId: REMOTE, muted: false, deafened: false, micSeq: 1 },
+        ],
+        sessionStartedAt: 1000,
+      },
+      at: 4000,
+    });
+    await flush();
+    expect(pull.added).toEqual([[{ trackName: `mic:${REMOTE}` }]]);
   });
 
   it("streamAudioSink is null until joined, the graph while joined, null after leave (S8.2)", async () => {
@@ -484,9 +538,9 @@ describe("FR-18 join/leave", () => {
     expect(controller.streamAudioSink()).toBeNull();
     await controller.join("A");
     expect(controller.streamAudioSink()).toBe(h.graph);
-    // The sink routes a watched-stream gain to the SAME graph (FR-31).
-    controller.streamAudioSink()?.setStreamGain("uuu:screen", 2);
-    expect(h.graph.streamGains.get("uuu:screen")).toBe(2);
+    // The sink routes a watched-stream volume level to the SAME graph (FR-31).
+    controller.streamAudioSink()?.setStreamVolume("uuu:screen", 2);
+    expect(h.graph.streamVolumes.get("uuu:screen")).toBe(2);
 
     await controller.leave();
     expect(controller.streamAudioSink()).toBeNull();
@@ -495,7 +549,7 @@ describe("FR-18 join/leave", () => {
   it("leave tears down sessions, graph detaches, sends voice.leave", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);
-    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false }]);
+    seedHarnessVoice(h, "A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
     await controller.join("A");
 
     await controller.leave();
@@ -513,7 +567,7 @@ describe("FR-18 join/leave", () => {
   it("plays sounds for join/leave and stream changes, but not reconnect joins", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);
-    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false }]);
+    seedHarnessVoice(h, "A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
 
     await controller.join("A");
     expect(vi.mocked(playUiSound)).toHaveBeenCalledWith("voice.join");
@@ -602,7 +656,7 @@ describe("FR-18 join/leave", () => {
       throw new DOMException("denied", "NotAllowedError");
     });
     const controller = new VoiceController(h.deps);
-    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false }]);
+    seedHarnessVoice(h, "A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
 
     await expect(controller.join("A")).rejects.toMatchObject({ name: "NotAllowedError" });
 
@@ -613,29 +667,14 @@ describe("FR-18 join/leave", () => {
     expect(useMediaStore.getState().voiceStatus).toBe("error");
   });
 
-  it("ws reconnect while joined → teardown + rejoin", async () => {
+  it("ws reconnect after the voice lease expired → teardown + rejoin", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);
     seedVoice("A", []);
     await controller.join("A");
 
-    h.ws.emit({
-      t: "hello.ok",
-      status: "",
-      self: { userId: SELF, username: "self", displayName: "Self", color: "#123456" },
-      serverMeta: { id: "A", nickname: "cave", adminUserId: SELF },
-      members: [],
-      voice: { members: [], sessionStartedAt: null },
-      streams: [],
-      recording: { active: false },
-      lastMessageId: null,
-      lastReadMessageId: 0,
-      firstUnreadMessageId: null,
-      unreadCount: 0,
-      costStatus: { usedGB: 0, capGB: 900, blocked: false },
-      polls: [],
-      points: zeroPoints(),
-    });
+    roomStore("A").getState().apply(helloSnapshot("A", []));
+    h.ws.emit(helloSnapshot("A", []));
     await flush();
 
     expect(h.publishes).toHaveLength(2);
@@ -646,6 +685,25 @@ describe("FR-18 join/leave", () => {
     expect(
       vi.mocked(playUiSound).mock.calls.filter(([kind]) => kind === "voice.join"),
     ).toHaveLength(1);
+  });
+
+  it("ws reconnect inside the voice lease keeps healthy media sessions", async () => {
+    const h = makeHarness();
+    const controller = new VoiceController(h.deps);
+    seedVoice("A", []);
+    await controller.join("A");
+
+    const retained: VoiceMember[] = [
+      { userId: SELF, muted: false, deafened: false, mediaReadyVersion: 2 },
+    ];
+    roomStore("A").getState().apply(helloSnapshot("A", retained));
+    h.ws.emit(helloSnapshot("A", retained));
+    await flush();
+
+    expect(h.publishes).toHaveLength(1);
+    expect(h.publishes[0]?.closed).toBe(false);
+    expect(h.pulls).toHaveLength(1);
+    expect(h.pulls[0]?.closed).toBe(false);
   });
 });
 
@@ -672,6 +730,26 @@ describe("FR-18 single-voice rule", () => {
 });
 
 describe("FR-26", () => {
+  it("carries idle mute and deafen preferences into the next voice session", async () => {
+    const h = makeHarness();
+    const controller = new VoiceController(h.deps);
+
+    controller.setMuted(true);
+    controller.setDeafened(true);
+    expect(h.ws.sent).toEqual([]);
+    expect(h.graph.deafened).toBe(false);
+    expect(useMediaStore.getState().muted).toBe(true);
+    expect(useMediaStore.getState().deafened).toBe(true);
+
+    seedVoice("A", []);
+    await controller.join("A");
+
+    expect(h.localMic.enabled).toBe(false);
+    expect(h.publishes[0]?.enabled).toContainEqual([`mic:${SELF}`, false]);
+    expect(h.graph.deafened).toBe(true);
+    expect(h.ws.sent.at(-1)).toEqual({ t: "voice.state", muted: true, deafened: true });
+  });
+
   it("mute disables track, no replaceTrack(null), sends voice.state", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);
@@ -781,13 +859,13 @@ describe("FR-20", () => {
   });
 });
 
-// TASK-1: the cross-platform audibility fixes — micSeq re-pull, backoff persistence, transport
-// auto-recover. Each defect here produced a silent asymmetric pair in a 3+ member call.
+// TASK-1: the cross-platform audibility fixes — committed mic generations, exact re-pulls, and
+// transport auto-recovery. Each defect here produced a silent asymmetric pair in a 3+ member call.
 describe("TASK-1 audibility", () => {
   it("micSeq bump in voice.state → old pull closed, mic re-pulled (publisher rejoined)", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);
-    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
+    seedHarnessVoice(h, "A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
     await controller.join("A");
     const pull = h.pulls[0];
     if (!pull) throw new Error("expected the voice pull session");
@@ -818,7 +896,7 @@ describe("TASK-1 audibility", () => {
   it("an unchanged micSeq does not re-pull (mute toggles must not churn the session)", async () => {
     const h = makeHarness();
     const controller = new VoiceController(h.deps);
-    seedVoice("A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
+    seedHarnessVoice(h, "A", [{ userId: REMOTE, muted: false, deafened: false, micSeq: 1 }]);
     await controller.join("A");
     const pull = h.pulls[0];
     if (!pull) throw new Error("expected the voice pull session");
@@ -838,88 +916,6 @@ describe("TASK-1 audibility", () => {
 
     expect(pull.removed).toEqual([]);
     expect(pull.added).toHaveLength(1);
-  });
-
-  it("mic pull retry backs off (500ms → 5s cap) and outlives the old 10-attempt budget", async () => {
-    vi.useFakeTimers();
-    try {
-      const h = makeHarness();
-      const controller = new VoiceController(h.deps);
-      seedVoice("A", []);
-      await controller.join("A");
-      const pull = h.pulls[0];
-      if (!pull) throw new Error("expected the voice pull session");
-      // 12 failures — the old flat budget (10) gave up here; the backoff schedule keeps going.
-      let failures = 12;
-      const original = pull.addRemoteTracks.bind(pull);
-      pull.addRemoteTracks = async (tracks) => {
-        if (failures > 0 && tracks.some((t) => t.trackName === `mic:${REMOTE}`)) {
-          failures -= 1;
-          throw new Error("pull_denied");
-        }
-        return original(tracks);
-      };
-      h.ws.emit({
-        t: "voice.state",
-        voice: {
-          members: [
-            { userId: SELF, muted: false, deafened: false },
-            { userId: REMOTE, muted: false, deafened: false },
-          ],
-          sessionStartedAt: 1000,
-        },
-        at: 3000,
-      });
-
-      // Backoff: 500+1000+2000+4000 then 5s per retry — 12 failures need 500·(2⁰..2³)+8·5000 = 47.5s.
-      await vi.advanceTimersByTimeAsync(48_000);
-      expect(failures).toBe(0);
-      expect(pull.added).toContainEqual([{ trackName: `mic:${REMOTE}` }]);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("a member leaving cancels their pending mic retry", async () => {
-    vi.useFakeTimers();
-    try {
-      const h = makeHarness();
-      const controller = new VoiceController(h.deps);
-      seedVoice("A", []);
-      await controller.join("A");
-      const pull = h.pulls[0];
-      if (!pull) throw new Error("expected the voice pull session");
-      let attempts = 0;
-      pull.addRemoteTracks = async () => {
-        attempts += 1;
-        throw new Error("pull_denied");
-      };
-      const withRemote = {
-        members: [
-          { userId: SELF, muted: false, deafened: false },
-          { userId: REMOTE, muted: false, deafened: false },
-        ],
-        sessionStartedAt: 1000,
-      };
-      h.ws.emit({ t: "voice.state", voice: withRemote, at: 3000 });
-      await vi.advanceTimersByTimeAsync(600); // first retry scheduled + fired
-      const seen = attempts;
-      expect(seen).toBeGreaterThanOrEqual(2);
-
-      // REMOTE leaves — the retry chain must die with them.
-      h.ws.emit({
-        t: "voice.state",
-        voice: {
-          members: [{ userId: SELF, muted: false, deafened: false }],
-          sessionStartedAt: 1000,
-        },
-        at: 4000,
-      });
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(attempts).toBe(seen);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("media reconnect → immediate teardown + rejoin preserving mute", async () => {
@@ -949,19 +945,34 @@ describe("FR-36 soundboard playback", () => {
   // broadcast so a member hears a sound WITHOUT ever opening the soundboard panel (the bug fix).
   function harnessWithSoundboard() {
     const h = makeHarness();
-    const plays: { id: string; trimStartMs: number; trimEndMs: number }[] = [];
+    const plays: Array<{
+      sound: { id: string; trimStartMs: number; trimEndMs: number; gain: number };
+      mode: "shared" | "local-preview" | "editor-preview";
+    }> = [];
     const stops: number[] = [];
+    const stoppedSounds: string[] = [];
+    const previewStops: Array<string | undefined> = [];
+    const bytePlays: Array<{
+      bytes: ArrayBuffer;
+      sound: { id: string; trimStartMs: number; trimEndMs: number; gain: number };
+      mode: "editor-preview";
+    }> = [];
     const deps: VoiceDeps = {
       ...h.deps,
       createSoundboardPlayer: () => ({
-        serverId: "A",
-        play: async (s) => {
-          plays.push(s);
+        play: async (sound, mode = "shared") => {
+          plays.push({ sound, mode });
+        },
+        playBytes: async (bytes, sound, mode, onStarted) => {
+          bytePlays.push({ bytes, sound, mode });
+          onStarted?.();
         },
         stopAll: () => stops.push(1),
+        stop: (soundId) => stoppedSounds.push(soundId),
+        stopPreview: (soundId) => previewStops.push(soundId),
       }),
     };
-    return { h, plays, stops, deps };
+    return { h, plays, bytePlays, stops, stoppedSounds, previewStops, deps };
   }
 
   it("plays a `sound.played` broadcast while joined even if the panel never mounted", async () => {
@@ -977,10 +988,16 @@ describe("FR-36 soundboard playback", () => {
       at: 1,
       trimStartMs: 100,
       trimEndMs: 700,
+      gain: 1.25,
     });
     await flush();
 
-    expect(plays).toEqual([{ id: "s9", trimStartMs: 100, trimEndMs: 700 }]);
+    expect(plays).toEqual([
+      {
+        sound: { id: "s9", trimStartMs: 100, trimEndMs: 700, gain: 1.25 },
+        mode: "shared",
+      },
+    ]);
   });
 
   it("does not play when deafened", async () => {
@@ -997,6 +1014,7 @@ describe("FR-36 soundboard playback", () => {
       at: 1,
       trimStartMs: 0,
       trimEndMs: 500,
+      gain: 1,
     });
     await flush();
 
@@ -1017,9 +1035,72 @@ describe("FR-36 soundboard playback", () => {
       at: 1,
       trimStartMs: 0,
       trimEndMs: 500,
+      gain: 1,
     });
     await flush();
 
     expect(plays).toEqual([]);
+  });
+
+  it("overlaps different local previews and handles targeted preview/shared stops", async () => {
+    const { h, plays, bytePlays, stoppedSounds, previewStops, deps } = harnessWithSoundboard();
+    const controller = new VoiceController(deps);
+
+    await controller.previewSoundboard("A", {
+      id: "preview",
+      trimStartMs: 50,
+      trimEndMs: 450,
+      gain: 0.8,
+    });
+    expect(plays).toEqual([
+      {
+        sound: { id: "preview", trimStartMs: 50, trimEndMs: 450, gain: 0.8 },
+        mode: "local-preview",
+      },
+    ]);
+    await controller.previewSoundboard("A", {
+      id: "second-preview",
+      trimStartMs: 0,
+      trimEndMs: 300,
+      gain: 1,
+    });
+    expect(plays).toHaveLength(2);
+    expect(previewStops).toEqual([]);
+
+    controller.stopSoundboardPreview("preview");
+    expect(previewStops).toEqual(["preview"]);
+
+    const bytes = new ArrayBuffer(8);
+    const onStarted = vi.fn();
+    await controller.previewSoundFile(
+      "A",
+      bytes,
+      { trimStartMs: 100, trimEndMs: 600, gain: 1.2 },
+      onStarted,
+    );
+    expect(bytePlays).toEqual([
+      {
+        bytes,
+        sound: {
+          id: "sound-editor-preview",
+          trimStartMs: 100,
+          trimEndMs: 600,
+          gain: 1.2,
+        },
+        mode: "editor-preview",
+      },
+    ]);
+    expect(onStarted).toHaveBeenCalledOnce();
+    expect(previewStops).toEqual(["preview", undefined]);
+
+    seedVoice("A", []);
+    await controller.join("A");
+    h.ws.emit({
+      t: "sound.stopped",
+      soundId: "11111111-1111-4111-8111-111111111111",
+      byUserId: REMOTE,
+      at: 2,
+    });
+    expect(stoppedSounds).toContain("11111111-1111-4111-8111-111111111111");
   });
 });

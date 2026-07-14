@@ -34,11 +34,11 @@ beforeEach(() => {
 
 afterEach(() => cleanup());
 
-function renderName(): void {
+function renderName(value: Member = member): void {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <UserProfileName serverId={SERVER_ID} member={member} />
+      <UserProfileName serverId={SERVER_ID} member={value} />
     </QueryClientProvider>,
   );
 }
@@ -71,5 +71,23 @@ describe("user profile dialog", () => {
     fireEvent.click(screen.getByTestId(`user-profile-trigger-${MEMBER_ID}`));
     fireEvent.error(await screen.findByTestId(`profile-avatar-${MEMBER_ID}`));
     expect(screen.getByTestId(`profile-avatar-fallback-${MEMBER_ID}`).textContent).toBe("A");
+  });
+
+  it("shows the equipped icon and exposes its purchase receipt in the profile", async () => {
+    getMock.mockResolvedValue({ perUser: [], watchPairs: [] });
+    renderName({
+      ...member,
+      marketIcon: {
+        itemId: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+        name: "Fox",
+        pricePaid: 40,
+        purchasedAt: Date.UTC(2026, 6, 14, 12),
+      },
+    });
+    fireEvent.click(screen.getByTestId(`user-profile-trigger-${MEMBER_ID}`));
+
+    const icon = await screen.findByTestId("user-profile-market-icon");
+    expect(icon.getAttribute("src")).toContain("/api/media/market-icons/");
+    expect(icon.closest("button")?.getAttribute("aria-label")).toContain("40 points");
   });
 });

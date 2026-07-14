@@ -1,11 +1,4 @@
-import {
-  HeadphoneOffIcon,
-  HeadphonesIcon,
-  MicIcon,
-  MicOffIcon,
-  MonitorUpIcon,
-  VideoIcon,
-} from "lucide-react";
+import { MonitorUpIcon, VideoIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import type { DataTier, PresetId } from "@tavern/shared";
@@ -14,6 +7,8 @@ import {
   DEFAULT_SCREEN_PRESET,
   SCREEN_PRESETS,
   isBasePresetId,
+  presetFitsCaptureCeiling,
+  tierOf,
   withTier,
 } from "@tavern/shared";
 import { Button } from "@/components/ui/button";
@@ -25,8 +20,8 @@ import { SharePickerDialog } from "@/features/streams/SharePickerDialog";
 import { useScreenShare } from "@/features/streams/useScreenShare";
 import { useWebcam } from "@/features/streams/useWebcam";
 import { useVoice } from "@/features/voice/useVoice";
+import { VoiceToggleButtons } from "@/features/voice/VoiceToggleButtons";
 import { m } from "@/paraglide/messages.js";
-import { platform } from "@/platform/types";
 
 // FR-27/28/29 controls bar under the canvas (§7.6). Screen-share, webcam and record — large buttons,
 // shown ONLY while in voice on this server. Share defaults to 1080p60; two segmented button-groups pick
@@ -64,50 +59,69 @@ function isUserCancel(err: unknown): boolean {
 export function ControlsBar({ serverId }: { serverId: string }) {
   const { status, inVoiceServerId, muted, setMuted, deafened, setDeafened } = useVoice(serverId);
   const active = inVoiceServerId === serverId && status === "joined";
-  const { sharing, start: startShare, stop: stopShare, setPreset } = useScreenShare();
+  const {
+    sharing,
+    start: startShare,
+    stop: stopShare,
+    setPreset,
+    replaceCapture,
+    captureCeiling,
+  } = useScreenShare();
   const { active: camming, start: startCam, stop: stopCam } = useWebcam();
   const [pickerOpen, setPickerOpen] = useState(false);
   const [height, setHeight] = useState(1080);
   const [fps, setFps] = useState(30);
   const [tier, setTier] = useState<DataTier>(100);
+  const [pickerPreset, setPickerPreset] = useState<PresetId>(DEFAULT_SCREEN_PRESET);
+  const [pickerMode, setPickerMode] = useState<"start" | "upgrade">("start");
 
-  const launchShare = (sel: Parameters<typeof startShare>[0]): void => {
-    startShare(sel).catch((err: unknown) => {
-      if (isUserCancel(err) || err instanceof ApiError) return;
-      toast.error(m.streams_share_start_failed());
-    });
+  const reportShareFailure = (err: unknown): void => {
+    if (isUserCancel(err) || err instanceof ApiError) return;
+    toast.error(m.streams_share_start_failed());
   };
 
-  // Main share button: stop while sharing; else start now (web) or open the source dialog (desktop).
-  // A share ALWAYS starts at 1080p30 (DEFAULT_SCREEN_PRESET); res/fps are tuned live afterwards, so the
-  // segmented groups are reset to the default here and only shown once the share is up.
+  const syncControls = (preset: PresetId): void => {
+    const spec = SCREEN_PRESETS[preset];
+    setHeight(spec.height);
+    setFps(spec.fps);
+    setTier(tierOf(preset));
+  };
+
+  // Every platform chooses the capture ceiling before getDisplayMedia. This keeps the first offer
+  // truthful: a requested 60 fps share is acquired at 60 instead of trying to upgrade a 30 fps track.
   const onShareClick = (): void => {
     if (sharing) {
       void stopShare();
       return;
     }
-    if (platform.kind === "desktop") {
-      setPickerOpen(true);
-      return;
-    }
-    setHeight(1080);
-    setFps(30);
-    setTier(100);
-    launchShare({ sourceId: null, preset: DEFAULT_SCREEN_PRESET, withAudio: true });
+    setPickerMode("start");
+    setPickerPreset(DEFAULT_SCREEN_PRESET);
+    setPickerOpen(true);
   };
 
-  // Segmented picks: update state, and if a share is live re-apply the new preset on the fly.
+  const applyLivePreset = (next: PresetId): void => {
+    if (!sharing) return;
+    if (captureCeiling !== null && presetFitsCaptureCeiling(next, captureCeiling)) {
+      setPreset(next)
+        .then(() => syncControls(next))
+        .catch(reportShareFailure);
+      return;
+    }
+    setPickerMode("upgrade");
+    setPickerPreset(next);
+    setPickerOpen(true);
+  };
+
+  // Downward/within-ceiling changes are encoder-only. An upward geometry/cadence choice reopens the
+  // platform picker and replaces the video track after the fresh capture succeeds.
   const applyHeight = (next: number): void => {
-    setHeight(next);
-    if (sharing) void setPreset(toPreset(next, fps, tier));
+    applyLivePreset(toPreset(next, fps, tier));
   };
   const applyFps = (next: number): void => {
-    setFps(next);
-    if (sharing) void setPreset(toPreset(height, next, tier));
+    applyLivePreset(toPreset(height, next, tier));
   };
   const applyTier = (next: DataTier): void => {
-    setTier(next);
-    if (sharing) void setPreset(toPreset(height, fps, next));
+    applyLivePreset(toPreset(height, fps, next));
   };
 
   // Icon-only action buttons (square) + the segmented res/fps value buttons. The selected segment gets
@@ -199,42 +213,28 @@ export function ControlsBar({ serverId }: { serverId: string }) {
           </Button>
           {/* FR-25 record toggle (the red REC dot sits next to the session timer in the channel row). */}
           <RecordButton serverId={serverId} inVoice={active} className={icon} />
-          {/* FR-26 self mute + deafen (moved here from the VoicePanel) — red soft fill while engaged. */}
-          <Button
-            variant="secondary"
-            data-testid="controls-mute"
-            aria-label={muted ? m.voice_unmute() : m.voice_mute()}
-            aria-pressed={muted}
-            className={cn(icon, muted && stopActive)}
-            onClick={() => setMuted(!muted)}
-          >
-            {muted ? <MicOffIcon /> : <MicIcon />}
-          </Button>
-          <Button
-            variant="secondary"
-            data-testid="controls-deafen"
-            aria-label={deafened ? m.voice_undeafen() : m.voice_deafen()}
-            aria-pressed={deafened}
-            className={cn(icon, deafened && stopActive)}
-            onClick={() => setDeafened(!deafened)}
-          >
-            {deafened ? <HeadphoneOffIcon /> : <HeadphonesIcon />}
-          </Button>
+          {/* FR-26 self mute + deafen — shared with the persistent sidebar self profile. */}
+          <VoiceToggleButtons
+            muted={muted}
+            onMutedChange={setMuted}
+            deafened={deafened}
+            onDeafenedChange={setDeafened}
+            testIdPrefix="controls"
+            buttonClassName={icon}
+            activeClassName={stopActive}
+          />
         </>
       )}
-      {/* Desktop still needs source selection — the main button opens this dialog there. */}
+      {/* Web uses this for quality/data policy before the native browser source picker; desktop also
+          selects the source here. Upward changes use the same dialog for a fresh capture. */}
       <SharePickerDialog
         open={pickerOpen}
         onOpenChange={setPickerOpen}
+        initialPreset={pickerPreset}
         onStart={(sel) => {
           setPickerOpen(false);
-          // Sync the segmented groups to the picked preset (the picker offers base presets only, so
-          // the data tier always restarts at 100%) — the live-tuning controls must not lie on open.
-          const spec = SCREEN_PRESETS[sel.preset];
-          setHeight(spec.height);
-          setFps(spec.fps);
-          setTier(100);
-          launchShare(sel);
+          const operation = pickerMode === "upgrade" ? replaceCapture(sel) : startShare(sel);
+          operation.then(() => syncControls(sel.preset)).catch(reportShareFailure);
         }}
       />
     </div>

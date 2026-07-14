@@ -45,3 +45,10 @@ Object.defineProperty(globalThis, "IntersectionObserver", {
   writable: true,
   value: IdleIntersectionObserver,
 });
+
+// Base UI's ScrollArea waits for Web Animations cleanup. jsdom has no implementation, so provide
+// the standards-shaped empty result at the test boundary; browser behavior is covered by Playwright.
+Object.defineProperty(Element.prototype, "getAnimations", {
+  configurable: true,
+  value: () => [],
+});

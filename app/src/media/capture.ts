@@ -1,4 +1,4 @@
-import { SCREEN_PRESETS, WEBCAM_PRESET } from "@tavern/shared";
+import { SCREEN_PRESETS, WEBCAM_PRESET, contentHintForPreset } from "@tavern/shared";
 import type { ShareSelection } from "@/features/streams/types";
 // captureScreen takes only a ShareSelection (S8.1), so it reads the platform singleton directly.
 import { platform as platformBridge } from "@/platform/types";
@@ -211,6 +211,7 @@ export async function captureScreen(sel: ShareSelection): Promise<ScreenCapture>
     audio: wantDisplayAudio,
   });
   const video = firstVideoTrack(stream);
+  video.contentHint = contentHintForPreset(sel.preset);
   let audio = stream.getAudioTracks()[0] ?? null;
   let audioSource: ShareAudioSource | null = audio === null ? null : "display";
   const fallbackEligible =
@@ -229,7 +230,7 @@ export async function captureScreen(sel: ShareSelection): Promise<ScreenCapture>
   return { video, audio, audioSource, tabAudio: audioSource === "display" && isTabSurface(video) };
 }
 
-// Webcam is fixed 720p30 (App-D); the h/l simulcast split is applied by the PublishSession.
+// Webcam is fixed 720p30; the h/i/l simulcast ladder is applied by the PublishSession.
 export async function getCam(deviceId?: string): Promise<MediaStreamTrack> {
   const stream = await navigator.mediaDevices.getUserMedia({
     video: {

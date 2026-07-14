@@ -1,5 +1,6 @@
 import type { Member } from "@tavern/shared";
 import { cn } from "@/lib/utils";
+import { MarketIcon } from "@/features/market/MarketIcon";
 
 // FR-15 mention autocomplete list. Purely presentational — the Composer owns the query, the active
 // index (ArrowUp/Down), and selection (Enter/Tab/click). Renders nothing when there are no matches.
@@ -7,12 +8,14 @@ interface MentionAutocompleteProps {
   suggestions: Member[];
   activeIndex: number;
   onPick: (member: Member) => void;
+  serverId: string;
 }
 
 export function MentionAutocomplete({
   suggestions,
   activeIndex,
   onPick,
+  serverId,
 }: MentionAutocompleteProps) {
   if (suggestions.length === 0) return null;
   return (
@@ -39,6 +42,13 @@ export function MentionAutocomplete({
             <span className="shrink-0 font-medium" style={{ color: member.color }}>
               {member.displayName}
             </span>
+            {member.marketIcon === undefined ? null : (
+              <MarketIcon
+                serverId={serverId}
+                itemId={member.marketIcon.itemId}
+                name={member.marketIcon.name}
+              />
+            )}
             <span className="truncate text-xs text-muted-foreground">@{member.username}</span>
           </button>
         </li>

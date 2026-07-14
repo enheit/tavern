@@ -3,8 +3,8 @@
 // Data tiers: every base preset (resolution×fps) ships in four bitrate variants — 100% (the base
 // id, unchanged wire value) and -75/-50/-35 suffixed ids at that fraction of the base cap. Tiers
 // change ONLY maxKbps (geometry/fps identical): the encoder input is the knob, perceived quality is
-// content-dependent and never promised. Tiered kbps clamp to ≥ LOW_LAYER.maxKbps (250) — the h layer
-// must never price below the pinned low layer, so low-cap 480p variants collapse together.
+// content-dependent and never promised. Tiered high-layer caps retain the historical 250 kbps floor;
+// the intermediate/low simulcast caps are derived from that selected cap by screenLayerSpecs().
 export const BASE_PRESET_IDS = [
   "480p15",
   "480p30",
@@ -89,6 +89,22 @@ export interface Preset {
   maxKbps: number;
 }
 
+export const SCREEN_RIDS = ["h", "i", "l"] as const;
+export type ScreenRid = (typeof SCREEN_RIDS)[number];
+export const SCREEN_SIMULCAST_PROFILE = "h_i_l_v2" as const;
+export type ScreenSimulcastProfile = typeof SCREEN_SIMULCAST_PROFILE;
+
+export type StreamContentMode = "detail" | "balanced" | "motion";
+export type VideoContentHint = "detail" | "motion";
+export type VideoDegradationPreference = "maintain-resolution" | "balanced" | "maintain-framerate";
+
+export interface ScreenLayerSpec {
+  rid: ScreenRid;
+  heightTarget: number;
+  fps: number;
+  maxKbps: number;
+}
+
 // Base caps re-anchored 2026-07-11 (quality-probe finding): the old 30/60fps caps (e.g. 1080p60 =
 // 3000) starved dynamic content — streams are usually motion (video/games), and a realtime encoder
 // at ~0.02 bits/pixel turns motion into unreadable blur. New anchors follow the industry envelope
@@ -148,21 +164,91 @@ export const SCREEN_PRESETS: Record<PresetId, Preset> = {
 
 export const DEFAULT_SCREEN_PRESET: PresetId = "1080p30";
 const DEFAULT_BASE_PRESET: BasePresetId = "1080p30";
-export const LOW_LAYER = { heightTarget: 270, fps: 15, maxKbps: 250 } as const;
 export const WEBCAM_PRESET = { width: 1280, height: 720, fps: 30, maxKbps: 1000 } as const;
+export const WEBCAM_INTERMEDIATE = { heightTarget: 360, fps: 30, maxKbps: 350 } as const;
 export const WEBCAM_LOW = { heightTarget: 180, fps: 15, maxKbps: 150 } as const;
 
 export function presetKbps(id: PresetId): number {
   return SCREEN_PRESETS[id].maxKbps;
 }
 
-// 'h' → the selected preset's h-layer bitrate; 'l' → the pinned low-layer bitrate (250).
-export function kbpsFor(preset: PresetId, rid: "h" | "l"): number {
-  return rid === "h" ? presetKbps(preset) : LOW_LAYER.maxKbps;
+// Three bounded screen encodings. The middle layer preserves the selected cadence at half-height;
+// the low layer preserves reachability at quarter-height and never exceeds 30 fps. Bitrate ratios are
+// deliberately computed from the selected data tier so the transport and egress meter stay aligned.
+export function screenLayerSpecs(preset: PresetId): readonly ScreenLayerSpec[] {
+  const selected = SCREEN_PRESETS[preset];
+  const highKbps = selected.maxKbps;
+  const intermediateKbps = Math.min(
+    Math.round(highKbps * 0.6),
+    Math.max(150, Math.round(highKbps * 0.35)),
+  );
+  const lowKbps = Math.min(
+    Math.round((intermediateKbps * 2) / 3),
+    Math.max(100, Math.round(highKbps * 0.1)),
+  );
+  return [
+    { rid: "h", heightTarget: selected.height, fps: selected.fps, maxKbps: highKbps },
+    {
+      rid: "i",
+      heightTarget: Math.max(240, Math.round(selected.height / 2)),
+      fps: selected.fps,
+      maxKbps: intermediateKbps,
+    },
+    {
+      rid: "l",
+      heightTarget: Math.max(180, Math.round(selected.height / 4)),
+      fps: Math.min(selected.fps, 30),
+      maxKbps: lowKbps,
+    },
+  ];
+}
+
+export function screenLayerSpec(preset: PresetId, rid: ScreenRid): ScreenLayerSpec {
+  const layers = screenLayerSpecs(preset);
+  const found = layers.find((layer) => layer.rid === rid);
+  if (found !== undefined) return found;
+  const high = layers[0];
+  if (high === undefined) throw new Error(`preset ${preset} has no simulcast layers`);
+  return high;
+}
+
+export function kbpsFor(preset: PresetId, rid: ScreenRid): number {
+  return screenLayerSpec(preset, rid).maxKbps;
 }
 
 export function lowLayerScaleDown(id: PresetId): number {
-  return SCREEN_PRESETS[id].height / LOW_LAYER.heightTarget;
+  const spec = screenLayerSpec(id, "l");
+  return SCREEN_PRESETS[id].height / spec.heightTarget;
+}
+
+export function contentModeForPreset(preset: PresetId): StreamContentMode {
+  const fps = SCREEN_PRESETS[preset].fps;
+  if (fps >= 60) return "motion";
+  if (fps <= 15) return "detail";
+  return "balanced";
+}
+
+export function contentHintForPreset(preset: PresetId): VideoContentHint {
+  return contentModeForPreset(preset) === "detail" ? "detail" : "motion";
+}
+
+export function degradationPreferenceForPreset(preset: PresetId): VideoDegradationPreference {
+  const mode = contentModeForPreset(preset);
+  if (mode === "motion") return "maintain-framerate";
+  if (mode === "detail") return "maintain-resolution";
+  return "balanced";
+}
+
+// Encoder-only switches are truthful only while the requested geometry/cadence is inside the
+// acquisition ceiling. Crossing either boundary requires a fresh display-capture selection.
+export function presetFitsCaptureCeiling(preset: PresetId, ceiling: PresetId): boolean {
+  const requested = SCREEN_PRESETS[preset];
+  const captured = SCREEN_PRESETS[ceiling];
+  return (
+    requested.width <= captured.width &&
+    requested.height <= captured.height &&
+    requested.fps <= captured.fps
+  );
 }
 
 function isPresetId(value: string): value is PresetId {

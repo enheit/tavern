@@ -7,10 +7,18 @@ import {
   ServerSummary,
   ActivityEntry,
   GifAttachment,
+  EquippedMarketIcon,
+  MarketItem,
   PointConfig,
+  PointSnapshot,
   Poll,
   PollParticipantResult,
+  PresetIdSchema,
+  ReactionEmoji,
+  StreamPreview,
+  VoiceAvatarConfigInput,
 } from "./domain";
+import { SCREEN_SIMULCAST_PROFILE, SCREEN_RIDS } from "./presets";
 
 const atLeastOneKey = (o: object) => Object.keys(o).length >= 1;
 
@@ -41,6 +49,8 @@ export const PatchProfileRequest = z
     displayName: z.string().min(LIMITS.displayNameMin).max(LIMITS.displayNameMax).optional(),
     color: z.string().regex(LIMITS.colorRe).optional(),
     username: z.string().regex(LIMITS.usernameRe).optional(),
+    // A complete config replaces the previous recipe atomically; null restores deterministic auto.
+    voiceAvatar: VoiceAvatarConfigInput.nullable().optional(),
   })
   .refine(atLeastOneKey, { message: "bad_request" });
 export type PatchProfileRequest = z.infer<typeof PatchProfileRequest>;
@@ -83,6 +93,48 @@ export const PollPage = z.object({
 });
 export type PollPage = z.infer<typeof PollPage>;
 
+export const MarketScope = z.enum(["shop", "owned"]);
+export type MarketScope = z.infer<typeof MarketScope>;
+
+export const MarketPage = z.object({
+  items: z.array(MarketItem),
+  nextCursor: z.string().nullable(),
+});
+export type MarketPage = z.infer<typeof MarketPage>;
+
+export const MarketItemResponse = z.object({ item: MarketItem });
+export type MarketItemResponse = z.infer<typeof MarketItemResponse>;
+
+export const PatchMarketItemRequest = z
+  .object({
+    name: z.string().trim().min(1).max(LIMITS.marketItemNameMax).optional(),
+    price: z.number().int().positive().max(LIMITS.marketPriceMax).optional(),
+  })
+  .refine(atLeastOneKey, { message: "bad_request" });
+export type PatchMarketItemRequest = z.infer<typeof PatchMarketItemRequest>;
+
+export const PurchaseMarketItemRequest = z.object({
+  expectedRevision: z.number().int().positive(),
+  wearImmediately: z.boolean(),
+});
+export type PurchaseMarketItemRequest = z.infer<typeof PurchaseMarketItemRequest>;
+
+export const PurchaseMarketItemResponse = z.object({
+  item: MarketItem,
+  points: PointSnapshot,
+  equippedIcon: EquippedMarketIcon.nullable(),
+});
+export type PurchaseMarketItemResponse = z.infer<typeof PurchaseMarketItemResponse>;
+
+export const PutEquippedMarketIconRequest = z.object({ itemId: z.uuid().nullable() });
+export type PutEquippedMarketIconRequest = z.infer<typeof PutEquippedMarketIconRequest>;
+
+export const EquippedMarketIconResponse = z.object({ icon: EquippedMarketIcon.nullable() });
+export type EquippedMarketIconResponse = z.infer<typeof EquippedMarketIconResponse>;
+
+export const DeleteMarketItemResponse = z.object({ itemId: z.uuid() });
+export type DeleteMarketItemResponse = z.infer<typeof DeleteMarketItemResponse>;
+
 export const WsTicketRequest = z.object({ serverId: z.uuid() });
 export type WsTicketRequest = z.infer<typeof WsTicketRequest>;
 
@@ -110,6 +162,9 @@ export type StatsResponse = z.infer<typeof StatsResponse>;
 export const Sound = z.object({
   id: z.uuid(),
   name: z.string().min(1).max(LIMITS.soundNameMax),
+  emoji: ReactionEmoji,
+  gain: z.number().min(LIMITS.soundGainMin).max(LIMITS.soundGainMax),
+  sourceFileName: z.string().min(1).max(LIMITS.soundFileNameMax),
   uploaderId: z.uuid(),
   durationMs: z.number().int(),
   trimStartMs: z.number().int(),
@@ -119,12 +174,17 @@ export const Sound = z.object({
 });
 export type Sound = z.infer<typeof Sound>;
 
-export const SoundsResponse = z.object({ sounds: z.array(Sound) });
+export const SoundsResponse = z.object({ sounds: z.array(Sound), hasMore: z.boolean() });
 export type SoundsResponse = z.infer<typeof SoundsResponse>;
+
+export const SoundResponse = z.object({ sound: Sound });
+export type SoundResponse = z.infer<typeof SoundResponse>;
 
 export const PatchSoundRequest = z
   .object({
     name: z.string().min(1).max(LIMITS.soundNameMax).optional(),
+    emoji: ReactionEmoji.optional(),
+    gain: z.number().min(LIMITS.soundGainMin).max(LIMITS.soundGainMax).optional(),
     trimStartMs: z.number().int().optional(),
     trimEndMs: z.number().int().optional(),
   })
@@ -140,7 +200,10 @@ export const Recording = z.object({
 });
 export type Recording = z.infer<typeof Recording>;
 
-export const RecordingsResponse = z.object({ recordings: z.array(Recording) });
+export const RecordingsResponse = z.object({
+  recordings: z.array(Recording),
+  hasMore: z.boolean(),
+});
 export type RecordingsResponse = z.infer<typeof RecordingsResponse>;
 
 // A stream screenshot (§ screenshots tab): a single still frame a member captured from the focused
@@ -153,7 +216,10 @@ export const Screenshot = z.object({
 });
 export type Screenshot = z.infer<typeof Screenshot>;
 
-export const ScreenshotsResponse = z.object({ screenshots: z.array(Screenshot) });
+export const ScreenshotsResponse = z.object({
+  screenshots: z.array(Screenshot),
+  hasMore: z.boolean(),
+});
 export type ScreenshotsResponse = z.infer<typeof ScreenshotsResponse>;
 
 // The idle-center Tavern Home is a bounded social recap, not an audit log. Hangouts are derived from
@@ -200,6 +266,13 @@ export type GifSearchResponse = z.infer<typeof GifSearchResponse>;
 export const CreateScreenshotResponse = z.object({ screenshot: Screenshot });
 export type CreateScreenshotResponse = z.infer<typeof CreateScreenshotResponse>;
 
+// PUT /api/servers/:id/stream-previews/:previewId returns the committed object version. The same
+// shape is broadcast on StreamInfo so clients can refresh an authenticated, no-store blob URL.
+export const PutStreamPreviewResponse = z.object({
+  preview: StreamPreview,
+});
+export type PutStreamPreviewResponse = z.infer<typeof PutStreamPreviewResponse>;
+
 // POST /api/servers/:id/chat-images (§ chat image paste): the Worker streams the pasted webp to R2 and
 // returns the freshly-minted image id. The client then sends `chat.send` with an `ImageAttachment`
 // carrying this id; the message renderer builds the public capability URL from it.
@@ -233,10 +306,22 @@ export type CompleteRecordingRequest = z.infer<typeof CompleteRecordingRequest>;
 export const RtcSessionResponse = z.object({ sessionId: z.string() });
 export type RtcSessionResponse = z.infer<typeof RtcSessionResponse>;
 
+export const RtcSessionRequest = z.object({ mediaReadyVersion: z.literal(2) });
+export type RtcSessionRequest = z.infer<typeof RtcSessionRequest>;
+
+export const RtcPublicationRequest = z.object({ publicationId: z.uuid() });
+export type RtcPublicationRequest = z.infer<typeof RtcPublicationRequest>;
+
 export const RtcTracksLocalRequest = z.object({
   sessionDescription: z.object({ sdp: z.string(), type: z.literal("offer") }),
   tracks: z.array(
-    z.object({ location: z.literal("local"), mid: z.string(), trackName: z.string() }),
+    z.object({
+      location: z.literal("local"),
+      mid: z.string(),
+      trackName: z.string(),
+      preset: PresetIdSchema.optional(),
+      simulcastProfile: z.literal(SCREEN_SIMULCAST_PROFILE).optional(),
+    }),
   ),
 });
 export type RtcTracksLocalRequest = z.infer<typeof RtcTracksLocalRequest>;
@@ -247,13 +332,16 @@ export const RtcTracksRemoteRequest = z.object({
       location: z.literal("remote"),
       sessionId: z.string(),
       trackName: z.string(),
-      simulcast: z.object({ preferredRid: z.enum(["h", "l"]) }).optional(),
+      simulcast: z.object({ preferredRid: z.enum(SCREEN_RIDS) }).optional(),
     }),
   ),
 });
 export type RtcTracksRemoteRequest = z.infer<typeof RtcTracksRemoteRequest>;
 
 export const RtcTracksResponse = z.object({
+  // Present on the v2 publish path. The publisher must acknowledge browser connection with this
+  // opaque id before the DO makes the registered tracks visible to pullers.
+  publicationId: z.uuid().optional(),
   requiresImmediateRenegotiation: z.boolean(),
   tracks: z.array(
     z.object({
@@ -277,6 +365,21 @@ export const RtcClosePayload = z.object({
   force: z.boolean(),
 });
 export type RtcClosePayload = z.infer<typeof RtcClosePayload>;
+
+// A watch grant survives presentation changes. `audio` means the viewer retains only the stream's
+// companion audio track; `video` means a video layer is actively delivered (h/i/l is tracked by the
+// existing layer contract). Keeping this separate from rid makes old grants default safely to video.
+export const WatchDeliverySchema = z.enum(["video", "audio"]);
+export type WatchDelivery = z.infer<typeof WatchDeliverySchema>;
+
+export const RtcWatchDeliveryRequest = z.object({
+  trackName: z.string(),
+  delivery: WatchDeliverySchema,
+});
+export type RtcWatchDeliveryRequest = z.infer<typeof RtcWatchDeliveryRequest>;
+
+export const RtcWatchDeliveryResponse = RtcWatchDeliveryRequest;
+export type RtcWatchDeliveryResponse = z.infer<typeof RtcWatchDeliveryResponse>;
 
 export const IceServersResponse = z.object({
   iceServers: z.array(

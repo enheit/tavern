@@ -8,3 +8,5 @@ export * from "./layout";
 export * from "./protocol";
 export * from "./api";
 export * from "./ipc";
+export * from "./qoe";
+export * from "./cloudflareUsage";

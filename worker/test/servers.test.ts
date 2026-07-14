@@ -412,6 +412,18 @@ describe("membership guard", () => {
     const admin = await session("guarda");
     const adminId = await meUserId(admin);
     const created = await createdSummary(admin, { nickname: "guardserver" });
+    const voiceAvatar = {
+      version: 2,
+      skinTone: "medium",
+      hairColor: "auburn",
+      hairStyle: "coily",
+      eyeColor: "hazel",
+      glassesStyle: "square",
+      facialHairStyle: "goatee",
+      outfitColor: "#818cf8",
+    } as const;
+    const patched = await patchProfile(admin, { voiceAvatar });
+    expect(patched.status).toBe(200);
 
     const outsider = await session("guardb");
     const denied = await authed(outsider, `/api/servers/${created.id}/members`);
@@ -421,7 +433,7 @@ describe("membership guard", () => {
     const ok = await authed(admin, `/api/servers/${created.id}/members`);
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({
-      members: [expect.objectContaining({ userId: adminId, username: "guarda" })],
+      members: [expect.objectContaining({ userId: adminId, username: "guarda", voiceAvatar })],
     });
   });
 

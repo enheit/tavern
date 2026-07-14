@@ -1,22 +1,27 @@
 import { createStore } from "zustand/vanilla";
 
-// FR-16 pinned focus definition: the window counts as "focused" iff the document has OS focus AND is
-// visible. Exposed as a zustand-vanilla store so notification logic (and its tests) can read/observe
-// `focused` without a live browser — the store is the single source, refreshed on the three DOM
-// events that can change either input (window focus/blur, document visibilitychange).
+// Window attention has two deliberately separate signals:
+// - `focused` is for attention-only work such as notifications and the local self-preview
+//   (keyboard focus AND page visibility; suspending that preview never changes outgoing quality).
+// - `visible` is for media policy. A Tavern window on a second monitor remains visible even when a
+//   game owns keyboard focus, so media must not downshift merely because `focused` is false.
+// Both values live in one store because the same DOM events can affect them, while consumers select
+// the semantic signal they actually need.
 interface FocusState {
   focused: boolean;
+  visible: boolean;
 }
 
-function computeFocused(): boolean {
-  if (typeof document === "undefined") return true;
-  return document.hasFocus() && document.visibilityState === "visible";
+function computeState(): FocusState {
+  if (typeof document === "undefined") return { focused: true, visible: true };
+  const visible = document.visibilityState === "visible";
+  return { focused: document.hasFocus() && visible, visible };
 }
 
-export const focusStore = createStore<FocusState>(() => ({ focused: computeFocused() }));
+export const focusStore = createStore<FocusState>(() => computeState());
 
 function refresh(): void {
-  focusStore.setState({ focused: computeFocused() });
+  focusStore.setState(computeState());
 }
 
 // Guards against double-wiring (React StrictMode remounts / a second initNotifications call).

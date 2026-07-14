@@ -1,9 +1,19 @@
 import { Hono } from "hono";
-import { LIMITS, Locale, PatchProfileRequest, Theme, UserSettings } from "@tavern/shared";
+import {
+  CloudflareUsageResponse,
+  LIMITS,
+  Locale,
+  PatchProfileRequest,
+  Theme,
+  UserSettings,
+} from "@tavern/shared";
 import type { ErrorCode, MeResponse, ServerSummary, UserProfile } from "@tavern/shared";
 import { requireAuth, zodJson } from "../middleware";
 import type { AuthVars } from "../middleware";
 import { notifyJoinedServers } from "../lib/fanout";
+import { recordMediaObject, trackMediaInventory } from "../lib/mediaUsageInventory";
+import { readCloudflareUsage } from "../lib/cloudflareUsage";
+import { voiceAvatarFromStorage, voiceAvatarToStorage } from "../lib/voiceAvatar";
 
 // Non-null narrow without `!` (§9.1): a value the callers structurally guarantee (an authenticated
 // session's user row, requireAuth's userId) but TypeScript still widens to nullable.
@@ -18,6 +28,7 @@ type UserRow = {
   display_name: string;
   color: string;
   avatar_key: string | null;
+  voice_avatar: string | null;
 };
 
 type SettingsRow = {
@@ -63,7 +74,7 @@ async function readJoinedServers(env: Env, userId: string): Promise<ServerSummar
 async function readProfile(env: Env, userId: string): Promise<UserProfile> {
   const row = invariant(
     await env.DB.prepare(
-      "SELECT id, username, display_name, color, avatar_key FROM user WHERE id = ?",
+      "SELECT id, username, display_name, color, avatar_key, voice_avatar FROM user WHERE id = ?",
     )
       .bind(userId)
       .first<UserRow>(),
@@ -76,6 +87,7 @@ async function readProfile(env: Env, userId: string): Promise<UserProfile> {
     displayName: row.display_name,
     color: row.color,
     ...(row.avatar_key !== null ? { avatarKey: row.avatar_key } : {}),
+    ...(row.voice_avatar !== null ? { voiceAvatar: voiceAvatarFromStorage(row.voice_avatar) } : {}),
   };
 }
 
@@ -138,6 +150,12 @@ meRoute.get("/", async (c) => {
   return c.json(body);
 });
 
+// Tavern-wide, aggregate-only Cloudflare resource usage. This reads the D1 cache, never calls
+// Cloudflare from a user request and never exposes resource identifiers or provider errors.
+meRoute.get("/cloudflare-usage", async (c) =>
+  c.json(CloudflareUsageResponse.parse(await readCloudflareUsage(c.env))),
+);
+
 // PATCH /api/me/profile (FR-03/FR-04). zodJson(PatchProfileRequest) already rejected an empty object
 // and every malformed field with 400 bad_request before this handler runs.
 meRoute.patch("/profile", zodJson(PatchProfileRequest), async (c) => {
@@ -184,6 +202,12 @@ meRoute.patch("/profile", zodJson(PatchProfileRequest), async (c) => {
       .run();
   }
 
+  if (patch.voiceAvatar !== undefined) {
+    await c.env.DB.prepare("UPDATE user SET voice_avatar = ? WHERE id = ?")
+      .bind(voiceAvatarToStorage(patch.voiceAvatar), userId)
+      .run();
+  }
+
   // FR-03/FR-04 live propagation: push the updated profile to every joined server's DO. Background
   // (ctx.waitUntil) so the PATCH response is not blocked on fan-out; the DO handler lands in S3.1.
   const profile = await readProfile(c.env, userId);
@@ -214,7 +238,12 @@ meRoute.post("/avatar", async (c) => {
   }
 
   const avatarKey = `avatars/${userId}.webp`;
-  await c.env.MEDIA.put(avatarKey, bytes, { httpMetadata: { contentType: "image/webp" } });
+  const object = await c.env.MEDIA.put(avatarKey, bytes, {
+    httpMetadata: { contentType: "image/webp" },
+  });
+  c.executionCtx.waitUntil(
+    trackMediaInventory(recordMediaObject(c.env.DB, object), "put", avatarKey),
+  );
   // avatarKey is an input:false additionalField (see the color DEVIATION note above), so it is set on
   // the user row directly rather than via auth.api.updateUser.
   await c.env.DB.prepare("UPDATE user SET avatar_key = ? WHERE id = ?")

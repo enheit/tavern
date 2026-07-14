@@ -69,9 +69,10 @@ export class ChatModule {
     if (messageId < 1 || messageId > maxId) return null;
     this.initializeReadCursor(userId);
     this.sql.exec(
-      `UPDATE message_reads SET last_read_id = MAX(last_read_id, ?) WHERE user_id = ?`,
+      `UPDATE message_reads SET last_read_id = ? WHERE user_id = ? AND last_read_id < ?`,
       messageId,
       userId,
+      messageId,
     );
     return this.readState(userId);
   }

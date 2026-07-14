@@ -2,12 +2,9 @@
 import { expect, test } from "../harness/fixtures";
 import { WEB_URL } from "../playwright.config";
 
-// Refresh voice auto-resume (voiceSession.ts / voiceResume.ts): a reload while in voice must land
-// the user BACK in the call — same channel, mute/deafen flags intact, webcam restarted — with no
-// click. An explicit leave (user intent) must NOT resume. The "reload" is a full document
-// navigation to `/?e2e=1` (the FR-20 volume-persistence precedent): a bare page.reload() would drop
-// the ?e2e=1 query the test hooks need, and sessionStorage survives any same-tab navigation the
-// same way it survives F5. Mock SFU (§10): assertions are signaling + session state + local media.
+// A reload terminates browser-owned media. It must therefore return the UI to its idle state instead
+// of recreating voice, publishing a webcam, or restoring a watcher without a fresh user action. The
+// "reload" is a full document navigation to `/?e2e=1` so the test hooks remain available.
 
 async function rtcStates(
   page: import("@playwright/test").Page,
@@ -18,8 +15,8 @@ async function rtcStates(
   });
 }
 
-test.describe("refresh voice auto-resume", () => {
-  test("reload while in voice (muted, cam on) → rejoined, still muted, cam restarted", async ({
+test.describe("refresh clears live media state", () => {
+  test("reload while in voice with webcam and screen on → returns idle without stale tiles", async ({
     browser,
     baseURL,
     api,
@@ -35,7 +32,7 @@ test.describe("refresh voice auto-resume", () => {
     try {
       await page.goto("/?e2e=1");
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-      await expect(page.getByTestId("controls-bar")).toBeVisible();
+      await expect(page.getByTestId("app-shell")).toBeVisible();
 
       // Join voice, mute, start the webcam (fake capture device).
       await page.getByTestId("channel-voice").click();
@@ -46,36 +43,66 @@ test.describe("refresh voice auto-resume", () => {
       await page.getByTestId("controls-mute").click();
       await expect(page.getByTestId("controls-mute")).toHaveAttribute("aria-pressed", "true");
       await page.getByTestId("controls-cam").click();
-      await expect(page.getByTestId(`stream-tile-cam:${user.userId}`)).toBeVisible({
+      const camTrackName = `cam:${user.userId}`;
+      await expect(page.getByTestId(`stream-tile-${camTrackName}`)).toBeVisible({
+        timeout: 20_000,
+      });
+      await page.getByTestId("controls-screen").click();
+      await expect(page.getByTestId("share-preset")).toBeVisible();
+      await page.getByTestId("share-start").click();
+      const screenTrackName = `screen:${user.userId}:1`;
+      await expect(page.getByTestId(`stream-tile-${screenTrackName}`)).toBeVisible({
         timeout: 20_000,
       });
 
-      // Reload. NO clicks after this point — everything below must happen on its own.
+      // Install before the next document starts. Final absence alone can miss a one-frame stale
+      // snapshot, so record whether either abandoned self tile ever attaches during refresh boot.
+      await page.addInitScript(
+        ({ testIds, storageKey }) => {
+          sessionStorage.setItem(storageKey, "[]");
+          const seen = new Set<string>();
+          const scan = (node: Node): void => {
+            if (!(node instanceof Element)) return;
+            const candidates = [node, ...node.querySelectorAll("[data-testid]")];
+            for (const candidate of candidates) {
+              const id = candidate.getAttribute("data-testid");
+              if (id !== null && testIds.includes(id)) seen.add(id);
+            }
+            sessionStorage.setItem(storageKey, JSON.stringify([...seen]));
+          };
+          new MutationObserver((records) => {
+            for (const record of records) for (const node of record.addedNodes) scan(node);
+          }).observe(document, { childList: true, subtree: true });
+        },
+        {
+          testIds: [`stream-tile-${camTrackName}`, `stream-tile-${screenTrackName}`],
+          storageKey: "tavern-refresh-stale-stream-tiles",
+        },
+      );
+
+      // Reload. Browser media tracks and the socket are gone, so no live-media control may remain
+      // active or be reconstructed without a fresh user action.
       await page.goto("/?e2e=1");
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
-
-      // Back in the SAME voice channel, publish+pull re-wired.
-      await expect(page.getByTestId(`voice-chip-${user.userId}`)).toBeVisible({ timeout: 20_000 });
-      await expect
-        .poll(() => rtcStates(page), { timeout: 20_000 })
-        .toEqual({ publish: "connected", pull: "connected" });
-
-      // Mute intent restored (self view + the voice.state flag round-trip is FR-26-covered).
-      await expect(page.getByTestId("controls-mute")).toHaveAttribute("aria-pressed", "true");
-
-      // Webcam restarted: cam toggle pressed + the self cam tile is live again.
-      await expect(page.getByTestId("controls-cam")).toHaveAttribute("aria-pressed", "true", {
+      await expect(page.getByTestId("app-shell")).toBeVisible();
+      await expect(page.getByTestId(`voice-chip-${user.userId}`)).toHaveCount(0, {
         timeout: 20_000,
       });
-      await expect(page.getByTestId(`stream-tile-cam:${user.userId}`)).toBeVisible({
-        timeout: 20_000,
-      });
+      await expect(page.getByTestId("controls-cam")).toHaveCount(0);
+      await expect(page.getByTestId("controls-screen")).toHaveCount(0);
+      await expect(page.getByTestId(`stream-tile-${camTrackName}`)).toHaveCount(0);
+      await expect(page.getByTestId(`stream-tile-${screenTrackName}`)).toHaveCount(0);
+      const staleTiles = await page.evaluate(() =>
+        sessionStorage.getItem("tavern-refresh-stale-stream-tiles"),
+      );
+      expect(JSON.parse(staleTiles ?? "[]")).toEqual([]);
+      await expect.poll(() => rtcStates(page)).toBeNull();
     } finally {
       await context.close();
     }
   });
 
-  test("explicit leave → reload stays OUT of voice", async ({ browser, baseURL, api }) => {
+  test("explicit leave → reload stays idle", async ({ browser, baseURL, api }) => {
     test.setTimeout(120_000);
     const user = await api.createUser("noresume");
     const server = await api.createServer(user);
@@ -97,8 +124,6 @@ test.describe("refresh voice auto-resume", () => {
       await page.goto("/?e2e=1");
       await expect(page).toHaveURL(new RegExp(`/s/${server.id}$`));
       await expect(page.getByTestId("controls-bar")).toBeVisible();
-      // Give any (buggy) auto-rejoin time to fire, then assert it did not.
-      await page.waitForTimeout(3_000);
       await expect(page.getByTestId(`voice-chip-${user.userId}`)).toHaveCount(0);
     } finally {
       await context.close();

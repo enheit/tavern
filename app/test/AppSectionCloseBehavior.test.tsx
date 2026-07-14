@@ -24,7 +24,7 @@ describe("desktop close behavior setting", () => {
   });
 
   it("loads as enabled by default and persists disabling it", async () => {
-    render(<AppSection cost={null} />);
+    render(<AppSection />);
     const toggle = await screen.findByTestId("settings-close-to-tray");
     await waitFor(() => expect(toggle.hasAttribute("data-disabled")).toBe(false));
     expect(toggle.hasAttribute("data-checked")).toBe(true);
@@ -37,7 +37,7 @@ describe("desktop close behavior setting", () => {
 
   it("keeps the previous state when persistence fails", async () => {
     closeBehavior.setCloseToTray.mockRejectedValue(new Error("disk full"));
-    render(<AppSection cost={null} />);
+    render(<AppSection />);
     const toggle = await screen.findByTestId("settings-close-to-tray");
     await waitFor(() => expect(toggle.hasAttribute("data-disabled")).toBe(false));
 

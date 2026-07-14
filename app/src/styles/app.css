@@ -30,8 +30,14 @@
   animation: poll-exit 600ms ease-in both;
 }
 
+@keyframes soundboard-border-progress {
+  from { stroke-dashoffset: 100; }
+  to { stroke-dashoffset: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-poll-result, .animate-poll-exit { animation: none; }
+  [data-playing="true"] rect { animation: none !important; stroke-dashoffset: 0 !important; }
 }
 
 @custom-variant dark (&:where(.dark, .dark *));

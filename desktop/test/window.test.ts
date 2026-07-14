@@ -33,6 +33,9 @@ describe("window shell + navigation lockdown", () => {
     if (win === undefined) return;
 
     expect(win.options).toMatchObject({
+      // The initial dimensions are the renderer viewport. This keeps the grid's chat column fully
+      // available on Windows, where native title-bar chrome is outside the web contents.
+      useContentSize: true,
       width: 1280,
       height: 800,
       minWidth: 940,

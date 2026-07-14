@@ -12,6 +12,9 @@ type RoomStub = DurableObjectStub<import("../../src/do/ServerRoom").ServerRoom>;
 type NewSound = {
   id: string;
   name: string;
+  emoji: string;
+  gain: number;
+  sourceFileName: string;
   uploaderId: string;
   durationMs: number;
   trimStartMs: number;
@@ -53,6 +56,9 @@ function newSound(uploaderId: string): NewSound {
   return {
     id: crypto.randomUUID(),
     name: "clip",
+    emoji: "🔊",
+    gain: 1.25,
+    sourceFileName: "clip.mp3",
     uploaderId,
     durationMs: 1000,
     trimStartMs: 0,
@@ -150,6 +156,24 @@ async function connect(stub: RoomStub, userId: string): Promise<{ ws: WebSocket;
   return { ws: socket, col };
 }
 
+async function joinVoice(
+  connection: { ws: WebSocket; col: Collector },
+  userId: string,
+): Promise<void> {
+  connection.ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
+  await vi.waitFor(
+    () => {
+      const joined = connection.col.messages.some(
+        (message) =>
+          message.t === "voice.state" &&
+          message.voice.members.some((member) => member.userId === userId),
+      );
+      if (!joined) throw new Error(`awaiting ${userId} in voice`);
+    },
+    { timeout: 3000, interval: 25 },
+  );
+}
+
 describe("FR-36 sound.play", () => {
   it("play inserts sound_plays row and broadcasts sound.played to all sockets", async () => {
     const stub = freshRoom();
@@ -163,6 +187,8 @@ describe("FR-36 sound.play", () => {
 
     const ca = await connect(stub, a.userId);
     const cb = await connect(stub, b.userId);
+    await joinVoice(ca, a.userId);
+    await joinVoice(cb, b.userId);
 
     ca.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
 
@@ -175,12 +201,14 @@ describe("FR-36 sound.play", () => {
       byUserId: a.userId,
       trimStartMs: 0,
       trimEndMs: 1000,
+      gain: 1.25,
     });
     expect(onB).toMatchObject({
       soundId: sound.id,
       byUserId: a.userId,
       trimStartMs: 0,
       trimEndMs: 1000,
+      gain: 1.25,
     });
     expect(typeof onA.at).toBe("number");
     // A row was inserted (playCount reflects it).
@@ -190,24 +218,77 @@ describe("FR-36 sound.play", () => {
     cb.ws.close();
   });
 
-  it("second play within 1s from same user → rate_limited error, no row", async () => {
+  it("repeated play of an active sound is an idempotent no-op", async () => {
     const stub = freshRoom();
     const a = memberInit(true);
     await seed(stub, a, { id: crypto.randomUUID(), nickname: "r", adminUserId: a.userId });
     const sound = newSound(a.userId);
     await createSound(stub, sound);
     const ca = await connect(stub, a.userId);
+    await joinVoice(ca, a.userId);
 
     ca.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
     await ca.col.waitForType("sound.played");
     ca.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
-    const err = await ca.col.waitForType("error");
-    expect(err.code).toBe("rate_limited");
+    ca.ws.send(JSON.stringify({ t: "sound.stop", soundId: sound.id }));
+    await ca.col.waitForType("sound.stopped");
 
-    // The rejected play produced NO additional broadcast and NO extra row.
+    // The duplicate produced no error, additional broadcast, or counter row.
+    expect(ca.col.count("error")).toBe(0);
     expect(ca.col.count("sound.played")).toBe(1);
     expect(await playCountOf(stub, sound.id)).toBe(1);
 
+    ca.ws.close();
+  });
+
+  it("lets a voice member stop one sound for every connected client without changing its counter", async () => {
+    const stub = freshRoom();
+    const a = memberInit(true);
+    const b = memberInit();
+    const meta: RoomMeta = { id: crypto.randomUUID(), nickname: "r", adminUserId: a.userId };
+    await seed(stub, a, meta);
+    await seed(stub, b, meta);
+    const sound = newSound(a.userId);
+    await createSound(stub, sound);
+    const ca = await connect(stub, a.userId);
+    const cb = await connect(stub, b.userId);
+    await joinVoice(ca, a.userId);
+    await joinVoice(cb, b.userId);
+
+    ca.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
+    await ca.col.waitForType("sound.played");
+    cb.ws.send(JSON.stringify({ t: "sound.stop", soundId: sound.id }));
+
+    const stoppedForA = await ca.col.waitForType("sound.stopped");
+    const stoppedForB = await cb.col.waitForType("sound.stopped");
+    expect(stoppedForA).toMatchObject({ soundId: sound.id, byUserId: b.userId });
+    expect(stoppedForB).toMatchObject({ soundId: sound.id, byUserId: b.userId });
+    expect(await playCountOf(stub, sound.id)).toBe(1);
+
+    ca.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
+    await ca.col.waitForCount("sound.played", 2);
+    expect(await playCountOf(stub, sound.id)).toBe(2);
+    ca.ws.close();
+    cb.ws.close();
+  });
+
+  it("allows one user to start different sounds concurrently", async () => {
+    const stub = freshRoom();
+    const a = memberInit(true);
+    await seed(stub, a, { id: crypto.randomUUID(), nickname: "r", adminUserId: a.userId });
+    const first = newSound(a.userId);
+    const second = { ...newSound(a.userId), name: "second" };
+    await createSound(stub, first);
+    await createSound(stub, second);
+    const ca = await connect(stub, a.userId);
+    await joinVoice(ca, a.userId);
+
+    ca.ws.send(JSON.stringify({ t: "sound.play", soundId: first.id }));
+    ca.ws.send(JSON.stringify({ t: "sound.play", soundId: second.id }));
+    await ca.col.waitForCount("sound.played", 2);
+
+    expect(await playCountOf(stub, first.id)).toBe(1);
+    expect(await playCountOf(stub, second.id)).toBe(1);
     ca.ws.close();
   });
 
@@ -216,6 +297,7 @@ describe("FR-36 sound.play", () => {
     const a = memberInit(true);
     await seed(stub, a, { id: crypto.randomUUID(), nickname: "r", adminUserId: a.userId });
     const ca = await connect(stub, a.userId);
+    await joinVoice(ca, a.userId);
 
     ca.ws.send(JSON.stringify({ t: "sound.play", soundId: crypto.randomUUID() }));
     const err = await ca.col.waitForType("error");
@@ -239,18 +321,42 @@ describe("FR-36 sound.play", () => {
 
       const ca = await connect(stub, a.userId);
       const cb = await connect(stub, b.userId);
-      // Two DIFFERENT users each play once (per-user rate limit → both accepted).
+      await joinVoice(ca, a.userId);
+      await joinVoice(cb, b.userId);
+      // A second user cannot stack the same active sound or increment it again.
       ca.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
       await ca.col.waitForType("sound.played");
       cb.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
-      // A's play already broadcast "sound.played" into cb's buffer, so waitForType
-      // would resolve on the stale message before B's play lands — wait for the 2nd.
-      await cb.col.waitForCount("sound.played", 2);
+      cb.ws.send(JSON.stringify({ t: "sound.stop", soundId: sound.id }));
+      await cb.col.waitForType("sound.stopped");
 
-      expect(await playCountOf(stub, sound.id)).toBe(2);
+      expect(ca.col.count("sound.played")).toBe(1);
+      expect(cb.col.count("sound.played")).toBe(1);
+      expect(await playCountOf(stub, sound.id)).toBe(1);
 
       ca.ws.close();
       cb.ws.close();
     });
+  });
+
+  it("rejects a non-voice member without broadcasting or incrementing the counter", async () => {
+    const stub = freshRoom();
+    const member = memberInit(true);
+    await seed(stub, member, {
+      id: crypto.randomUUID(),
+      nickname: "r",
+      adminUserId: member.userId,
+    });
+    const sound = newSound(member.userId);
+    await createSound(stub, sound);
+    const connection = await connect(stub, member.userId);
+
+    connection.ws.send(JSON.stringify({ t: "sound.play", soundId: sound.id }));
+    const error = await connection.col.waitForType("error");
+
+    expect(error.code).toBe("not_in_voice");
+    expect(connection.col.count("sound.played")).toBe(0);
+    expect(await playCountOf(stub, sound.id)).toBe(0);
+    connection.ws.close();
   });
 });

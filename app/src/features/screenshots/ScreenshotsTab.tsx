@@ -1,6 +1,6 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { XIcon } from "lucide-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useStore } from "zustand";
 import type { ErrorCode, Member, Screenshot } from "@tavern/shared";
 import { ApiErrorBody, ScreenshotsResponse } from "@tavern/shared";
@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { authTransport } from "@/lib/authTransport";
 import { connectRoom } from "@/lib/wsClient";
+import { useInfiniteScroll } from "@/lib/useInfiniteScroll";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
@@ -74,9 +75,18 @@ export function ScreenshotsTab({ serverId }: { serverId: string }) {
     (s) => s.servers.find((sv) => sv.id === serverId)?.adminUserId ?? null,
   );
 
-  const query = useQuery({
+  const query = useInfiniteQuery({
     queryKey: screenshotsKey(serverId),
-    queryFn: () => apiClient.get(`/api/servers/${serverId}/screenshots`, ScreenshotsResponse),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      apiClient.get(
+        `/api/servers/${serverId}/screenshots?offset=${pageParam}&limit=30`,
+        ScreenshotsResponse,
+      ),
+    getNextPageParam: (lastPage, pages) =>
+      lastPage.hasMore
+        ? pages.reduce((total, page) => total + page.screenshots.length, 0)
+        : undefined,
   });
 
   const invalidate = useCallback((): void => {
@@ -94,7 +104,19 @@ export function ScreenshotsTab({ serverId }: { serverId: string }) {
     onSuccess: invalidate,
   });
 
-  const screenshots = (query.data?.screenshots ?? []).toSorted((a, b) => b.createdAt - a.createdAt);
+  const screenshots = useMemo(
+    () => query.data?.pages.flatMap((page) => page.screenshots) ?? [],
+    [query.data],
+  );
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useInfiniteScroll({
+    scrollRef,
+    sentinelRef,
+    hasNextPage: query.hasNextPage,
+    isFetchingNextPage: query.isFetchingNextPage,
+    fetchNextPage: query.fetchNextPage,
+  });
   const canManage = (shot: Screenshot): boolean =>
     selfId !== null && (shot.capturedBy === selfId || selfId === adminUserId);
 
@@ -110,7 +132,11 @@ export function ScreenshotsTab({ serverId }: { serverId: string }) {
   }
 
   return (
-    <div data-testid="screenshots-tab" className="min-h-0 flex-1 overflow-y-auto p-3">
+    <div
+      ref={scrollRef}
+      data-testid="screenshots-tab"
+      className="min-h-0 flex-1 overflow-y-auto p-3"
+    >
       <ul className="grid grid-cols-2 gap-3">
         {screenshots.map((shot) => (
           <ScreenshotCard
@@ -124,6 +150,7 @@ export function ScreenshotsTab({ serverId }: { serverId: string }) {
           />
         ))}
       </ul>
+      <div ref={sentinelRef} data-testid="screenshots-sentinel" className="h-px" />
     </div>
   );
 }

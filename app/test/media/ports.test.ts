@@ -67,8 +67,8 @@ describe("S9 interface stubs", () => {
     expect(() => player.stopAll()).not.toThrow();
     // play now reaches the graph (full behavior covered in soundboardPlayer.test.ts); against an
     // un-init graph the decode step rejects — proving it no longer throws the old "S9 not implemented".
-    await expect(player.play({ id: "s1", trimStartMs: 0, trimEndMs: 1000 })).rejects.toThrow(
-      "not initialized",
-    );
+    await expect(
+      player.play({ id: "s1", trimStartMs: 0, trimEndMs: 1000, gain: 1 }),
+    ).rejects.toThrow("not initialized");
   });
 });

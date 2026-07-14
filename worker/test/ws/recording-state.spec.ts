@@ -126,7 +126,7 @@ async function openWs(serverId: string, token: string): Promise<{ ws: WebSocket;
 }
 
 async function joinVoice(ws: WebSocket, col: Collector, userId: string): Promise<void> {
-  ws.send(JSON.stringify({ t: "voice.join" }));
+  ws.send(JSON.stringify({ t: "voice.join", mediaReadyVersion: 2 }));
   await col.waitFor("voice.state", (m) => m.voice.members.some((mem) => mem.userId === userId));
 }
 
@@ -245,8 +245,19 @@ describe("FR-25 recording state machine", () => {
     // Open the multipart so the dirty-end path exercises the real R2 abort.
     await authed(aToken, `/api/servers/${serverId}/recordings`, { method: "POST" });
 
-    // A's only socket closes → last-socket disconnect → leaveVoice → recordings dirty-end.
+    // A's only socket closes. Expiring its reconnect lease drives leaveVoice and the dirty end.
     a.ws.close();
+    await vi.waitFor(async () => {
+      const deadline = await runInDurableObject(roomStub(serverId), async (_i, state) => {
+        const leases = await state.storage.get<Record<string, number>>("voice:disconnects");
+        return leases?.[aId];
+      });
+      expect(deadline).toBeTypeOf("number");
+    });
+    await runInDurableObject(roomStub(serverId), async (_i, state) => {
+      await state.storage.put("voice:disconnects", { [aId]: 0 });
+    });
+    await runDurableObjectAlarm(roomStub(serverId));
 
     await b.col.waitFor("rec.state", (m) => !m.recording.active);
     const aborted = await b.col.waitFor(
@@ -280,6 +291,7 @@ describe("FR-25 recording state machine", () => {
         members: [{ userId: uid, muted: false, deafened: false }],
         sessionStartedAt: Date.now(),
       });
+      await s.storage.put("voice:disconnects", { [uid]: 0 });
       s.storage.sql.exec(
         `INSERT INTO recordings (id, started_by, r2_key, upload_id, duration_ms, started_at, ended_at)
          VALUES (?, ?, ?, NULL, NULL, ?, NULL)`,

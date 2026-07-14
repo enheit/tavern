@@ -58,10 +58,15 @@ export interface RoomState {
   // (never a wire frame); at most one focused tile at a time; cleared on resnapshot and when the
   // focused stream is removed.
   focusedTrackName: string | null;
-  // Theater fullscreen: the single stream blown up to fill the whole window (a fixed overlay above the
-  // shell — sidebar/header/chat hidden, WS + chat still live). Local-only, orthogonal to focus; at most
-  // one; cleared on resnapshot and when its stream is removed. Esc or the tile's minimize button exits.
+  // Voice avatars participate in the same focus layout as streams. Kept as a separate typed id so
+  // stream-only actions (screenshots, theater delivery) can never receive a synthetic track name;
+  // the two setters enforce that at most one stream/avatar focus exists.
+  focusedVoiceUserId: string | null;
+  // Theater fullscreen: the single stream or avatar blown up to fill the whole window (a fixed overlay
+  // above the shell — sidebar/header/chat hidden, WS + chat still live). Local-only; at most one target.
+  // Esc or the tile's minimize button exits.
   fullscreenTrackName: string | null;
+  fullscreenVoiceUserId: string | null;
   recording: RecordingState;
   activityTail: ActivityEntry[];
   serverMeta: ServerMeta | null;
@@ -114,8 +119,10 @@ export interface RoomState {
   clearPollError: () => void;
   // FR-33: set (or clear with null) the focused tile. Enforces exactly-one by holding a single value.
   setFocusedTrackName: (trackName: string | null) => void;
+  setFocusedVoiceUserId: (userId: string | null) => void;
   // Theater fullscreen: set (or clear with null) the fullscreen tile. Exactly-one, same as focus.
   setFullscreenTrackName: (trackName: string | null) => void;
+  setFullscreenVoiceUserId: (userId: string | null) => void;
 }
 
 const ACTIVITY_TAIL_MAX = 200;
@@ -202,7 +209,9 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
         kicked: false,
         lastProtocolError: null,
         focusedTrackName: null,
+        focusedVoiceUserId: null,
         fullscreenTrackName: null,
+        fullscreenVoiceUserId: null,
       };
     case "chat.new":
       return {
@@ -274,26 +283,69 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
         members: [...state.members.filter((mem) => mem.userId !== msg.member.userId), msg.member],
       };
     case "member.left":
-      return { members: state.members.filter((mem) => mem.userId !== msg.userId) };
+      return {
+        members: state.members.filter((mem) => mem.userId !== msg.userId),
+        ...(state.focusedVoiceUserId === msg.userId ? { focusedVoiceUserId: null } : {}),
+        ...(state.fullscreenVoiceUserId === msg.userId ? { fullscreenVoiceUserId: null } : {}),
+      };
     case "voice.state":
-      return { voice: msg.voice };
+      return {
+        voice: msg.voice,
+        ...(state.focusedVoiceUserId !== null &&
+        !msg.voice.members.some((member) => member.userId === state.focusedVoiceUserId)
+          ? { focusedVoiceUserId: null }
+          : {}),
+        ...(state.fullscreenVoiceUserId !== null &&
+        !msg.voice.members.some((member) => member.userId === state.fullscreenVoiceUserId)
+          ? { fullscreenVoiceUserId: null }
+          : {}),
+      };
     case "stream.added":
       return {
         streams: [...state.streams.filter((s) => s.trackName !== msg.stream.trackName), msg.stream],
+        ...(msg.stream.kind === "webcam" && state.focusedVoiceUserId === msg.stream.userId
+          ? { focusedTrackName: msg.stream.trackName, focusedVoiceUserId: null }
+          : {}),
+        ...(msg.stream.kind === "webcam" && state.fullscreenVoiceUserId === msg.stream.userId
+          ? { fullscreenTrackName: msg.stream.trackName, fullscreenVoiceUserId: null }
+          : {}),
       };
     case "stream.updated":
       return {
         streams: state.streams.map((s) =>
-          s.trackName === msg.trackName ? { ...s, preset: msg.preset } : s,
+          s.trackName === msg.trackName
+            ? {
+                ...s,
+                preset: msg.preset,
+                ...(msg.preview === undefined ? {} : { preview: msg.preview }),
+              }
+            : s,
         ),
       };
-    case "stream.removed":
+    case "stream.removed": {
       // Dropping a stream also drops any focus/fullscreen on it (exactly-one invariants).
+      const removed = state.streams.find((stream) => stream.trackName === msg.trackName);
+      const avatarUserId =
+        removed?.kind === "webcam" &&
+        state.voice.members.some((member) => member.userId === removed.userId)
+          ? removed.userId
+          : null;
       return {
         streams: state.streams.filter((s) => s.trackName !== msg.trackName),
-        ...(state.focusedTrackName === msg.trackName ? { focusedTrackName: null } : {}),
-        ...(state.fullscreenTrackName === msg.trackName ? { fullscreenTrackName: null } : {}),
+        ...(state.focusedTrackName === msg.trackName
+          ? {
+              focusedTrackName: null,
+              ...(avatarUserId === null ? {} : { focusedVoiceUserId: avatarUserId }),
+            }
+          : {}),
+        ...(state.fullscreenTrackName === msg.trackName
+          ? {
+              fullscreenTrackName: null,
+              ...(avatarUserId === null ? {} : { fullscreenVoiceUserId: avatarUserId }),
+            }
+          : {}),
       };
+    }
     case "watch.state":
       return { watching: msg.watching };
     // `activity.new` is handled in `apply` via `appendActivity` (dedup by id) — never reaches here.
@@ -324,8 +376,19 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
           (a, b) => a.createdAt - b.createdAt,
         ),
       };
+    case "member.icon.updated":
+      return {
+        members: state.members.map((member) => {
+          if (member.userId !== msg.userId) return member;
+          if (msg.icon === null) {
+            const { marketIcon: _removed, ...withoutIcon } = member;
+            return withoutIcon;
+          }
+          return { ...member, marketIcon: msg.icon };
+        }),
+      };
     default:
-      // error / pong / sound.played / sound.updated carry no room-state delta.
+      // error / pong / sound/market update nudges carry no room-state delta.
       return {};
   }
 }
@@ -337,6 +400,7 @@ export function createRoomStore(serverId: string) {
   const nonceToId = new Map<string, number>();
   const pollRequestIds = new Set<string>();
   let syntheticSeq = 0;
+  let pendingReadMessageId = 0;
   const requestHistory = (
     mode: "initial" | "latest" | "older" | "newer" | "around",
     cursorId?: number,
@@ -375,7 +439,9 @@ export function createRoomStore(serverId: string) {
     streams: [],
     watching: [],
     focusedTrackName: null,
+    focusedVoiceUserId: null,
     fullscreenTrackName: null,
+    fullscreenVoiceUserId: null,
     recording: { active: false },
     activityTail: [],
     serverMeta: null,
@@ -405,8 +471,12 @@ export function createRoomStore(serverId: string) {
     apply: (msg) => {
       if (msg.t === "hello.ok") {
         nonceToId.clear();
+        pendingReadMessageId = 0;
         set((state) => reduce(state, msg));
         return;
+      }
+      if (msg.t === "chat.read-state" && msg.lastReadMessageId >= pendingReadMessageId) {
+        pendingReadMessageId = 0;
       }
       if (msg.t === "activity.new") {
         get().appendActivity(msg.entry);
@@ -504,8 +574,34 @@ export function createRoomStore(serverId: string) {
         // WS not open — the optimistic row stays; a reconnect resnapshot (hello.ok) clears it.
       }
     },
-    setFocusedTrackName: (trackName) => set({ focusedTrackName: trackName }),
-    setFullscreenTrackName: (trackName) => set({ fullscreenTrackName: trackName }),
+    setFocusedTrackName: (trackName) =>
+      set({
+        focusedTrackName: trackName,
+        ...(trackName === null ? {} : { focusedVoiceUserId: null }),
+      }),
+    setFocusedVoiceUserId: (userId) =>
+      set({
+        focusedVoiceUserId: userId,
+        ...(userId === null
+          ? {}
+          : { focusedTrackName: null, fullscreenTrackName: null, fullscreenVoiceUserId: null }),
+      }),
+    setFullscreenTrackName: (trackName) =>
+      set({
+        fullscreenTrackName: trackName,
+        ...(trackName === null ? {} : { focusedVoiceUserId: null, fullscreenVoiceUserId: null }),
+      }),
+    setFullscreenVoiceUserId: (userId) =>
+      set({
+        fullscreenVoiceUserId: userId,
+        ...(userId === null
+          ? {}
+          : {
+              focusedVoiceUserId: userId,
+              focusedTrackName: null,
+              fullscreenTrackName: null,
+            }),
+      }),
     loadInitial: () => requestHistory("initial"),
     loadOlder: async () => {
       const { messages } = get();
@@ -538,9 +634,10 @@ export function createRoomStore(serverId: string) {
       requestHistory("initial");
     },
     markRead: (messageId) => {
-      if (messageId <= get().lastReadMessageId) return;
+      if (messageId <= Math.max(get().lastReadMessageId, pendingReadMessageId)) return;
       try {
         connectRoom(serverId).send({ t: "chat.read", messageId });
+        pendingReadMessageId = messageId;
       } catch {
         // The server remains authoritative; reconnect returns the last durable read cursor.
       }

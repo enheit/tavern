@@ -8,6 +8,9 @@ type SessionStatus = "booting" | "unauthed" | "authed";
 interface SessionState {
   status: SessionStatus;
   profile: UserProfile | null;
+  // Avatar objects use a stable per-user path. Bump this locally after every successful upload so
+  // avatar surfaces request the replacement bytes without changing the backend profile contract.
+  avatarRevision: number;
   setBooting: () => void;
   setUnauthed: () => void;
   setAuthed: (profile: UserProfile) => void;
@@ -19,9 +22,17 @@ interface SessionState {
 export const useSessionStore = create<SessionState>((set) => ({
   status: "booting",
   profile: null,
-  setBooting: () => set({ status: "booting", profile: null }),
-  setUnauthed: () => set({ status: "unauthed", profile: null }),
+  avatarRevision: 0,
+  setBooting: () => set({ status: "booting", profile: null, avatarRevision: 0 }),
+  setUnauthed: () => set({ status: "unauthed", profile: null, avatarRevision: 0 }),
   setAuthed: (profile) => set({ status: "authed", profile }),
   patchProfile: (patch) =>
-    set((s) => (s.profile === null ? s : { profile: { ...s.profile, ...patch } })),
+    set((s) =>
+      s.profile === null
+        ? s
+        : {
+            profile: { ...s.profile, ...patch },
+            avatarRevision: patch.avatarKey === undefined ? s.avatarRevision : s.avatarRevision + 1,
+          },
+    ),
 }));

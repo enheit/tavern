@@ -16,6 +16,7 @@ const RESOLVERS: Record<ErrorCode, () => string> = {
   not_in_voice: () => m.error_not_in_voice(),
   not_implemented: () => m.error_not_implemented(),
   voice_elsewhere: () => m.error_voice_elsewhere(),
+  voice_client_update_required: () => m.error_voice_client_update_required(),
   share_cap: () => m.error_share_cap(),
   cost_cap: () => m.error_cost_cap(),
   pull_denied: () => m.error_pull_denied(),
@@ -41,6 +42,10 @@ const RESOLVERS: Record<ErrorCode, () => string> = {
   poll_limit: () => m.error_poll_limit(),
   already_bid: () => m.error_already_bid(),
   insufficient_points: () => m.error_insufficient_points(),
+  market_sold: () => m.error_market_sold(),
+  market_item_changed: () => m.error_market_item_changed(),
+  market_item_frozen: () => m.error_market_item_frozen(),
+  market_icon_not_owned: () => m.error_market_icon_not_owned(),
   correction_expired: () => m.error_correction_expired(),
   correction_used: () => m.error_correction_used(),
 };

@@ -1,10 +1,19 @@
-import type { ClientMessage, ErrorCode, ServerMessage, StreamInfo } from "@tavern/shared";
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { RtcWatchDeliveryResponse } from "@tavern/shared";
+import type {
+  ClientMessage,
+  ErrorCode,
+  ScreenRid,
+  ServerMessage,
+  StreamInfo,
+  WatchDelivery,
+} from "@tavern/shared";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { toast } from "sonner";
 import { getVoiceController } from "@/features/voice/voiceController";
 import type { StreamAudioSink } from "@/features/voice/voiceController";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { errorMessage } from "@/lib/errorMessage";
+import { focusStore } from "@/lib/focusState";
 import {
   clearWatchPullState,
   clearWatchVideoStats,
@@ -13,34 +22,28 @@ import {
 } from "@/lib/testHooks";
 import { connectRoom } from "@/lib/wsClient";
 import { browserRtcPort } from "@/media/ports";
-import { m } from "@/paraglide/messages.js";
+import { startViewerQualityMonitor } from "@/media/qualityMonitor";
 import { PullSession } from "@/media/rtc/pullSession";
+import type { InboundVideoStats } from "@/media/rtc/pullSession";
 import { createSfuSignal } from "@/media/sfuSignal";
+import { m } from "@/paraglide/messages.js";
 import { useServersStore } from "@/stores/servers";
 import { useSettingsStore } from "@/stores/settings";
 
-// FR-30 watch lifecycle. `connecting` = watch.start sent + the dedicated PullSession is being
-// created; `watching` = the pull is live (a video frame may still be in flight).
+// A logical watch is independent from its current media-saving delivery. `audio` keeps the stream's
+// audio companion and the server-side watch grant alive while closing only the remote video track.
 export type WatchState = "idle" | "connecting" | "watching";
+export type WatchMediaDelivery = "high" | "low" | "audio";
 
-// The dedicated per-watch PullSession surface (watchPC, §7.1) — one instance per watched stream,
-// created on watch and closed on unwatch to isolate renegotiation churn (FR-30/33). The real
-// S7.2 PullSession satisfies this structurally (no cast, §9.1).
 interface PullLike {
   connect(): Promise<void>;
   onTrack(
     cb: (trackName: string, track: MediaStreamTrack, stream: MediaStream) => void,
   ): () => void;
-  addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>): Promise<void>;
-  setLayer(trackName: string, rid: "h" | "l"): Promise<void>;
-  // Inbound-video getStats (framesDecoded/frameHeight/bytes/fps) — surfaced to the §10 @realtime hook.
-  // Optional so a test double may omit it; the real PullSession implements it.
-  inboundVideoStats?(): Promise<{
-    framesDecoded: number;
-    frameHeight: number | null;
-    bytesReceived: number;
-    framesPerSecond: number | null;
-  }>;
+  addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: ScreenRid }>): Promise<void>;
+  removeRemoteTracks(trackNames: string[]): Promise<void>;
+  setLayer(trackName: string, rid: ScreenRid): Promise<void>;
+  inboundVideoStats?(): Promise<InboundVideoStats>;
   close(): Promise<void>;
 }
 
@@ -57,16 +60,22 @@ export interface WatchDeps {
   wsFor(serverId: string): WsLike;
   sink(): StreamAudioSink | null;
   activeServerId(): string | null;
+  joinVoice(serverId: string): Promise<void>;
+  setDelivery(serverId: string, trackName: string, delivery: WatchDelivery): Promise<void>;
 }
 
-// Non-React orchestrator for ONE watched stream. Nothing is pulled until watch() (G1). The audio
-// track routes into the shared AudioGraph via `streamKey = ${userId}:${kind}` (the same opaque key
-// the volume slider uses); the video track is exposed as `mediaStream` for the tile's <video>.
+// Non-React orchestrator for one watched stream. Its lifetime is owned by the server-scoped registry
+// below, not by a particular tile placement, so moving a tile between grid/focus/fullscreen never
+// sends watch.stop or closes its PullSession.
 export class WatchController {
-  private readonly stream: StreamInfo;
+  private stream: StreamInfo;
   private readonly deps: WatchDeps;
   private stateValue: WatchState = "idle";
   private mediaStreamValue: MediaStream | null = null;
+  private deliveryValue: WatchMediaDelivery = "high";
+  private deliveryTransitioningValue = false;
+  private documentVisibleValue = true;
+  private theaterVisibleValue = true;
   private pull: PullLike | null = null;
   private serverId: string | null = null;
   private readonly listeners = new Set<() => void>();
@@ -74,6 +83,11 @@ export class WatchController {
   private unsubRemoved: (() => void) | null = null;
   private unsubError: (() => void) | null = null;
   private unsubResnapshot: (() => void) | null = null;
+  private watchStarted = false;
+  private watchAttempt = 0;
+  private stopQualityMonitor: (() => void) | null = null;
+  private deliveryQueue: Promise<void> = Promise.resolve();
+  private deliveryRevision = 0;
 
   constructor(stream: StreamInfo, deps: WatchDeps) {
     this.stream = stream;
@@ -88,6 +102,30 @@ export class WatchController {
     return this.mediaStreamValue;
   }
 
+  get delivery(): WatchMediaDelivery {
+    return this.deliveryValue;
+  }
+
+  get deliveryTransitioning(): boolean {
+    return this.deliveryTransitioningValue;
+  }
+
+  updateStream(stream: StreamInfo): void {
+    if (stream.trackName === this.stream.trackName) this.stream = stream;
+  }
+
+  setDocumentVisible(visible: boolean): void {
+    if (this.documentVisibleValue === visible) return;
+    this.documentVisibleValue = visible;
+    this.requestDeliveryReconcile();
+  }
+
+  setTheaterVisible(visible: boolean): void {
+    if (this.theaterVisibleValue === visible) return;
+    this.theaterVisibleValue = visible;
+    this.requestDeliveryReconcile();
+  }
+
   subscribe(cb: () => void): () => void {
     this.listeners.add(cb);
     return () => {
@@ -99,42 +137,54 @@ export class WatchController {
     for (const cb of this.listeners) cb();
   }
 
-  private setState(s: WatchState): void {
-    this.stateValue = s;
-    // §10 e2e hook (S8.5, FR-30): mirror this watch's dedicated PullSession state under its trackName so
-    // streams.spec can assert `__tavernTestRtc.pullStates[trackName]`. `watching` = the pull is live
-    // ('connected'); idle deletes the key (a never-watched or stopped tile reads `undefined`). No-op
-    // outside the harness (the setters gate on platform.isE2E).
-    if (s === "idle") clearWatchPullState(this.stream.trackName);
-    else setWatchPullState(this.stream.trackName, s === "watching" ? "connected" : "connecting");
+  private setState(state: WatchState): void {
+    this.stateValue = state;
+    if (state === "idle") clearWatchPullState(this.stream.trackName);
+    else
+      setWatchPullState(this.stream.trackName, state === "watching" ? "connected" : "connecting");
     this.notify();
   }
 
-  // §5.4 / §7.3 opaque key: trackNames rotate per share, so audio + volume are keyed by the stable
-  // (userId, kind) pair instead — it survives restarts and re-shares.
   private streamKey(): string {
     return `${this.stream.userId}:${this.stream.kind}`;
   }
 
-  // The screen-audio companion track name, derived from the pinned §7.1 grammar
-  // (screen:{uid}:{n} → screenAudio:{uid}:{n}). Only pulled when the stream advertises audio.
   private audioTrackName(): string {
     return this.stream.trackName.replace(/^screen:/, "screenAudio:");
   }
 
-  watch(): void {
+  private desiredDelivery(): WatchMediaDelivery {
+    if (this.documentVisibleValue && this.theaterVisibleValue) return "high";
+    return this.stream.hasAudio ? "audio" : "low";
+  }
+
+  async watch(): Promise<void> {
     if (this.stateValue !== "idle") return;
     const serverId = this.deps.activeServerId();
     if (serverId === null) return;
+    const attempt = ++this.watchAttempt;
     this.serverId = serverId;
+    this.deliveryValue = "high";
     this.setState("connecting");
+
+    try {
+      await this.deps.joinVoice(serverId);
+    } catch (err) {
+      console.warn("Joining voice before watching failed", err);
+      if (this.watchAttempt === attempt) {
+        this.finish();
+        toast.error(m.voice_join_failed());
+      }
+      return;
+    }
+    if (this.watchAttempt !== attempt || this.state !== "connecting") return;
+
     const ws = this.deps.wsFor(serverId);
-    // watch.start grants the pull server-side (G1) + starts the watch-stat clock. There is no wire
-    // ack (App-A has no watch.start response); a failed REST pull or an error frame reverts us.
     try {
       ws.send({ t: "watch.start", trackName: this.stream.trackName });
-    } catch {
-      // WS not open — abort the watch cleanly.
+      this.watchStarted = true;
+    } catch (err) {
+      console.warn("Sending watch.start failed", err);
       this.finish();
       return;
     }
@@ -145,18 +195,12 @@ export class WatchController {
       if (
         this.stateValue === "connecting" &&
         (msg.code === "pull_denied" || msg.code === "cost_cap")
-      )
+      ) {
         this.failGrant(msg.code);
+      }
     });
-    // A `hello.ok` resnapshot (§6.2) means the server REPLACED room state — including revoking THIS
-    // viewer's pull grant, SFU session, and cost-meter watch during the disconnect that preceded the
-    // reconnect (rtcCleanupFor). Our dedicated pull is now orphaned. On a FULL page reload this
-    // controller does not exist (new JS context, empty watchRegistry); this fires only on a TRANSIENT
-    // reconnect in the SAME context, where the snapshot re-lists the same trackName so the tile
-    // re-renders IN PLACE (stable key) instead of unmounting — without this we would sit stuck in
-    // `watching` over a dead grant (a "zombie watch": frozen video, setLayer no-ops, wrong indicator).
-    // Reset to idle so the tile shows the Placeholder + Watch button; the user re-arms once voice has
-    // rejoined (a pull needs an SFU session, granted only to in-voice users).
+    // A hello.ok replaces the room snapshot after reconnect; the DO has already swept the old grant
+    // and SFU session, so keeping this local pull would create a zombie watch.
     this.unsubResnapshot = ws.on("hello.ok", () => this.onResnapshot());
     void this.startPull(serverId);
   }
@@ -164,8 +208,7 @@ export class WatchController {
   private async startPull(serverId: string): Promise<void> {
     const pull = this.deps.createPull(serverId);
     this.pull = pull;
-    this.unsubTrack = pull.onTrack((tn, track) => this.onPulledTrack(tn, track));
-    // §10 @realtime hook: expose this watch pull's inbound-video getStats by trackName (FR-27/32/33).
+    this.unsubTrack = pull.onTrack((trackName, track) => this.onPulledTrack(trackName, track));
     setWatchVideoStats(
       this.stream.trackName,
       () =>
@@ -177,71 +220,171 @@ export class WatchController {
           framesPerSecond: null,
         }),
     );
-    // G3: every watcher pins the HIGH simulcast layer from the initial pull — streams render at best
-    // quality regardless of tile size, focus, or fullscreen. Audio (screen loopback) has no rid.
-    const tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }> = [
+    const tracks: Array<{ trackName: string; preferredRid?: ScreenRid }> = [
       { trackName: this.stream.trackName, preferredRid: "h" },
     ];
     if (this.stream.hasAudio) tracks.push({ trackName: this.audioTrackName() });
     try {
       await pull.connect();
       await pull.addRemoteTracks(tracks);
-      if (this.stateValue === "connecting") this.setState("watching");
+      if (this.pull !== pull || this.stateValue !== "connecting") return;
+      this.startQualityMonitor(pull);
+      this.setState("watching");
+      this.requestDeliveryReconcile();
     } catch (err) {
-      // A rejected REST pull (pull_denied / cost_cap / anything) reverts to idle.
+      if (this.pull !== pull || this.stateValue !== "connecting") return;
       this.failGrant(err instanceof ApiError ? err.code : "pull_denied");
     }
+  }
+
+  private startQualityMonitor(pull: PullLike): void {
+    if (this.stopQualityMonitor !== null) return;
+    const readStats = pull.inboundVideoStats;
+    if (readStats === undefined) return;
+    this.stopQualityMonitor = startViewerQualityMonitor({
+      trackName: this.stream.trackName,
+      preset: () => this.stream.preset,
+      streamKind: this.stream.kind,
+      stats: () => readStats.call(pull),
+    });
+  }
+
+  private stopVideoQualityMonitor(): void {
+    this.stopQualityMonitor?.();
+    this.stopQualityMonitor = null;
   }
 
   private onPulledTrack(trackName: string, track: MediaStreamTrack): void {
     if (trackName === this.stream.trackName) {
       this.mediaStreamValue = new MediaStream([track]);
       this.notify();
-    } else if (trackName === this.audioTrackName()) {
-      // The muted <audio> flow-starter (crbug 40094084) is the graph's job, not ours.
-      const sink = this.deps.sink();
-      if (sink) {
-        const key = this.streamKey();
-        sink.attachStreamAudio(key, new MediaStream([track]));
-        // FR-31: re-hydrate the viewer's persisted per-stream volume onto the fresh GainNode. The graph
-        // seeds new nodes at unity; without this, a scroll/middle-click set in a prior session (or before
-        // a voice-leave teardown) would silently revert to 100% on re-watch — mirrors voice's
-        // applyUserVolume on mic attach.
-        const gain = useSettingsStore.getState().volumes.streams[key];
-        if (gain !== undefined) sink.setStreamGain(key, gain);
-      }
+      return;
     }
+    if (trackName !== this.audioTrackName()) return;
+    const sink = this.deps.sink();
+    if (sink === null) return;
+    const key = this.streamKey();
+    sink.attachStreamAudio(key, new MediaStream([track]));
+    const level = useSettingsStore.getState().volumes.streams[key];
+    if (level !== undefined) sink.setStreamVolume(key, level);
+  }
+
+  private requestDeliveryReconcile(): void {
+    if (this.stateValue !== "watching") return;
+    const revision = ++this.deliveryRevision;
+    if (!this.deliveryTransitioningValue) {
+      this.deliveryTransitioningValue = true;
+      this.notify();
+    }
+    const operation = this.deliveryQueue.then(() => this.reconcileDelivery());
+    this.deliveryQueue = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    void operation.then(
+      () => {
+        if (revision !== this.deliveryRevision) return;
+        this.deliveryTransitioningValue = false;
+        this.notify();
+      },
+      (err: unknown) => {
+        if (revision !== this.deliveryRevision || this.stateValue === "idle") return;
+        console.error("Watch delivery transition failed", err);
+        this.deliveryTransitioningValue = false;
+        this.notify();
+        toast.error(m.streams_delivery_failed());
+      },
+    );
+  }
+
+  private isCurrent(pull: PullLike, serverId: string): boolean {
+    return this.pull === pull && this.serverId === serverId && this.stateValue === "watching";
+  }
+
+  private async reconcileDelivery(): Promise<void> {
+    const pull = this.pull;
+    const serverId = this.serverId;
+    if (pull === null || serverId === null || this.stateValue !== "watching") return;
+    const desired = this.desiredDelivery();
+    const current = this.deliveryValue;
+    if (desired === current) return;
+
+    if (desired === "audio") {
+      await pull.removeRemoteTracks([this.stream.trackName]);
+      if (!this.isCurrent(pull, serverId)) return;
+      try {
+        await this.deps.setDelivery(serverId, this.stream.trackName, "audio");
+      } catch (err) {
+        // The server still considers this a video watch. Restore the exact prior video layer so local
+        // media and durable accounting remain aligned before surfacing the failure.
+        await pull.addRemoteTracks([
+          { trackName: this.stream.trackName, preferredRid: current === "low" ? "l" : "h" },
+        ]);
+        throw err;
+      }
+      if (!this.isCurrent(pull, serverId)) return;
+      this.stopVideoQualityMonitor();
+      this.mediaStreamValue = null;
+      this.deliveryValue = "audio";
+      this.notify();
+      return;
+    }
+
+    if (current === "audio") {
+      await this.deps.setDelivery(serverId, this.stream.trackName, "video");
+      if (!this.isCurrent(pull, serverId)) return;
+      try {
+        await pull.addRemoteTracks([
+          { trackName: this.stream.trackName, preferredRid: desired === "low" ? "l" : "h" },
+        ]);
+      } catch (err) {
+        try {
+          await this.deps.setDelivery(serverId, this.stream.trackName, "audio");
+        } catch (rollbackErr) {
+          console.error("Video restore failed before delivery rollback also failed", err);
+          throw new Error("Video restore and delivery rollback failed", { cause: rollbackErr });
+        }
+        throw err;
+      }
+      if (!this.isCurrent(pull, serverId)) return;
+      this.deliveryValue = desired;
+      this.startQualityMonitor(pull);
+      this.notify();
+      return;
+    }
+
+    await pull.setLayer(this.stream.trackName, desired === "low" ? "l" : "h");
+    if (!this.isCurrent(pull, serverId)) return;
+    this.deliveryValue = desired;
+    this.notify();
   }
 
   private failGrant(code: ErrorCode): void {
-    // §9.5: surface the typed code as an i18n-mapped toast, then return to idle. cost_cap gets the
-    // S12.3-pinned kill-switch copy (§8 G5: budget reached, watching pauses until next month).
     toast.error(code === "cost_cap" ? m.cost_cap_toast() : errorMessage(code));
     this.finish();
   }
 
   unwatch(): void {
-    if (this.stateValue === "idle") return;
-    this.finish();
+    if (this.stateValue !== "idle") this.finish();
   }
 
-  // Revert a live watch to idle when the room resnapshots (transient reconnect). Same clean teardown
-  // as unwatch(): closes the orphaned pull and sends watch.stop (a no-op server-side, the grant was
-  // already swept), leaving the tile on its Placeholder + Watch button.
   private onResnapshot(): void {
-    if (this.stateValue === "idle") return;
-    this.finish();
+    if (this.stateValue !== "idle") this.finish();
   }
 
-  // FR-33 layer escape hatch: tracks/update on the existing pull, no PC teardown. The UI no longer
-  // downswitches (every tile pulls "h" from the start); kept for a future data-saver toggle.
-  setLayer(rid: "h" | "l"): void {
-    void this.pull?.setLayer(this.stream.trackName, rid);
+  setLayer(rid: ScreenRid): void {
+    const operation = this.pull?.setLayer(this.stream.trackName, rid);
+    if (operation !== undefined) {
+      void operation.catch((err: unknown) => {
+        console.error("Manual watch layer switch failed", err);
+        toast.error(m.streams_delivery_failed());
+      });
+    }
   }
 
-  // Shared teardown for unwatch() and grant failure: unsubscribe, detach audio, close the pull,
-  // send watch.stop (stops the DO watch clock + grant), and revert to idle.
   private finish(): void {
+    this.watchAttempt += 1;
+    this.deliveryRevision += 1;
     const serverId = this.serverId;
     this.unsubTrack?.();
     this.unsubRemoved?.();
@@ -252,18 +395,26 @@ export class WatchController {
     this.unsubError = null;
     this.unsubResnapshot = null;
     this.deps.sink()?.detachStreamAudio(this.streamKey());
+    this.stopVideoQualityMonitor();
     clearWatchVideoStats(this.stream.trackName);
-    void this.pull?.close();
+    const close = this.pull?.close();
+    if (close !== undefined) {
+      void close.catch((err: unknown) => console.warn("Closing watch PullSession failed", err));
+    }
     this.pull = null;
     this.mediaStreamValue = null;
     this.serverId = null;
-    if (serverId !== null) {
+    this.deliveryValue = "high";
+    this.deliveryTransitioningValue = false;
+    if (serverId !== null && this.watchStarted) {
       try {
         this.deps.wsFor(serverId).send({ t: "watch.stop", trackName: this.stream.trackName });
-      } catch {
-        // WS not open — the DO drops the grant on disconnect anyway.
+      } catch (err) {
+        // A disconnected socket cannot carry watch.stop; rtcCleanupFor owns the corresponding grant.
+        console.warn("Sending watch.stop failed; relying on room disconnect cleanup", err);
       }
     }
+    this.watchStarted = false;
     this.setState("idle");
   }
 }
@@ -275,95 +426,115 @@ function defaultWatchDeps(): WatchDeps {
     wsFor: (serverId) => connectRoom(serverId),
     sink: () => getVoiceController().streamAudioSink(),
     activeServerId: () => useServersStore.getState().activeServerId,
+    joinVoice: (serverId) => getVoiceController().join(serverId),
+    setDelivery: async (serverId, trackName, delivery) => {
+      await apiClient.put(`/api/rtc/${serverId}/watch/delivery`, RtcWatchDeliveryResponse, {
+        trackName,
+        delivery,
+      });
+    },
   };
 }
 
-// Per-stream WatchController registry (keyed by trackName — unique per user/share, and one Canvas is a
-// single server). The controller is NOT tied to a tile's React lifetime: FR-33 focus re-parents the
-// tile (grid ↔ focus mode), which React implements as an unmount + remount into a different subtree.
-// If the controller lived in the component, that remount would tear down and re-create the pull — a
-// re-pull the design forbids ("double-click reacts by setLayer, no re-pull"). Keeping it here lets the
-// remounted tile reuse the SAME live pull; teardown is deferred one task so a synchronous remount keeps
-// it alive, while a genuine unmount (stream removed, navigation) still frees it (G1).
 interface WatchEntry {
+  serverId: string;
+  trackName: string;
   controller: WatchController;
-  mounts: number;
-  teardown: ReturnType<typeof setTimeout> | null;
 }
+
 const watchRegistry = new Map<string, WatchEntry>();
+const theaterTrackByServer = new Map<string, string>();
 
-// Non-reactive read of a stream's live watch state — used by the `f` fullscreen key to target the first
-// stream that is actually showing video (a watched remote) rather than an unwatched placeholder. Safe as
-// an on-demand keypress read of the module registry (no subscription needed).
-export function isWatchingTrack(trackName: string): boolean {
-  const entry = watchRegistry.get(trackName);
-  return entry !== undefined && entry.controller.state !== "idle";
+function watchKey(serverId: string, trackName: string): string {
+  return `${serverId}\u0000${trackName}`;
 }
 
-// Test seam: clears the module registry between unit tests (the deferred teardown is timer-based).
-export function resetWatchRegistry(): void {
-  for (const entry of watchRegistry.values()) {
-    if (entry.teardown) clearTimeout(entry.teardown);
+function theaterVisibleFor(serverId: string, trackName: string): boolean {
+  const theaterTrack = theaterTrackByServer.get(serverId);
+  return theaterTrack === undefined || theaterTrack === trackName;
+}
+
+function entryFor(serverId: string, stream: StreamInfo): WatchEntry {
+  const key = watchKey(serverId, stream.trackName);
+  const existing = watchRegistry.get(key);
+  if (existing !== undefined) {
+    existing.controller.updateStream(stream);
+    return existing;
   }
-  watchRegistry.clear();
+  const controller = new WatchController(stream, defaultWatchDeps());
+  controller.setDocumentVisible(focusStore.getState().visible);
+  controller.setTheaterVisible(theaterVisibleFor(serverId, stream.trackName));
+  const created = { serverId, trackName: stream.trackName, controller };
+  watchRegistry.set(key, created);
+  return created;
 }
 
-// FR-30 tile seam: opt-in watch of a single stream. A never-watched tile still creates zero
-// PullSessions (watch() is user-initiated); a watched pull survives the tile's focus remount and is
-// freed one task after the last tile for the stream unmounts.
+// Page visibility is reliable and preserves the two-monitor case: losing keyboard focus while Tavern
+// remains visible does not change delivery. Hidden/minimized pages enter saver mode without polling.
+focusStore.subscribe((state, previous) => {
+  if (state.visible === previous.visible) return;
+  for (const entry of watchRegistry.values()) {
+    entry.controller.setDocumentVisible(state.visible);
+  }
+});
+
+// Switching rooms/logging out is a real lifecycle boundary. Stop those sessions explicitly; tile
+// reparenting and stream-tab layout changes never touch this path.
+useServersStore.subscribe((state, previous) => {
+  if (state.activeServerId === previous.activeServerId) return;
+  for (const entry of watchRegistry.values()) {
+    if (entry.serverId !== state.activeServerId) entry.controller.unwatch();
+  }
+});
+
+export function setWatchTheaterFullscreen(serverId: string, trackName: string | null): void {
+  if (trackName === null) theaterTrackByServer.delete(serverId);
+  else theaterTrackByServer.set(serverId, trackName);
+  for (const entry of watchRegistry.values()) {
+    if (entry.serverId === serverId) {
+      entry.controller.setTheaterVisible(trackName === null || entry.trackName === trackName);
+    }
+  }
+}
+
+export function isWatchingTrack(trackName: string): boolean {
+  const serverId = useServersStore.getState().activeServerId;
+  if (serverId === null) return false;
+  return watchRegistry.get(watchKey(serverId, trackName))?.controller.state !== "idle";
+}
+
+export function resetWatchRegistry(): void {
+  for (const entry of watchRegistry.values()) entry.controller.unwatch();
+  watchRegistry.clear();
+  theaterTrackByServer.clear();
+}
+
 export function useWatch(stream: StreamInfo): {
   state: WatchState;
   mediaStream: MediaStream | null;
+  delivery: WatchMediaDelivery;
+  deliveryTransitioning: boolean;
   watch(): void;
   unwatch(): void;
-  setLayer(rid: "h" | "l"): void;
+  setLayer(rid: ScreenRid): void;
 } {
-  const key = stream.trackName;
-  const entryRef = useRef<WatchEntry | null>(null);
-  if (entryRef.current === null) {
-    const existing = watchRegistry.get(key);
-    if (existing !== undefined) {
-      entryRef.current = existing;
-    } else {
-      const created: WatchEntry = {
-        controller: new WatchController(stream, defaultWatchDeps()),
-        mounts: 0,
-        teardown: null,
-      };
-      watchRegistry.set(key, created);
-      entryRef.current = created;
-    }
-  }
-  const entry = entryRef.current;
+  const serverId = useServersStore((state) => state.activeServerId) ?? "";
+  const entry = useMemo(() => entryFor(serverId, stream), [serverId, stream]);
   const controller = entry.controller;
+  controller.updateStream(stream);
 
   const subscribe = useCallback((cb: () => void) => controller.subscribe(cb), [controller]);
   const state = useSyncExternalStore(subscribe, () => controller.state);
   const mediaStream = useSyncExternalStore(subscribe, () => controller.mediaStream);
+  const delivery = useSyncExternalStore(subscribe, () => controller.delivery);
+  const deliveryTransitioning = useSyncExternalStore(
+    subscribe,
+    () => controller.deliveryTransitioning,
+  );
 
-  useEffect(() => {
-    entry.mounts += 1;
-    if (entry.teardown) {
-      clearTimeout(entry.teardown);
-      entry.teardown = null;
-    }
-    return () => {
-      entry.mounts -= 1;
-      // Defer one task: a focus re-parent unmounts then remounts in the same commit, so `mounts` is
-      // back to 1 by the time this fires and the pull is kept. The identity guard avoids tearing down a
-      // newer controller that reused this trackName.
-      entry.teardown = setTimeout(() => {
-        if (entry.mounts === 0 && watchRegistry.get(key) === entry) {
-          controller.unwatch();
-          watchRegistry.delete(key);
-        }
-      }, 0);
-    };
-  }, [entry, controller, key]);
-
-  const watch = useCallback(() => controller.watch(), [controller]);
+  const watch = useCallback(() => void controller.watch(), [controller]);
   const unwatch = useCallback(() => controller.unwatch(), [controller]);
-  const setLayer = useCallback((rid: "h" | "l") => controller.setLayer(rid), [controller]);
+  const setLayer = useCallback((rid: ScreenRid) => controller.setLayer(rid), [controller]);
 
-  return { state, mediaStream, watch, unwatch, setLayer };
+  return { state, mediaStream, delivery, deliveryTransitioning, watch, unwatch, setLayer };
 }

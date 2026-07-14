@@ -16,8 +16,8 @@ export function homeSnapshot(input: {
   now: number;
   recordings: RecordingsModule;
 }): TavernHomeResponseType {
-  const screenshots = listScreenshots(input.sql);
-  const recordings = input.recordings.list();
+  const screenshots = listScreenshots(input.sql).screenshots;
+  const recordings = input.recordings.list().recordings;
   const sounds = listSounds(input.sql).toSorted((a, b) => b.createdAt - a.createdAt);
   const recentHangouts = input.hangouts.recent();
 

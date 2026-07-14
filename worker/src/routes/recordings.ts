@@ -11,6 +11,11 @@ import {
 import type { ErrorCode } from "@tavern/shared";
 import { requireMember, zodJson } from "../middleware";
 import type { MemberVars } from "../middleware";
+import {
+  recordMediaObject,
+  removeMediaObject,
+  trackMediaInventory,
+} from "../lib/mediaUsageInventory";
 
 // FR-25 recording multipart routes (§6.1, §7.4). The client holds the R2 uploadId (Worker stays
 // stateless across parts); the DO owns authorization + the multipart create/abort + the registry row.
@@ -85,9 +90,22 @@ export const recordingsRoute = new Hono<{ Bindings: Env; Variables: MemberVars }
 
 // GET /api/servers/:id/recordings (FR-25): member-gated list (finalized, newest first).
 recordingsRoute.get("/:id/recordings", requireMember, async (c) => {
-  const res = await doStub(c.env, c.var.serverId).fetch("https://do.internal/internal/recordings", {
-    headers: { "X-Tavern-Internal": "1" },
-  });
+  const query = z
+    .object({
+      offset: z.coerce.number().int().min(0).optional(),
+      limit: z.coerce.number().int().positive().optional(),
+    })
+    .safeParse({ offset: c.req.query("offset"), limit: c.req.query("limit") });
+  if (!query.success) return c.json({ error: "bad_request" satisfies ErrorCode }, 400);
+  const params = new URLSearchParams();
+  if (query.data.offset !== undefined) params.set("offset", String(query.data.offset));
+  if (query.data.limit !== undefined) params.set("limit", String(query.data.limit));
+  const res = await doStub(c.env, c.var.serverId).fetch(
+    `https://do.internal/internal/recordings?${params.toString()}`,
+    {
+      headers: { "X-Tavern-Internal": "1" },
+    },
+  );
   return c.json(RecordingsResponse.parse(await res.json()));
 });
 
@@ -167,8 +185,12 @@ recordingsRoute.post(
       const code = failureCode(authBody);
       return c.json({ error: code }, statusFor(code));
     }
-    await c.env.MEDIA.resumeMultipartUpload(auth.data.r2Key, auth.data.uploadId).complete(
-      input.parts,
+    const object = await c.env.MEDIA.resumeMultipartUpload(
+      auth.data.r2Key,
+      auth.data.uploadId,
+    ).complete(input.parts);
+    c.executionCtx.waitUntil(
+      trackMediaInventory(recordMediaObject(c.env.DB, object), "put", auth.data.r2Key),
     );
     const finRes = await internalPost(c.env, serverId, "/internal/recordings/finalize", {
       recordingId,
@@ -215,5 +237,8 @@ recordingsRoute.delete("/:id/recordings/:recId", requireMember, async (c) => {
     return c.json({ error: code }, statusFor(code));
   }
   await c.env.MEDIA.delete(ok.data.r2Key);
+  c.executionCtx.waitUntil(
+    trackMediaInventory(removeMediaObject(c.env.DB, ok.data.r2Key), "delete", ok.data.r2Key),
+  );
   return c.body(null, 204);
 });

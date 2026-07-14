@@ -256,11 +256,14 @@ export class RecordingsModule {
 
   // Internal list (Worker GET): finalized recordings, newest first (§7.6 Recordings tab). In-flight /
   // aborted rows (ended_at NULL) are not playable, so they are excluded.
-  list(): Recording[] {
-    return this.sql
+  list(offset = 0, limit?: number): { recordings: Recording[]; hasMore: boolean } {
+    const take = Math.min(Math.max(1, limit ?? LIMITS.historyPageSize), LIMITS.historyPageSize);
+    const rows = this.sql
       .exec<Record<string, SqlStorageValue>>(
         `SELECT id, started_by, duration_ms, started_at, ended_at FROM recordings
-         WHERE ended_at IS NOT NULL ORDER BY started_at DESC`,
+         WHERE ended_at IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?`,
+        take + 1,
+        offset,
       )
       .toArray()
       .map((row) => ({
@@ -270,6 +273,7 @@ export class RecordingsModule {
         startedAt: Number(row["started_at"]),
         endedAt: row["ended_at"] === null ? null : Number(row["ended_at"]),
       }));
+    return { recordings: rows.slice(0, take), hasMore: rows.length > take };
   }
 
   private async abortMultipart(recordingId: string, uploadId: string | null): Promise<void> {

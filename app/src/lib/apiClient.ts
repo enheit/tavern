@@ -76,6 +76,8 @@ export const apiClient = {
     request(schema, { method: "DELETE", path, body }),
   upload: <T>(path: string, schema: Parser<T>, form: FormData) =>
     request(schema, { method: "POST", path, form }),
+  uploadPut: <T>(path: string, schema: Parser<T>, form: FormData) =>
+    request(schema, { method: "PUT", path, form }),
 };
 
 // The RTC signaling layer (S7.2) reaches the PUT rtc routes (§6.1) through this same client, so it

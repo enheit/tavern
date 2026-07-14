@@ -1,10 +1,27 @@
-import { useCallback, useEffect } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { ErrorCode, PatchSoundRequest, Sound } from "@tavern/shared";
-import { ApiErrorBody, Sound as SoundSchema, SoundsResponse } from "@tavern/shared";
+import { ApiErrorBody, SoundResponse, SoundsResponse } from "@tavern/shared";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { authTransport } from "@/lib/authTransport";
 import { connectRoom } from "@/lib/wsClient";
+import { getVoiceController } from "@/features/voice/voiceController";
+import { useMediaStore } from "@/stores/media";
+
+export interface SoundUploadInput {
+  file: File;
+  name: string;
+  emoji: string;
+  gain: number;
+  durationMs: number;
+  trimStartRatio: number;
+  trimEndRatio: number;
+}
+
+export interface ActiveSoundPlay {
+  token: number;
+  durationMs: number;
+}
 
 // FR-34/35/37 soundboard data hook: TanStack Query over the list GET, invalidated on the DO's
 // `sound.updated` broadcast (any client's create/patch/delete), plus upload/patch/delete mutations.
@@ -12,23 +29,32 @@ import { connectRoom } from "@/lib/wsClient";
 export interface UseSounds {
   sounds: Sound[];
   isLoading: boolean;
-  uploadSound(input: { file: File; name: string; durationMs: number }): Promise<Sound>;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage(): Promise<unknown>;
+  uploadSound(input: SoundUploadInput): Promise<Sound>;
+  replaceSound(soundId: string, input: SoundUploadInput): Promise<Sound>;
   patchSound(soundId: string, patch: PatchSoundRequest): Promise<Sound>;
   deleteSound(soundId: string): Promise<void>;
-  // FR-36: broadcast a play to every voice member (the DO rate-limits + records + fans out).
-  sendPlay(soundId: string): void;
+  activateSound(sound: Sound): Promise<void>;
+  stopSound(soundId: string): void;
+  activePlays: Record<string, ActiveSoundPlay>;
 }
 
 // FR-37 live badge: bump the played sound's count IN PLACE (no reorder — reordering happens only on
 // the sound.updated refetch, which re-sorts by playCount). Returns a NEW response so React Query
 // notifies subscribers.
 function bumpPlayCount(
-  prev: SoundsResponse | undefined,
+  prev: { pages: SoundsResponse[]; pageParams: number[] } | undefined,
   soundId: string,
-): SoundsResponse | undefined {
+): { pages: SoundsResponse[]; pageParams: number[] } | undefined {
   if (prev === undefined) return prev;
   return {
-    sounds: prev.sounds.map((s) => (s.id === soundId ? { ...s, playCount: s.playCount + 1 } : s)),
+    ...prev,
+    pages: prev.pages.map((page) => ({
+      ...page,
+      sounds: page.sounds.map((s) => (s.id === soundId ? { ...s, playCount: s.playCount + 1 } : s)),
+    })),
   };
 }
 
@@ -38,18 +64,17 @@ function soundsKey(serverId: string): readonly [string, string] {
   return ["sounds", serverId];
 }
 
-// The `{ sound: Sound }` envelope returned by POST/PATCH, validated structurally (the apiClient parser
-// contract is `safeParse`) so no schema is added to the frozen shared api.ts.
-function isEnvelope(value: unknown): value is { sound: unknown } {
-  return typeof value === "object" && value !== null && "sound" in value;
+function makeSoundForm(input: SoundUploadInput): FormData {
+  const form = new FormData();
+  form.append("file", input.file);
+  form.append("name", input.name);
+  form.append("emoji", input.emoji);
+  form.append("gain", String(input.gain));
+  form.append("durationMs", String(input.durationMs));
+  form.append("trimStartRatio", String(input.trimStartRatio));
+  form.append("trimEndRatio", String(input.trimEndRatio));
+  return form;
 }
-const soundEnvelope = {
-  safeParse(data: unknown): { success: true; data: { sound: Sound } } | { success: false } {
-    if (!isEnvelope(data)) return { success: false };
-    const parsed = SoundSchema.safeParse(data.sound);
-    return parsed.success ? { success: true, data: { sound: parsed.data } } : { success: false };
-  },
-};
 
 // DELETE returns 204 (no body), which apiClient's JSON-parsing request cannot consume — so it uses a
 // thin authed fetch here. Mirrors apiClient's transport (auth headers + set-auth-token capture + typed
@@ -76,9 +101,50 @@ async function deleteRequest(path: string): Promise<void> {
 
 export function useSounds(serverId: string): UseSounds {
   const queryClient = useQueryClient();
-  const query = useQuery({
+  const [activePlays, setActivePlays] = useState<Record<string, ActiveSoundPlay>>({});
+  const playToken = useRef(0);
+  const playTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+
+  const clearActivePlay = useCallback((soundId: string): void => {
+    const timer = playTimers.current.get(soundId);
+    if (timer !== undefined) clearTimeout(timer);
+    playTimers.current.delete(soundId);
+    setActivePlays((current) => {
+      if (current[soundId] === undefined) return current;
+      const next = { ...current };
+      delete next[soundId];
+      return next;
+    });
+  }, []);
+
+  const startActivePlay = useCallback(
+    (soundId: string, durationMs: number): void => {
+      clearActivePlay(soundId);
+      playToken.current += 1;
+      const token = playToken.current;
+      setActivePlays((current) => ({ ...current, [soundId]: { token, durationMs } }));
+      playTimers.current.set(
+        soundId,
+        setTimeout(() => clearActivePlay(soundId), durationMs),
+      );
+    },
+    [clearActivePlay],
+  );
+
+  useEffect(
+    () => () => {
+      for (const timer of playTimers.current.values()) clearTimeout(timer);
+      playTimers.current.clear();
+    },
+    [],
+  );
+  const query = useInfiniteQuery({
     queryKey: soundsKey(serverId),
-    queryFn: () => apiClient.get(`/api/servers/${serverId}/sounds`, SoundsResponse),
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      apiClient.get(`/api/servers/${serverId}/sounds?offset=${pageParam}&limit=30`, SoundsResponse),
+    getNextPageParam: (lastPage, pages) =>
+      lastPage.hasMore ? pages.reduce((total, page) => total + page.sounds.length, 0) : undefined,
   });
 
   const invalidate = useCallback((): void => {
@@ -98,19 +164,38 @@ export function useSounds(serverId: string): UseSounds {
   useEffect(() => {
     const conn = connectRoom(serverId);
     return conn.on("sound.played", (msg) => {
-      queryClient.setQueryData<SoundsResponse>(soundsKey(serverId), (prev) =>
-        bumpPlayCount(prev, msg.soundId),
+      startActivePlay(msg.soundId, msg.trimEndMs - msg.trimStartMs);
+      queryClient.setQueryData<{ pages: SoundsResponse[]; pageParams: number[] }>(
+        soundsKey(serverId),
+        (prev) => bumpPlayCount(prev, msg.soundId),
       );
     });
-  }, [serverId, queryClient]);
+  }, [serverId, queryClient, startActivePlay]);
+
+  useEffect(() => {
+    const conn = connectRoom(serverId);
+    return conn.on("sound.stopped", (message) => clearActivePlay(message.soundId));
+  }, [serverId, clearActivePlay]);
 
   const uploadMutation = useMutation({
-    mutationFn: async (input: { file: File; name: string; durationMs: number }): Promise<Sound> => {
-      const form = new FormData();
-      form.append("file", input.file);
-      form.append("name", input.name);
-      form.append("durationMs", String(input.durationMs));
-      const res = await apiClient.upload(`/api/servers/${serverId}/sounds`, soundEnvelope, form);
+    mutationFn: async (input: SoundUploadInput): Promise<Sound> => {
+      const res = await apiClient.upload(
+        `/api/servers/${serverId}/sounds`,
+        SoundResponse,
+        makeSoundForm(input),
+      );
+      return res.sound;
+    },
+    onSuccess: invalidate,
+  });
+
+  const replaceMutation = useMutation({
+    mutationFn: async (input: { soundId: string; upload: SoundUploadInput }): Promise<Sound> => {
+      const res = await apiClient.uploadPut(
+        `/api/servers/${serverId}/sounds/${input.soundId}/source`,
+        SoundResponse,
+        makeSoundForm(input.upload),
+      );
       return res.sound;
     },
     onSuccess: invalidate,
@@ -120,7 +205,7 @@ export function useSounds(serverId: string): UseSounds {
     mutationFn: async (input: { soundId: string; patch: PatchSoundRequest }): Promise<Sound> => {
       const res = await apiClient.patch(
         `/api/servers/${serverId}/sounds/${input.soundId}`,
-        soundEnvelope,
+        SoundResponse,
         input.patch,
       );
       return res.sound;
@@ -134,8 +219,12 @@ export function useSounds(serverId: string): UseSounds {
   });
 
   const uploadSound = useCallback(
-    (input: { file: File; name: string; durationMs: number }) => uploadMutation.mutateAsync(input),
+    (input: SoundUploadInput) => uploadMutation.mutateAsync(input),
     [uploadMutation],
+  );
+  const replaceSound = useCallback(
+    (soundId: string, upload: SoundUploadInput) => replaceMutation.mutateAsync({ soundId, upload }),
+    [replaceMutation],
   );
   const patchSound = useCallback(
     (soundId: string, patch: PatchSoundRequest) => patchMutation.mutateAsync({ soundId, patch }),
@@ -146,25 +235,50 @@ export function useSounds(serverId: string): UseSounds {
     [deleteMutation],
   );
 
-  // FR-36: pressing a sound broadcasts `sound.play`; every in-voice client (this one included) plays it
-  // on the resulting `sound.played` receipt. Requires an open socket — a closed socket drops the press.
-  const sendPlay = useCallback(
-    (soundId: string): void => {
+  const activateSound = useCallback(
+    async (sound: Sound): Promise<void> => {
+      if (playTimers.current.has(sound.id)) return;
+      const media = useMediaStore.getState();
+      if (media.inVoiceServerId === serverId && media.voiceStatus === "joined") {
+        connectRoom(serverId).send({ t: "sound.play", soundId: sound.id });
+        return;
+      }
+      startActivePlay(sound.id, sound.trimEndMs - sound.trimStartMs);
       try {
-        connectRoom(serverId).send({ t: "sound.play", soundId });
-      } catch {
-        // WS not open — the press is dropped (a play needs a live socket).
+        await getVoiceController().previewSoundboard(serverId, sound);
+      } catch (error: unknown) {
+        clearActivePlay(sound.id);
+        throw error;
       }
     },
-    [serverId],
+    [serverId, startActivePlay, clearActivePlay],
+  );
+
+  const stopSound = useCallback(
+    (soundId: string): void => {
+      const media = useMediaStore.getState();
+      if (media.inVoiceServerId === serverId && media.voiceStatus === "joined") {
+        connectRoom(serverId).send({ t: "sound.stop", soundId });
+        return;
+      }
+      getVoiceController().stopSoundboardPreview(soundId);
+      clearActivePlay(soundId);
+    },
+    [serverId, clearActivePlay],
   );
 
   return {
-    sounds: query.data?.sounds ?? [],
+    sounds: useMemo(() => query.data?.pages.flatMap((page) => page.sounds) ?? [], [query.data]),
     isLoading: query.isLoading,
+    hasNextPage: query.hasNextPage,
+    isFetchingNextPage: query.isFetchingNextPage,
+    fetchNextPage: query.fetchNextPage,
     uploadSound,
+    replaceSound,
     patchSound,
     deleteSound,
-    sendPlay,
+    activateSound,
+    stopSound,
+    activePlays,
   };
 }

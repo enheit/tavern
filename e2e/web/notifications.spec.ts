@@ -118,8 +118,7 @@ test.describe("FR-16 notifications", () => {
     const { b, openedA, openedB } = await bootPair(browser, baseURL, api);
     try {
       // Turn OFF all-messages (keep mentions ON) via B's Settings UI — disabling needs no permission.
-      await openedB.page.getByTestId("user-menu").click();
-      await openedB.page.getByTestId("user-menu-settings").click();
+      await openedB.page.getByTestId("sidebar-settings-button").click();
       await openedB.page.getByTestId("settings-tab-notifications").click();
       await openedB.page.getByTestId("settings-notify-all").click();
       await openedB.page.keyboard.press("Escape");

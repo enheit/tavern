@@ -21,7 +21,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
@@ -31,17 +30,17 @@ export function PollDialog({
   poll,
   open,
   onOpenChange,
+  initialOutcomeId,
 }: {
   serverId: string;
   poll: Poll;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  initialOutcomeId?: string | undefined;
 }) {
   const store = roomStore(serverId);
-  const points = useStore(store, (state) => state.points);
   const currentUserId = useSessionStore((state) => state.profile?.userId ?? null);
   const serverMeta = useStore(store, (state) => state.serverMeta);
-  const bidPoll = useStore(store, (state) => state.bidPoll);
   const lockPoll = useStore(store, (state) => state.lockPoll);
   const resolvePoll = useStore(store, (state) => state.resolvePoll);
   const correctPoll = useStore(store, (state) => state.correctPoll);
@@ -49,8 +48,6 @@ export function PollDialog({
   const firstOutcomeId = poll.outcomes[0]?.id ?? "";
   const canManage = currentUserId === poll.creatorId || currentUserId === serverMeta?.adminUserId;
   const [outcomeId, setOutcomeId] = useState(firstOutcomeId);
-  const [stake, setStake] = useState(1);
-  const canBid = poll.status === "open" && poll.myBid === null;
   const canCorrect =
     poll.status === "resolved_pending" &&
     !poll.correctionUsed &&
@@ -58,25 +55,23 @@ export function PollDialog({
     Date.now() < poll.finalizesAt;
 
   useEffect(() => {
-    setOutcomeId(firstOutcomeId);
-    setStake(1);
-  }, [firstOutcomeId, poll.id]);
+    setOutcomeId(
+      initialOutcomeId !== undefined &&
+        poll.outcomes.some((outcome) => outcome.id === initialOutcomeId)
+        ? initialOutcomeId
+        : firstOutcomeId,
+    );
+  }, [firstOutcomeId, initialOutcomeId, poll.id, poll.outcomes]);
 
   function close(): void {
     onOpenChange(false);
-  }
-
-  function submitBid(): void {
-    if (!canBid || outcomeId.length === 0 || stake < 1 || stake > points.balance) return;
-    bidPoll(poll.id, outcomeId, stake);
-    close();
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent data-testid={`poll-dialog-${poll.id}`} className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{poll.question}</DialogTitle>
+          <DialogTitle>{m.polls_manage()}</DialogTitle>
           <DialogDescription>
             {m.polls_created_by({ name: poll.creatorDisplayName })}
           </DialogDescription>
@@ -98,25 +93,6 @@ export function PollDialog({
             </button>
           ))}
         </div>
-        {canBid ? (
-          <label className="grid gap-1.5 text-sm">
-            <span className="flex justify-between font-medium">
-              {m.polls_bid_amount()}
-              <span className="text-xs font-normal text-muted-foreground">
-                {m.polls_bid_available({ points: points.balance })}
-              </span>
-            </span>
-            <Input
-              data-testid="poll-bid-amount"
-              type="number"
-              min={1}
-              max={points.balance}
-              value={stake}
-              onChange={(event) => setStake(Number(event.target.value))}
-            />
-            <span className="text-xs text-muted-foreground">{m.polls_bid_final_hint()}</span>
-          </label>
-        ) : null}
         {poll.myBid !== null ? (
           <p className="rounded-lg bg-muted p-2 text-sm">
             {m.polls_your_bid({
@@ -127,15 +103,6 @@ export function PollDialog({
           </p>
         ) : null}
         <DialogFooter className="flex-wrap">
-          {canBid ? (
-            <Button
-              data-testid="poll-bid-submit"
-              disabled={points.balance < 1 || stake < 1 || stake > points.balance}
-              onClick={submitBid}
-            >
-              {m.polls_bid_confirm()}
-            </Button>
-          ) : null}
           {canManage && poll.status === "open" ? (
             <Button
               variant="outline"

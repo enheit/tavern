@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Member, TavernHomeResponse } from "@tavern/shared";
 import { TavernHome } from "./TavernHome";
 import { resetRoomStores, roomStore } from "@/stores/room";
+import { useMediaStore } from "@/stores/media";
 
 const getMock = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/apiClient", () => ({ apiClient: { get: getMock } }));
@@ -33,6 +34,16 @@ const members: Member[] = [
     username: "roman",
     displayName: "Roman",
     color: "#ff8800",
+    voiceAvatar: {
+      version: 2,
+      skinTone: "deep",
+      hairColor: "ginger",
+      hairStyle: "wavy",
+      eyeColor: "green",
+      glassesStyle: "aviator",
+      facialHairStyle: "mustache",
+      outfitColor: "#f87171",
+    },
     presence: "in-voice",
     isAdmin: true,
     joinedAt: T0,
@@ -93,6 +104,9 @@ const response: TavernHomeResponse = {
   latestSound: {
     id: SOUND_ID,
     name: "cheers",
+    emoji: "🎉",
+    gain: 1,
+    sourceFileName: "cheers.mp3",
     uploaderId: A_ID,
     durationMs: 1_000,
     trimStartMs: 0,
@@ -102,13 +116,13 @@ const response: TavernHomeResponse = {
   },
 };
 
-function renderHome(onOpenSoundboard = vi.fn()) {
+function renderHome(onOpenSoundboard = vi.fn(), active = true) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return {
     onOpenSoundboard,
     ...render(
       <QueryClientProvider client={queryClient}>
-        <TavernHome serverId={SERVER_ID} onOpenSoundboard={onOpenSoundboard} />
+        <TavernHome serverId={SERVER_ID} active={active} onOpenSoundboard={onOpenSoundboard} />
       </QueryClientProvider>,
     ),
   };
@@ -116,6 +130,7 @@ function renderHome(onOpenSoundboard = vi.fn()) {
 
 beforeEach(() => {
   resetRoomStores();
+  useMediaStore.getState().clearSpeaking();
   getMock.mockResolvedValue(response);
   onMock.mockClear();
   roomStore(SERVER_ID).setState({
@@ -132,12 +147,19 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("Tavern Home", () => {
+  it("does not fetch the recap while the kept-mounted Dashboard is hidden", async () => {
+    renderHome(vi.fn(), false);
+    await Promise.resolve();
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
   it("renders live presence, member availability, hangouts, and each media type", async () => {
     renderHome();
     await waitFor(() => expect(screen.getByTestId("home-hangout-1")).toBeDefined());
 
     expect(screen.getByText("Roman, Oleh hung out")).toBeDefined();
     expect(screen.getByTestId("home-live-avatars").children).toHaveLength(2);
+    expect(screen.queryByTestId("voice-lounge")).toBeNull();
     expect(screen.getByTestId("home-latest-screenshot")).toBeDefined();
     expect(screen.getByTestId(`recording-player-${REC_ID}`)).toBeDefined();
     expect(screen.getByText("cheers")).toBeDefined();

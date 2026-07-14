@@ -19,6 +19,8 @@ import {
   PatchSoundRequest,
   Recording,
   RecordingsResponse,
+  Screenshot,
+  ScreenshotsResponse,
   OpenRecordingResponse,
   UploadPartResponse,
   CompleteRecordingRequest,
@@ -30,6 +32,18 @@ import {
   RtcClosePayload,
   IceServersResponse,
   ApiErrorBody,
+  QoeBatchRequest,
+  QoeResponse,
+  PutStreamPreviewResponse,
+  VOICE_AVATAR_EYE_COLORS,
+  VOICE_AVATAR_FACIAL_HAIR_STYLES,
+  VOICE_AVATAR_GLASSES_STYLES,
+  VOICE_AVATAR_HAIR_COLORS,
+  VOICE_AVATAR_HAIR_STYLES,
+  VOICE_AVATAR_OUTFIT_COLORS,
+  VOICE_AVATAR_SKIN_TONES,
+  VoiceAvatarConfig,
+  VoiceAvatarConfigInput,
 } from "../src/index";
 import {
   ScreenSourceSchema,
@@ -43,6 +57,16 @@ import {
 
 const UUID = "123e4567-e89b-42d3-a456-426614174000";
 const profile = { userId: UUID, username: "roman_1", displayName: "Roman", color: "#a1b2c3" };
+const voiceAvatar = {
+  version: 2,
+  skinTone: "medium",
+  hairColor: "ginger",
+  hairStyle: "wavy",
+  eyeColor: "green",
+  glassesStyle: "aviator",
+  facialHairStyle: "mustache",
+  outfitColor: "#8b5cf6",
+} as const;
 const settings = { notifyAll: true, notifyMentions: true, locale: "en", theme: "system" };
 const summary = {
   id: UUID,
@@ -55,6 +79,9 @@ const summary = {
 const sound = {
   id: UUID,
   name: "horn",
+  emoji: "📯",
+  gain: 1,
+  sourceFileName: "horn.mp3",
   uploaderId: UUID,
   durationMs: 1000,
   trimStartMs: 0,
@@ -63,6 +90,7 @@ const sound = {
   playCount: 0,
 };
 const recording = { id: UUID, startedBy: UUID, durationMs: null, startedAt: 1, endedAt: null };
+const screenshot = { id: UUID, capturedBy: UUID, createdAt: 1 };
 
 const cases: [string, z.ZodType, unknown][] = [
   [
@@ -100,10 +128,12 @@ const cases: [string, z.ZodType, unknown][] = [
     },
   ],
   ["Sound", Sound, sound],
-  ["SoundsResponse", SoundsResponse, { sounds: [sound] }],
+  ["SoundsResponse", SoundsResponse, { sounds: [sound], hasMore: false }],
   ["PatchSoundRequest", PatchSoundRequest, { name: "new" }],
   ["Recording", Recording, recording],
-  ["RecordingsResponse", RecordingsResponse, { recordings: [recording] }],
+  ["RecordingsResponse", RecordingsResponse, { recordings: [recording], hasMore: false }],
+  ["Screenshot", Screenshot, screenshot],
+  ["ScreenshotsResponse", ScreenshotsResponse, { screenshots: [screenshot], hasMore: false }],
   ["OpenRecordingResponse", OpenRecordingResponse, { recordingId: UUID, uploadId: "u" }],
   ["UploadPartResponse", UploadPartResponse, { etag: "e" }],
   [
@@ -117,7 +147,15 @@ const cases: [string, z.ZodType, unknown][] = [
     RtcTracksLocalRequest,
     {
       sessionDescription: { sdp: "x", type: "offer" },
-      tracks: [{ location: "local", mid: "0", trackName: "mic" }],
+      tracks: [
+        {
+          location: "local",
+          mid: "0",
+          trackName: "screen:user:1",
+          preset: "1080p60",
+          simulcastProfile: "h_i_l_v2",
+        },
+      ],
     },
   ],
   [
@@ -125,7 +163,7 @@ const cases: [string, z.ZodType, unknown][] = [
     RtcTracksRemoteRequest,
     {
       tracks: [
-        { location: "remote", sessionId: "s", trackName: "mic", simulcast: { preferredRid: "l" } },
+        { location: "remote", sessionId: "s", trackName: "mic", simulcast: { preferredRid: "i" } },
       ],
     },
   ],
@@ -147,6 +185,47 @@ const cases: [string, z.ZodType, unknown][] = [
   ],
   ["ApiErrorBody", ApiErrorBody, { error: "bad_request" }],
   [
+    "PutStreamPreviewResponse",
+    PutStreamPreviewResponse,
+    { preview: { id: UUID, version: "preview-v1" } },
+  ],
+  [
+    "QoeBatchRequest",
+    QoeBatchRequest,
+    {
+      v: 1,
+      samples: [
+        {
+          role: "viewer",
+          platform: "web",
+          os: "web",
+          streamKind: "screen",
+          contentMode: "motion",
+          preset: "1080p60",
+          codec: "VP9",
+          rid: "h",
+          limitation: "none",
+          health: "healthy",
+          targetFps: 60,
+          sourceFps: null,
+          encodeFps: null,
+          receiveFps: 59.5,
+          renderFps: 59.2,
+          width: 1920,
+          height: 1080,
+          bitrateKbps: 5800,
+          lossPct: 0.1,
+          rttMs: 24,
+          jitterMs: 2,
+          droppedPct: 0.2,
+          freezeMs: 0,
+          sampleWindowMs: 5000,
+        },
+      ],
+    },
+  ],
+  ["QoeResponse", QoeResponse, { ok: true }],
+  [
     "ScreenSourceSchema",
     ScreenSourceSchema,
     { id: "1", name: "Screen 1", thumbnailDataUrl: "data:," },
@@ -160,9 +239,9 @@ const cases: [string, z.ZodType, unknown][] = [
 ];
 
 describe("contract surface", () => {
-  it("ERROR_CODES has 38 unique members", () => {
-    expect(ERROR_CODES.length).toBe(38);
-    expect(new Set(ERROR_CODES).size).toBe(38);
+  it("ERROR_CODES has 43 unique members", () => {
+    expect(ERROR_CODES.length).toBe(43);
+    expect(new Set(ERROR_CODES).size).toBe(43);
   });
 
   it("CreateServerRequest requires both a password and a non-empty (trimmed) code", () => {
@@ -182,6 +261,73 @@ describe("contract surface", () => {
   it("PatchServerRequest is password-string-only (clearing with null removed)", () => {
     expect(PatchServerRequest.safeParse({ password: null }).success).toBe(false);
     expect(PatchServerRequest.safeParse({ password: "hunter2" }).success).toBe(true);
+  });
+
+  it("voice avatar configs are complete, strict, and clearable only through profile patch", () => {
+    expect({
+      skinTones: VOICE_AVATAR_SKIN_TONES.length,
+      hairColors: VOICE_AVATAR_HAIR_COLORS.length,
+      hairStyles: VOICE_AVATAR_HAIR_STYLES.length,
+      eyeColors: VOICE_AVATAR_EYE_COLORS.length,
+      glassesStyles: VOICE_AVATAR_GLASSES_STYLES.length,
+      facialHairStyles: VOICE_AVATAR_FACIAL_HAIR_STYLES.length,
+      outfitColors: VOICE_AVATAR_OUTFIT_COLORS.length,
+    }).toEqual({
+      skinTones: 10,
+      hairColors: 12,
+      hairStyles: 10,
+      eyeColors: 7,
+      glassesStyles: 5,
+      facialHairStyles: 6,
+      outfitColors: 20,
+    });
+    expect(VoiceAvatarConfig.safeParse(voiceAvatar).success).toBe(true);
+    expect(VoiceAvatarConfig.safeParse({ ...voiceAvatar, hairStyle: "mohawk" }).success).toBe(
+      false,
+    );
+    expect(VoiceAvatarConfig.safeParse({ ...voiceAvatar, outfitColor: "violet" }).success).toBe(
+      false,
+    );
+    expect(
+      VoiceAvatarConfig.safeParse({
+        version: 2,
+        skinTone: "medium",
+        hairColor: "violet",
+        hairStyle: "curly",
+        eyeColor: "green",
+        glassesStyle: "round",
+        outfitColor: "#8b5cf6",
+      }).success,
+    ).toBe(false);
+    expect(VoiceAvatarConfig.safeParse({ ...voiceAvatar, extra: true }).success).toBe(false);
+    expect(PatchProfileRequest.safeParse({ voiceAvatar }).success).toBe(true);
+    expect(PatchProfileRequest.safeParse({ voiceAvatar: null }).success).toBe(true);
+  });
+
+  it("upgrades strict version-one voice avatars at compatibility boundaries", () => {
+    const legacy = {
+      version: 1,
+      skinTone: "deep",
+      hairColor: "blonde",
+      hairStyle: "bun",
+      glasses: true,
+      beard: false,
+      outfitColor: "#f87171",
+    } as const;
+    expect(VoiceAvatarConfig.safeParse(legacy).success).toBe(false);
+    expect(VoiceAvatarConfigInput.parse(legacy)).toEqual({
+      version: 2,
+      skinTone: "deep",
+      hairColor: "blonde",
+      hairStyle: "bun",
+      eyeColor: "dark-brown",
+      glassesStyle: "round",
+      facialHairStyle: "none",
+      outfitColor: "#f87171",
+    });
+    expect(PatchProfileRequest.parse({ voiceAvatar: legacy }).voiceAvatar).toEqual(
+      VoiceAvatarConfigInput.parse(legacy),
+    );
   });
 
   it("round-trips a valid fixture through every api.ts + ipc.ts schema", () => {

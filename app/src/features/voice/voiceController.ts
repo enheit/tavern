@@ -1,30 +1,33 @@
-import type { ClientMessage, PresetId, ServerMessage, VoiceMember } from "@tavern/shared";
+import type {
+  ClientMessage,
+  PresetId,
+  ScreenRid,
+  ServerMessage,
+  VoiceMember,
+} from "@tavern/shared";
 import { apiClient } from "@/lib/apiClient";
+import { clearMediaOwner, markMediaOwner } from "@/lib/mediaOwnership";
 import { installTestHooks } from "@/lib/testHooks";
 import type { OutboundVideoLayer, VoiceStats } from "@/lib/testHooks";
 import { connectRoom } from "@/lib/wsClient";
 import { AudioGraph } from "@/media/audioGraph";
 import { getMic as browserGetMic, retoggleMic as browserRetoggleMic } from "@/media/capture";
 import { watchSpeaking as browserWatchSpeaking } from "@/media/levelMeter";
+import type { SpeakingOpts } from "@/media/levelMeter";
 import { browserAudioPort, browserRtcPort } from "@/media/ports";
 import { PublishSession } from "@/media/rtc/publishSession";
-import type { PublishState } from "@/media/rtc/publishSession";
+import type { OutboundVideoLayerStats, PublishState } from "@/media/rtc/publishSession";
 import { PullSession } from "@/media/rtc/pullSession";
 import type { PullState } from "@/media/rtc/pullSession";
 import { createSfuSignal } from "@/media/sfuSignal";
 import { createSoundFetcher, SoundboardPlayer } from "@/media/soundboardPlayer";
 import { micTrackName } from "@/media/trackName";
+import { clearVoiceLevel, clearVoiceLevels, setVoiceLevel } from "@/media/voiceLevelBus";
 import { playUiSound } from "@/lib/uiSounds";
 import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
 import { type NoiseSuppressionMode, useSettingsStore } from "@/stores/settings";
-import {
-  clearVoiceSession,
-  loadVoiceSession,
-  saveVoiceSession,
-  updateVoiceSession,
-} from "./voiceSession";
 
 // Thrown by `join` when the client is already in voice on a DIFFERENT server (single-voice rule is
 // CLIENT-enforced — §1.4). The confirm flow catches it, leaves there, then joins here.
@@ -66,10 +69,14 @@ interface PublishLike {
   micSender(): RTCRtpSender | null;
   camSender(): RTCRtpSender | null;
   setTrackEnabled(trackName: string, enabled: boolean): void;
-  // FR-27 on-the-fly preset switch (S8.4): applyConstraints + sender.setParameters on the h-encoding,
-  // never a renegotiation. Owned by PublishSession (it holds the App-D encodings). useScreenShare drives
-  // it on the shared publishPC exposed via screenPublisher().
+  // FR-27 in-ceiling preset switch: sender.setParameters updates all encodings without capture
+  // constraint churn or renegotiation. useScreenShare drives it on the shared publishPC.
   setPreset(trackName: string, preset: PresetId): Promise<void>;
+  replaceScreenTrack(
+    trackName: string,
+    nextTrack: MediaStreamTrack,
+    preset: PresetId,
+  ): Promise<void>;
   close(): Promise<void>;
   // Optional — real PublishSession only. Rebuilds failed or reconnected-but-stale media sessions.
   onConnectionRecoveryNeeded?(cb: () => void): () => void;
@@ -78,14 +85,14 @@ interface PublishLike {
   readonly state?: PublishState;
   // Optional (test fakes omit it) — per-rid outbound-rtp video summary for the §10 @realtime hook
   // (publisher-side FR-27 fault-domain split; see PublishSession.outboundVideoStats).
-  outboundVideoStats?(trackName: string): Promise<OutboundVideoLayer[]>;
+  outboundVideoStats?(trackName: string): Promise<OutboundVideoLayerStats[]>;
 }
 interface PullLike {
   connect(): Promise<void>;
   onTrack(
     cb: (trackName: string, track: MediaStreamTrack, stream: MediaStream) => void,
   ): () => void;
-  addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: "h" | "l" }>): Promise<void>;
+  addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: ScreenRid }>): Promise<void>;
   removeRemoteTracks(trackNames: string[]): Promise<void>;
   close(): Promise<void>;
   // Optional — real PullSession only. See PublishLike.onConnectionRecoveryNeeded.
@@ -102,7 +109,8 @@ interface PullLike {
 export interface StreamAudioSink {
   attachStreamAudio(streamKey: string, stream: MediaStream): void;
   detachStreamAudio(streamKey: string): void;
-  setStreamGain(streamKey: string, gain: number): void;
+  // Accepts the persisted/user-facing level 0..2; AudioGraph owns the perceptual gain conversion.
+  setStreamVolume(streamKey: string, level: number): void;
 }
 
 interface GraphLike extends StreamAudioSink {
@@ -123,8 +131,19 @@ interface GraphLike extends StreamAudioSink {
 // FR-36 soundboard player (the real SoundboardPlayer satisfies it) — built per voice server with a
 // Cache-API fetcher bound to that serverId. Optional in VoiceDeps so unit-test harnesses omit it.
 interface SoundboardLike {
-  play(sound: { id: string; trimStartMs: number; trimEndMs: number }): Promise<void>;
+  play(
+    sound: { id: string; trimStartMs: number; trimEndMs: number; gain: number },
+    mode?: "shared" | "local-preview" | "editor-preview",
+  ): Promise<void>;
+  playBytes(
+    bytes: ArrayBuffer,
+    sound: { id: string; trimStartMs: number; trimEndMs: number; gain: number },
+    mode: "editor-preview",
+    onStarted?: () => void,
+  ): Promise<void>;
   stopAll(): void;
+  stop(soundId: string): void;
+  stopPreview(soundId?: string): void;
 }
 interface WsLike {
   send(msg: ClientMessage): void;
@@ -145,7 +164,11 @@ export interface VoiceDeps {
     sender: RTCRtpSender,
     opts: MicOpts,
   ): Promise<MediaStreamTrack>;
-  watchSpeaking(analyser: AnalyserNode, cb: (speaking: boolean) => void): () => void;
+  watchSpeaking(
+    analyser: AnalyserNode,
+    cb: (speaking: boolean) => void,
+    opts?: SpeakingOpts,
+  ): () => void;
   // FR-36: builds the soundboard player for one server (Cache-API fetcher bound to serverId + the app
   // graph). Optional — omitted by unit-test harnesses, so playSoundboard is a no-op there.
   createSoundboardPlayer?(serverId: string): SoundboardLike;
@@ -178,6 +201,9 @@ export class VoiceController {
   private micTrackName: string | null = null;
   private userMuted = false;
   private deafened = false;
+  // A `voice.state` frame is valid only after the room has accepted `voice.join`. This keeps the
+  // persistent idle controls as local pre-call preferences instead of sending against no session.
+  private voiceStateReady = false;
   // True once graph.init() has run (voice joined) and false after teardown — gates streamAudioSink().
   private graphReady = false;
   private readonly pulledMics = new Set<string>();
@@ -185,10 +211,6 @@ export class VoiceController {
   // carrying a HIGHER seq means the member re-registered their mic on a new SFU session (rejoin /
   // transport recovery) — the existing pull points at a dead track and must be redone.
   private readonly micSeqs = new Map<string, number>();
-  // userId → pending retry timer for a failed mic pull — cancelled when the member leaves, when a
-  // micSeq bump forces a fresh pull, and on teardown (the old code leaked live timers into the next
-  // session).
-  private readonly micRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // Single-flight guard for the transport-failure auto-recover (one ICE 'failed' can fire on both
   // the publish and pull PCs at once — one rejoin covers both).
   private recovering = false;
@@ -205,6 +227,7 @@ export class VoiceController {
   private unsubStreamAdded: (() => void) | null = null;
   private unsubStreamRemoved: (() => void) | null = null;
   private unsubSoundPlayed: (() => void) | null = null;
+  private unsubSoundStopped: (() => void) | null = null;
   private unsubPublishFailed: (() => void) | null = null;
   private unsubPullFailed: (() => void) | null = null;
 
@@ -250,17 +273,23 @@ export class VoiceController {
       // ① Register presence. The DO authorizes every RTC call from this ack onward; local audio
       // preparation is safe to overlap with it because it does not touch the SFU.
       const ack = this.waitForSelfInVoice(ws, selfId);
-      ws.send({ t: "voice.join" });
+      // Persist only the owning tab/server identity. A replacement document uses it to clear this
+      // non-resumable browser media lifetime before rendering its first room snapshot.
+      markMediaOwner(serverId);
+      ws.send({ t: "voice.join", mediaReadyVersion: 2 });
       const prefs = useMediaStore.getState().deviceSelection;
       const graphReady = (async () => {
         await this.deps.graph.init(prefs.sinkId);
         await this.resumeGraph();
         this.graphReady = true;
-        this.deps.graph.setSoundboardGain(useSettingsStore.getState().volumes.soundboard);
+        this.applyDeafenState();
+        const volumes = useSettingsStore.getState().volumes;
+        this.deps.graph.setSoundboardGain(volumes.soundboardMuted ? 0 : volumes.soundboard);
       })();
       const graphResult = outcome(graphReady);
 
       await ack;
+      this.voiceStateReady = true;
       const preparedGraph = await graphResult;
       if (!preparedGraph.ok) throw preparedGraph.error;
       // Capture starts only after authorization (so a lost ack cannot strand a live mic), but it is
@@ -283,13 +312,15 @@ export class VoiceController {
           const remoteMembers = roomStore(serverId)
             .getState()
             .voice.members.filter((m) => m.userId !== selfId);
-          for (const m of remoteMembers) {
-            this.pulledMics.add(m.userId);
-            this.micSeqs.set(m.userId, m.micSeq ?? 0);
-            // Remote mics are additive: registration may still be racing, so the existing
-            // event-driven micSeq path + bounded retry owns eventual attachment.
-            this.pullMicWithRetry(m.userId, 0);
-          }
+          // v2 explicitly advertises 0 while this person is joining. A positive sequence is the
+          // server's proof that their browser acknowledged a connected PeerConnection. The pull
+          // session serializes the actual SFU mutations internally, while Promise.all observes every
+          // requested mic and surfaces any failed addition before join completes.
+          await Promise.all(
+            remoteMembers
+              .filter((member) => (member.micSeq ?? 0) > 0)
+              .map((member) => this.pullMic(member.userId, member.micSeq ?? 0)),
+          );
         })(),
       );
 
@@ -303,9 +334,12 @@ export class VoiceController {
           }
           if (!captured.ok) throw captured.error;
           const mic = captured.value;
+          // A pre-call mute must take effect before the track is offered to the publish session.
+          mic.enabled = !this.effectiveMuted();
           this.localMic = mic;
           const { trackName } = await publish.publishMic(mic);
           this.micTrackName = trackName;
+          this.applyMuteState();
           this.deps.graph.attachLocalMic(mic);
           this.startSpeaking(selfId, this.deps.graph.getLocalAnalyser());
           this.unsubPublishFailed =
@@ -319,6 +353,10 @@ export class VoiceController {
       if (!received.ok) throw received.error;
       if (!sent.ok) throw sent.error;
 
+      // The server starts the member unmuted. Publish an explicit initial state only when an idle
+      // control changed it, after the graph, local track, and room membership are all ready.
+      if (this.effectiveMuted()) this.sendVoiceState();
+
       this.unsubReconnect = ws.on("hello.ok", () => void this.onReconnect());
       // FR-36: play soundboard broadcasts for EVERY in-voice member, not only those who opened the
       // soundboard panel. The frame is self-contained (trims included) so playback needs no query cache;
@@ -328,7 +366,11 @@ export class VoiceController {
           id: m.soundId,
           trimStartMs: m.trimStartMs,
           trimEndMs: m.trimEndMs,
+          gain: m.gain,
         });
+      });
+      this.unsubSoundStopped = ws.on("sound.stopped", (message) => {
+        this.soundboard?.player.stop(message.soundId);
       });
       useMediaStore.getState().setVoiceStatus("joined");
       this.soundEffectsReady = true;
@@ -341,16 +383,6 @@ export class VoiceController {
         this.streamTrackNames.add(stream.trackName);
       }
       if (opts.announceSelf !== false && !this.deafened) playUiSound("voice.join");
-      // Refresh auto-resume snapshot (per-tab, voiceSession.ts): a rejoin on the SAME server keeps
-      // camOn (the WebcamController re-asserts it right after its own restart); any other join
-      // starts with it off. Written only on join SUCCESS so a failed join never leaves a blob.
-      const prev = loadVoiceSession();
-      saveVoiceSession({
-        serverId,
-        muted: this.userMuted,
-        deafened: this.deafened,
-        camOn: prev !== null && prev.serverId === serverId && prev.camOn,
-      });
     } catch (err) {
       await this.teardown();
       // voice.join may already have registered us in the roster (any later step can be the failure),
@@ -360,7 +392,7 @@ export class VoiceController {
       } catch {
         // Socket not open — the join frame never reached the server, nothing to undo.
       }
-      this.resetState();
+      this.resetSession();
       const m = useMediaStore.getState();
       m.setVoiceStatus("error");
       m.setInVoiceServerId(null);
@@ -376,9 +408,8 @@ export class VoiceController {
     // Reverse teardown FIRST (close sessions/graph while still authorized in voice), THEN voice.leave.
     await this.teardown();
     ws?.send({ t: "voice.leave" });
-    this.resetState();
-    // Explicit leave = user intent — a refresh after this must NOT rejoin.
-    clearVoiceSession();
+    this.resetSession();
+    this.clearVoicePreferences();
     const media = useMediaStore.getState();
     media.setVoiceStatus("idle");
     media.setInVoiceServerId(null);
@@ -387,17 +418,27 @@ export class VoiceController {
     media.clearSpeaking();
   }
 
-  // §6.2 snapshot semantics: a reconnect resnapshots (self dropped from voice server-side) — full
-  // teardown + rejoin, restoring the self mute/deafen flags.
-  private async onReconnect(): Promise<void> {
+  // A reconnect inside the server's voice lease keeps healthy media sessions. If the lease expired
+  // (self absent from the fresh snapshot) or either transport failed, the shared single-flight
+  // recovery path rebuilds and restores mute/deafen state.
+  private onReconnect(): void {
     const serverId = this.serverId;
     if (serverId === null || useMediaStore.getState().voiceStatus !== "joined") return;
-    const wasMuted = this.userMuted;
-    const wasDeafened = this.deafened;
-    await this.teardown();
-    await this.doJoin(serverId, { announceSelf: false });
-    if (wasDeafened) this.setDeafened(true);
-    if (wasMuted) this.setMuted(true);
+    const selfStillInVoice = roomStore(serverId)
+      .getState()
+      .voice.members.some((member) => member.userId === this.selfId());
+    const publishState = this.publish?.state;
+    const pullState = this.pull?.state;
+    const publishHealthy =
+      this.publish !== null &&
+      (publishState === undefined ||
+        publishState === "connected" ||
+        publishState === "renegotiating");
+    const pullHealthy =
+      this.pull !== null &&
+      (pullState === undefined || pullState === "connected" || pullState === "renegotiating");
+    if (selfStillInVoice && publishHealthy && pullHealthy) return;
+    this.recoverMediaSessions();
   }
 
   setMuted(muted: boolean): void {
@@ -405,12 +446,11 @@ export class VoiceController {
     this.applyMuteState();
     this.sendVoiceState();
     useMediaStore.getState().setMuted(this.effectiveMuted());
-    updateVoiceSession({ muted });
   }
 
   setDeafened(deafened: boolean): void {
     this.deafened = deafened;
-    this.deps.graph.setDeafened(deafened);
+    this.applyDeafenState();
     // FR-36 pinned: deafen stops in-flight soundboard audio (and suppresses new plays until undeafened
     // — the play guard checks `this.deafened`). stopAll cuts the live sources via graph.stopSoundboard.
     if (deafened) this.soundboard?.player.stopAll();
@@ -419,13 +459,13 @@ export class VoiceController {
     const media = useMediaStore.getState();
     media.setDeafened(deafened);
     media.setMuted(this.effectiveMuted());
-    updateVoiceSession({ deafened });
   }
 
   // FR-38 soundboard volume: applies the gain (0..2) to the app graph's soundboard node. The panel
   // persists the value to settings.volumes.v1; this only routes it to the live audio graph.
   setSoundboardGain(gain: number): void {
-    this.deps.graph.setSoundboardGain(gain);
+    const muted = useSettingsStore.getState().volumes.soundboardMuted ?? false;
+    this.deps.graph.setSoundboardGain(muted ? 0 : gain);
   }
 
   // FR-36: play a sound locally ONLY when in voice on THIS server and not deafened (non-voice members
@@ -433,17 +473,62 @@ export class VoiceController {
   // is built lazily per voice server; a test harness without the factory makes this a no-op.
   async playSoundboard(
     serverId: string,
-    sound: { id: string; trimStartMs: number; trimEndMs: number },
+    sound: { id: string; trimStartMs: number; trimEndMs: number; gain: number },
   ): Promise<void> {
     const media = useMediaStore.getState();
     if (media.inVoiceServerId !== serverId || media.voiceStatus !== "joined") return;
     if (this.deafened) return;
     const player = this.ensureSoundboard(serverId);
-    if (player) await player.play(sound);
+    if (player) await player.play(sound, "shared");
+  }
+
+  async previewSoundboard(
+    serverId: string,
+    sound: { id: string; trimStartMs: number; trimEndMs: number; gain: number },
+  ): Promise<void> {
+    await this.preparePreviewGraph();
+    const player = this.ensureSoundboard(serverId);
+    if (player === null) return;
+    await player.play(sound, "local-preview");
+  }
+
+  async previewSoundFile(
+    serverId: string,
+    bytes: ArrayBuffer,
+    sound: { trimStartMs: number; trimEndMs: number; gain: number },
+    onStarted?: () => void,
+  ): Promise<void> {
+    await this.preparePreviewGraph();
+    const player = this.ensureSoundboard(serverId);
+    if (player === null) return;
+    player.stopPreview();
+    await player.playBytes(
+      bytes,
+      { id: "sound-editor-preview", ...sound },
+      "editor-preview",
+      onStarted,
+    );
+  }
+
+  stopSoundboardPreview(soundId?: string): void {
+    this.soundboard?.player.stopPreview(soundId);
+  }
+
+  stopSoundboardSound(soundId: string): void {
+    this.soundboard?.player.stop(soundId);
+  }
+
+  private async preparePreviewGraph(): Promise<void> {
+    const prefs = useMediaStore.getState().deviceSelection;
+    await this.deps.graph.init(prefs.sinkId);
+    await this.resumeGraph();
+    const volumes = useSettingsStore.getState().volumes;
+    this.deps.graph.setSoundboardGain(volumes.soundboardMuted ? 0 : volumes.soundboard);
   }
 
   private ensureSoundboard(serverId: string): SoundboardLike | null {
     if (this.soundboard?.serverId === serverId) return this.soundboard.player;
+    this.soundboard?.player.stopPreview();
     const player = this.deps.createSoundboardPlayer?.(serverId);
     this.soundboard = player ? { serverId, player } : null;
     return player ?? null;
@@ -544,13 +629,18 @@ export class VoiceController {
     return this.deafened || this.userMuted;
   }
 
+  private applyDeafenState(): void {
+    if (this.graphReady) this.deps.graph.setDeafened(this.deafened);
+  }
+
   private applyMuteState(): void {
     if (this.publish && this.micTrackName !== null)
       this.publish.setTrackEnabled(this.micTrackName, !this.effectiveMuted());
   }
 
   private sendVoiceState(): void {
-    this.ws?.send({ t: "voice.state", muted: this.effectiveMuted(), deafened: this.deafened });
+    if (!this.voiceStateReady || this.ws === null) return;
+    this.ws.send({ t: "voice.state", muted: this.effectiveMuted(), deafened: this.deafened });
   }
 
   private applyUserVolume(userId: string): void {
@@ -595,22 +685,29 @@ export class VoiceController {
     for (const m of members) {
       if (m.userId === selfId) continue;
       const seq = m.micSeq ?? 0;
+      if (seq === 0) continue;
       if (!this.pulledMics.has(m.userId)) {
-        this.pulledMics.add(m.userId);
-        this.micSeqs.set(m.userId, seq);
-        this.pullMicWithRetry(m.userId, 0);
+        void this.pullMic(m.userId, seq).catch((error: unknown) => {
+          console.error("confirmed mic pull failed; rebuilding media sessions", {
+            userId: m.userId,
+            error,
+          });
+          this.recoverMediaSessions();
+        });
       } else if (this.micSeqs.get(m.userId) !== seq) {
-        // The member's mic re-registered on a NEW SFU session (micSeq bump): the current pull —
-        // live OR still retrying — targets the previous session's track. Close it and pull fresh.
-        this.micSeqs.set(m.userId, seq);
-        this.repullMic(m.userId);
+        void this.repullMic(m.userId, seq).catch((error: unknown) => {
+          console.error("confirmed mic re-pull failed; rebuilding media sessions", {
+            userId: m.userId,
+            error,
+          });
+          this.recoverMediaSessions();
+        });
       }
     }
     for (const id of Array.from(this.pulledMics)) {
       if (ids.has(id)) continue;
       this.pulledMics.delete(id);
       this.micSeqs.delete(id);
-      this.cancelMicRetry(id);
       void this.pull?.removeRemoteTracks([micTrackName(id)]);
       this.deps.graph.detachRemoteMic(id);
       this.stopSpeaking(id);
@@ -618,65 +715,30 @@ export class VoiceController {
     }
   }
 
-  // voice.state announcing a joiner races that joiner's REST publish (§7.1): the mic track may not
-  // be registered yet, so the first pull can 403 (pull_denied) — or reach the SFU before the
-  // publisher's track exists there and come back as a per-track error (PullTracksError). Retry with
-  // capped exponential backoff (500 ms · 2ⁿ, cap 5 s, ≈2.3 min total — a slow joiner's permission
-  // prompt or a cold 24 MB DeepFilterNet fetch easily outlives the old flat 10 × 500 ms budget); on
-  // final failure unmark the id so a later voice.state — now guaranteed by the DO's mic-registration
-  // broadcast — retriggers the pull instead of leaving the member permanently silent.
-  private pullMicWithRetry(id: string, attempt: number): void {
+  // Only a positive micSeq can enter this path: it was committed after the publisher's browser was
+  // connected, so one exact pull is sufficient. A failure is a real session fault, not a timing race.
+  private async pullMic(id: string, seq: number): Promise<void> {
     const pull = this.pull;
     if (pull === null) return;
-    pull.addRemoteTracks([{ trackName: micTrackName(id) }]).catch((err: unknown) => {
-      // Every failed attempt is visible — a silent retry loop hid the Task-1 asymmetric-deafness
-      // class for weeks (nothing in any log while a member was unhearable).
-      console.warn(`[voice] mic pull failed (user ${id}, attempt ${attempt})`, err);
-      if (this.pull !== pull) return; // session replaced (rejoin) — its own pulls take over
-      if (!this.pulledMics.has(id)) return; // member already left — the pull is moot
-      if (attempt >= 29) {
-        this.pulledMics.delete(id);
-        this.micSeqs.delete(id);
-        return;
-      }
-      const timer = setTimeout(
-        () => {
-          this.micRetryTimers.delete(id);
-          if (this.pull === pull && this.pulledMics.has(id)) this.pullMicWithRetry(id, attempt + 1);
-        },
-        Math.min(500 * 2 ** attempt, 5_000),
-      );
-      this.cancelMicRetry(id);
-      this.micRetryTimers.set(id, timer);
-    });
-  }
-
-  private cancelMicRetry(id: string): void {
-    const timer = this.micRetryTimers.get(id);
-    if (timer !== undefined) {
-      clearTimeout(timer);
-      this.micRetryTimers.delete(id);
-    }
+    await pull.addRemoteTracks([{ trackName: micTrackName(id) }]);
+    if (this.pull !== pull || !this.voiceMemberIds.has(id)) return;
+    this.pulledMics.add(id);
+    this.micSeqs.set(id, seq);
   }
 
   // micSeq bump: tear the old pull down (graph detach + tracks/close) and pull the mic fresh. The
   // remove is queued on the SAME pull session as any in-flight add, so it always closes what the
-  // add mapped — then the new pull negotiates a new mid. The fresh pull rides the normal retry (the
-  // bump broadcast can arrive before the publisher's SFU registration answered — §7.1 order).
-  private repullMic(id: string): void {
-    this.cancelMicRetry(id);
+  // add mapped — then the committed generation negotiates a new mid exactly once.
+  private async repullMic(id: string, seq: number): Promise<void> {
     this.deps.graph.detachRemoteMic(id);
     this.stopSpeaking(id);
     useMediaStore.getState().setSpeaking(id, false);
     const pull = this.pull;
     if (pull === null) return;
-    pull
-      .removeRemoteTracks([micTrackName(id)])
-      .catch(() => undefined)
-      .then(() => {
-        if (this.pull === pull && this.pulledMics.has(id)) this.pullMicWithRetry(id, 0);
-      })
-      .catch(() => undefined);
+    await pull.removeRemoteTracks([micTrackName(id)]);
+    this.pulledMics.delete(id);
+    this.micSeqs.delete(id);
+    if (this.pull === pull && this.voiceMemberIds.has(id)) await this.pullMic(id, seq);
   }
 
   // Connectivity is already back when the recovered-transport signal fires, so rebuild immediately.
@@ -689,12 +751,8 @@ export class VoiceController {
     void (async () => {
       try {
         if (useMediaStore.getState().voiceStatus !== "joined") return;
-        const wasMuted = this.userMuted;
-        const wasDeafened = this.deafened;
         await this.teardown();
         await this.doJoin(serverId, { announceSelf: false });
-        if (wasDeafened) this.setDeafened(true);
-        if (wasMuted) this.setMuted(true);
       } catch {
         // doJoin already surfaced the failure (voiceStatus 'error', ghost-leave sent).
       } finally {
@@ -704,33 +762,48 @@ export class VoiceController {
   }
 
   private startSpeaking(userId: string, analyser: AnalyserNode | null): void {
-    if (!analyser) return;
+    if (!analyser) {
+      clearVoiceLevel(userId);
+      return;
+    }
     this.stopSpeaking(userId);
     this.speakingSubs.set(
       userId,
-      this.deps.watchSpeaking(analyser, (sp) => useMediaStore.getState().setSpeaking(userId, sp)),
+      this.deps.watchSpeaking(analyser, (sp) => useMediaStore.getState().setSpeaking(userId, sp), {
+        onLevel: (level) => setVoiceLevel(userId, level),
+      }),
     );
   }
 
   private stopSpeaking(userId: string): void {
     this.speakingSubs.get(userId)?.();
     this.speakingSubs.delete(userId);
+    clearVoiceLevel(userId);
   }
 
   private waitForSelfInVoice(ws: WsLike, selfId: string): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const unsub = ws.on("voice.state", (m) => {
         if (m.voice.members.some((mem) => mem.userId === selfId)) {
           unsub();
+          unsubError();
           resolve();
         }
+      });
+      const unsubError = ws.on("error", (m) => {
+        if (m.code !== "voice_client_update_required") return;
+        unsub();
+        unsubError();
+        reject(new Error("A Tavern update is required before joining voice."));
       });
     });
   }
 
   private async teardown(): Promise<void> {
+    this.voiceStateReady = false;
     // FR-36: cut any in-flight soundboard audio on voice leave, then drop the per-server player.
     this.soundboard?.player.stopAll();
+    this.soundboard?.player.stopPreview();
     this.soundboard = null;
     this.unsubVoiceState?.();
     this.unsubReconnect?.();
@@ -738,6 +811,7 @@ export class VoiceController {
     this.unsubStreamAdded?.();
     this.unsubStreamRemoved?.();
     this.unsubSoundPlayed?.();
+    this.unsubSoundStopped?.();
     this.unsubPublishFailed?.();
     this.unsubPullFailed?.();
     this.unsubVoiceState = null;
@@ -746,12 +820,12 @@ export class VoiceController {
     this.unsubStreamAdded = null;
     this.unsubStreamRemoved = null;
     this.unsubSoundPlayed = null;
+    this.unsubSoundStopped = null;
     this.unsubPublishFailed = null;
     this.unsubPullFailed = null;
     for (const stop of this.speakingSubs.values()) stop();
     this.speakingSubs.clear();
-    for (const timer of this.micRetryTimers.values()) clearTimeout(timer);
-    this.micRetryTimers.clear();
+    clearVoiceLevels();
     for (const id of this.pulledMics) this.deps.graph.detachRemoteMic(id);
     this.pulledMics.clear();
     this.micSeqs.clear();
@@ -769,7 +843,7 @@ export class VoiceController {
     this.micTrackName = null;
   }
 
-  // S8.2: watched-stream tiles route their audio (attach) + volume (setStreamGain) through the SAME
+  // S8.2: watched-stream tiles route their audio (attach) + volume (setStreamVolume) through the SAME
   // AudioGraph as voice (one AudioContext, §7.3). Returns the graph as a narrow sink while voice is
   // joined, else null (no context yet). A watcher is always in voice — pulling a stream needs an SFU
   // session, which S7.1 authorizes only for in-voice users.
@@ -813,9 +887,14 @@ export class VoiceController {
     return this.publish?.outboundVideoStats?.(trackName) ?? Promise.resolve([]);
   }
 
-  private resetState(): void {
+  private resetSession(): void {
+    if (this.serverId !== null) clearMediaOwner(this.serverId);
     this.ws = null;
     this.serverId = null;
+    this.voiceStateReady = false;
+  }
+
+  private clearVoicePreferences(): void {
     this.userMuted = false;
     this.deafened = false;
   }

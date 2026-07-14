@@ -4,6 +4,16 @@ import { LIMITS, MeResponse, USER_COLORS } from "@tavern/shared";
 import { notifyJoinedServers } from "../src/lib/fanout";
 
 const BASE = "https://tavern.test";
+const VOICE_AVATAR = {
+  version: 2,
+  skinTone: "medium-deep",
+  hairColor: "ginger",
+  hairStyle: "wavy",
+  eyeColor: "green",
+  glassesStyle: "aviator",
+  facialHairStyle: "mustache",
+  outfitColor: "#22d3ee",
+} as const;
 
 // Invariant helper (no non-null `!` per §9.1): narrows a nullable to its value or fails the test.
 function must<T>(value: T | null | undefined, message: string): T {
@@ -202,6 +212,67 @@ describe("FR-04 color", () => {
       expect(status).toBe(400);
       expect(body).toEqual({ error: "bad_request" });
     }
+  });
+});
+
+describe("voice avatar profile", () => {
+  it("persists a complete recipe, returns it at boot, and clears back to automatic", async () => {
+    const token = await session("voiceavatar");
+    const saved = await patchProfile(token, { voiceAvatar: VOICE_AVATAR });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toMatchObject({ voiceAvatar: VOICE_AVATAR });
+
+    const boot = MeResponse.parse(await (await authed(token, "/api/me")).json());
+    expect(boot.user.voiceAvatar).toEqual(VOICE_AVATAR);
+    const stored = await env.DB.prepare("SELECT voice_avatar FROM user WHERE id = ?")
+      .bind(boot.user.userId)
+      .first<{ voice_avatar: string | null }>();
+    expect(stored?.voice_avatar).toBe(JSON.stringify(VOICE_AVATAR));
+
+    const cleared = await patchProfile(token, { voiceAvatar: null });
+    expect(cleared.status).toBe(200);
+    expect(await cleared.json()).not.toHaveProperty("voiceAvatar");
+    const afterClear = MeResponse.parse(await (await authed(token, "/api/me")).json());
+    expect(afterClear.user.voiceAvatar).toBeUndefined();
+  });
+
+  it("rejects partial and unknown avatar recipes at the HTTP boundary", async () => {
+    const token = await session("voiceavatarbad");
+    const [partial, unknown] = await Promise.all([
+      patchProfile(token, { voiceAvatar: { version: 2, skinTone: "deep" } }),
+      patchProfile(token, { voiceAvatar: { ...VOICE_AVATAR, wings: true } }),
+    ]);
+    expect(partial.status).toBe(400);
+    expect(unknown.status).toBe(400);
+  });
+
+  it("normalizes a stored version-one recipe without changing the user's appearance", async () => {
+    const token = await session("voiceavatarlegacy");
+    const userId = await meUserId(token);
+    const legacy = {
+      version: 1,
+      skinTone: "deep",
+      hairColor: "blonde",
+      hairStyle: "bun",
+      glasses: true,
+      beard: false,
+      outfitColor: "#f87171",
+    } as const;
+    await env.DB.prepare("UPDATE user SET voice_avatar = ? WHERE id = ?")
+      .bind(JSON.stringify(legacy), userId)
+      .run();
+
+    const boot = MeResponse.parse(await (await authed(token, "/api/me")).json());
+    expect(boot.user.voiceAvatar).toEqual({
+      version: 2,
+      skinTone: "deep",
+      hairColor: "blonde",
+      hairStyle: "bun",
+      eyeColor: "dark-brown",
+      glassesStyle: "round",
+      facialHairStyle: "none",
+      outfitColor: "#f87171",
+    });
   });
 });
 
