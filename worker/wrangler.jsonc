@@ -83,7 +83,9 @@
         }
       ],
       "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "tavern-media" }],
-      "images": { "binding": "IMAGES", "remote": true },
+      // CI and browser tests must stay credential-free. Animation fidelity is covered by the
+      // hermetic Images-binding unit tests; the e2e stack only needs a local binding to boot.
+      "images": { "binding": "IMAGES", "remote": false },
       "analytics_engine_datasets": [
         { "binding": "QOE_ANALYTICS", "dataset": "tavern_qoe_v1" }
       ],
