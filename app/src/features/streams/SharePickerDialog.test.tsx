@@ -19,9 +19,31 @@ const platformMock = vi.hoisted(() => ({
 }));
 vi.mock("@/platform/types", () => ({ platform: platformMock }));
 
+const rtcMock = vi.hoisted(() => {
+  const state: { capabilities: RTCRtpCapabilities | null } = {
+    capabilities: {
+      codecs: [
+        { mimeType: "video/VP8", clockRate: 90_000 },
+        { mimeType: "video/H264", clockRate: 90_000 },
+        { mimeType: "video/VP9", clockRate: 90_000 },
+        { mimeType: "video/AV1", clockRate: 90_000 },
+        { mimeType: "video/rtx", clockRate: 90_000 },
+      ],
+      headerExtensions: [],
+    },
+  };
+  return { state, senderCapabilities: vi.fn(() => state.capabilities) };
+});
+vi.mock("@/media/ports", () => ({
+  browserRtcPort: { senderCapabilities: rtcMock.senderCapabilities },
+}));
+
 import { SharePickerDialog } from "@/features/streams/SharePickerDialog";
 
-function renderPicker(initialPreset?: "1080p30-50"): { onStart: ReturnType<typeof vi.fn> } {
+function renderPicker(
+  initialPreset?: "1080p30-50",
+  initialCodec?: "vp8" | "h264" | "vp9" | "av1",
+): { onStart: ReturnType<typeof vi.fn> } {
   const onStart = vi.fn();
   render(
     <SharePickerDialog
@@ -29,6 +51,7 @@ function renderPicker(initialPreset?: "1080p30-50"): { onStart: ReturnType<typeo
       onOpenChange={vi.fn()}
       onStart={onStart}
       {...(initialPreset === undefined ? {} : { initialPreset })}
+      {...(initialCodec === undefined ? {} : { initialCodec })}
     />,
   );
   return { onStart };
@@ -42,6 +65,16 @@ beforeEach(() => {
   platformMock.capture.selectSource.mockResolvedValue(undefined);
   platformMock.capture.loopbackAudioSupported.mockResolvedValue(true);
   platformMock.capture.screenAccessStatus.mockResolvedValue("granted");
+  rtcMock.state.capabilities = {
+    codecs: [
+      { mimeType: "video/VP8", clockRate: 90_000 },
+      { mimeType: "video/H264", clockRate: 90_000 },
+      { mimeType: "video/VP9", clockRate: 90_000 },
+      { mimeType: "video/AV1", clockRate: 90_000 },
+      { mimeType: "video/rtx", clockRate: 90_000 },
+    ],
+    headerExtensions: [],
+  };
 });
 
 afterEach(() => {
@@ -82,6 +115,41 @@ describe("FR-28 share picker", () => {
     expect(onStart).toHaveBeenCalledWith(
       expect.objectContaining({ preset: "1080p30-50", sourceId: null }),
     );
+  });
+
+  it("defaults to VP8 and sends the user's supported codec selection", async () => {
+    platformMock.kind = "web";
+    platformMock.os = "web";
+    const { onStart } = renderPicker();
+
+    const trigger = await screen.findByTestId("share-codec");
+    expect(trigger.textContent).toContain("VP8");
+    fireEvent.click(trigger);
+    const av1 = await screen.findByTestId("codec-option-av1");
+    // Base UI commits a mouse selection only after pointerdown arms the item.
+    fireEvent.pointerDown(av1);
+    fireEvent.click(av1);
+    await waitFor(() => expect(trigger.textContent).toContain("AV1"));
+    fireEvent.click(screen.getByTestId("share-start"));
+
+    expect(onStart).toHaveBeenCalledWith(
+      expect.objectContaining({ codec: "av1", preset: "1080p30", sourceId: null }),
+    );
+  });
+
+  it("disables a codec the sender does not advertise instead of silently falling back", async () => {
+    platformMock.kind = "web";
+    platformMock.os = "web";
+    rtcMock.state.capabilities = {
+      codecs: [{ mimeType: "video/H264", clockRate: 90_000 }],
+      headerExtensions: [],
+    };
+    const { onStart } = renderPicker(undefined, "av1");
+
+    expect(await screen.findByTestId("share-codec-unavailable")).not.toBeNull();
+    expect(screen.getByTestId("share-start").hasAttribute("disabled")).toBe(true);
+    fireEvent.click(screen.getByTestId("share-start"));
+    expect(onStart).not.toHaveBeenCalled();
   });
 
   it("desktop always requests audio and does not expose an audio switch", async () => {

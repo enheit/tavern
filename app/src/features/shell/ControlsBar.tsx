@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
 import { ApiError } from "@/lib/apiClient";
 import { cn } from "@/lib/utils";
+import { DEFAULT_SCREEN_CODEC } from "@/media/rtc/codecs";
+import type { ScreenCodec } from "@/media/rtc/codecs";
 import { RecordButton } from "@/features/recordings/RecordButton";
 import { SharePickerDialog } from "@/features/streams/SharePickerDialog";
 import { useScreenShare } from "@/features/streams/useScreenShare";
@@ -66,6 +68,7 @@ export function ControlsBar({ serverId }: { serverId: string }) {
     setPreset,
     replaceCapture,
     captureCeiling,
+    codec: activeCodec,
   } = useScreenShare();
   const { active: camming, start: startCam, stop: stopCam } = useWebcam();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -73,6 +76,7 @@ export function ControlsBar({ serverId }: { serverId: string }) {
   const [fps, setFps] = useState(30);
   const [tier, setTier] = useState<DataTier>(100);
   const [pickerPreset, setPickerPreset] = useState<PresetId>(DEFAULT_SCREEN_PRESET);
+  const [pickerCodec, setPickerCodec] = useState<ScreenCodec>(DEFAULT_SCREEN_CODEC);
   const [pickerMode, setPickerMode] = useState<"start" | "upgrade">("start");
 
   const reportShareFailure = (err: unknown): void => {
@@ -96,6 +100,7 @@ export function ControlsBar({ serverId }: { serverId: string }) {
     }
     setPickerMode("start");
     setPickerPreset(DEFAULT_SCREEN_PRESET);
+    setPickerCodec(DEFAULT_SCREEN_CODEC);
     setPickerOpen(true);
   };
 
@@ -109,6 +114,7 @@ export function ControlsBar({ serverId }: { serverId: string }) {
     }
     setPickerMode("upgrade");
     setPickerPreset(next);
+    setPickerCodec(activeCodec ?? DEFAULT_SCREEN_CODEC);
     setPickerOpen(true);
   };
 
@@ -231,10 +237,16 @@ export function ControlsBar({ serverId }: { serverId: string }) {
         open={pickerOpen}
         onOpenChange={setPickerOpen}
         initialPreset={pickerPreset}
+        initialCodec={pickerCodec}
+        codecLocked={pickerMode === "upgrade"}
         onStart={(sel) => {
           setPickerOpen(false);
           const operation = pickerMode === "upgrade" ? replaceCapture(sel) : startShare(sel);
-          operation.then(() => syncControls(sel.preset)).catch(reportShareFailure);
+          operation
+            .then(() => {
+              syncControls(sel.preset);
+            })
+            .catch(reportShareFailure);
         }}
       />
     </div>

@@ -28,9 +28,16 @@ describe("trackName grammar (§7.1)", () => {
 describe("browser ports (§7.2 constructor site)", () => {
   it("browserRtcPort constructs an RTCPeerConnection with the given config", () => {
     const ctor = vi.fn();
+    const capabilities = {
+      codecs: [{ mimeType: "video/VP8", clockRate: 90_000 }],
+      headerExtensions: [],
+    };
     vi.stubGlobal("RTCPeerConnection", ctor);
+    vi.stubGlobal("RTCRtpSender", { getCapabilities: vi.fn(() => capabilities) });
     browserRtcPort.createPeerConnection({ iceServers: [], bundlePolicy: "max-bundle" });
     expect(ctor).toHaveBeenCalledWith({ iceServers: [], bundlePolicy: "max-bundle" });
+    expect(browserRtcPort.senderCapabilities("video")).toBe(capabilities);
+    expect(RTCRtpSender.getCapabilities).toHaveBeenCalledWith("video");
   });
 
   it("browserAudioPort constructs a 48 kHz AudioContext and a muted-flow audio element", () => {

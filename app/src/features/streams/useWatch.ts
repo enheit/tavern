@@ -1,11 +1,9 @@
-import { RtcWatchDeliveryResponse } from "@tavern/shared";
 import type {
   ClientMessage,
   ErrorCode,
   ScreenRid,
   ServerMessage,
   StreamInfo,
-  WatchDelivery,
 } from "@tavern/shared";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { toast } from "sonner";
@@ -13,7 +11,6 @@ import { getVoiceController } from "@/features/voice/voiceController";
 import type { StreamAudioSink } from "@/features/voice/voiceController";
 import { ApiError, apiClient } from "@/lib/apiClient";
 import { errorMessage } from "@/lib/errorMessage";
-import { focusStore } from "@/lib/focusState";
 import {
   clearWatchPullState,
   clearWatchVideoStats,
@@ -30,10 +27,7 @@ import { m } from "@/paraglide/messages.js";
 import { useServersStore } from "@/stores/servers";
 import { useSettingsStore } from "@/stores/settings";
 
-// A logical watch is independent from its current media-saving delivery. `audio` keeps the stream's
-// audio companion and the server-side watch grant alive while closing only the remote video track.
 export type WatchState = "idle" | "connecting" | "watching";
-export type WatchMediaDelivery = "high" | "low" | "audio";
 
 interface PullLike {
   connect(): Promise<void>;
@@ -41,8 +35,6 @@ interface PullLike {
     cb: (trackName: string, track: MediaStreamTrack, stream: MediaStream) => void,
   ): () => void;
   addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: ScreenRid }>): Promise<void>;
-  removeRemoteTracks(trackNames: string[]): Promise<void>;
-  setLayer(trackName: string, rid: ScreenRid): Promise<void>;
   inboundVideoStats?(): Promise<InboundVideoStats>;
   close(): Promise<void>;
 }
@@ -61,7 +53,6 @@ export interface WatchDeps {
   sink(): StreamAudioSink | null;
   activeServerId(): string | null;
   joinVoice(serverId: string): Promise<void>;
-  setDelivery(serverId: string, trackName: string, delivery: WatchDelivery): Promise<void>;
 }
 
 // Non-React orchestrator for one watched stream. Its lifetime is owned by the server-scoped registry
@@ -72,10 +63,6 @@ export class WatchController {
   private readonly deps: WatchDeps;
   private stateValue: WatchState = "idle";
   private mediaStreamValue: MediaStream | null = null;
-  private deliveryValue: WatchMediaDelivery = "high";
-  private deliveryTransitioningValue = false;
-  private documentVisibleValue = true;
-  private theaterVisibleValue = true;
   private pull: PullLike | null = null;
   private serverId: string | null = null;
   private readonly listeners = new Set<() => void>();
@@ -86,8 +73,6 @@ export class WatchController {
   private watchStarted = false;
   private watchAttempt = 0;
   private stopQualityMonitor: (() => void) | null = null;
-  private deliveryQueue: Promise<void> = Promise.resolve();
-  private deliveryRevision = 0;
 
   constructor(stream: StreamInfo, deps: WatchDeps) {
     this.stream = stream;
@@ -102,28 +87,8 @@ export class WatchController {
     return this.mediaStreamValue;
   }
 
-  get delivery(): WatchMediaDelivery {
-    return this.deliveryValue;
-  }
-
-  get deliveryTransitioning(): boolean {
-    return this.deliveryTransitioningValue;
-  }
-
   updateStream(stream: StreamInfo): void {
     if (stream.trackName === this.stream.trackName) this.stream = stream;
-  }
-
-  setDocumentVisible(visible: boolean): void {
-    if (this.documentVisibleValue === visible) return;
-    this.documentVisibleValue = visible;
-    this.requestDeliveryReconcile();
-  }
-
-  setTheaterVisible(visible: boolean): void {
-    if (this.theaterVisibleValue === visible) return;
-    this.theaterVisibleValue = visible;
-    this.requestDeliveryReconcile();
   }
 
   subscribe(cb: () => void): () => void {
@@ -153,18 +118,12 @@ export class WatchController {
     return this.stream.trackName.replace(/^screen:/, "screenAudio:");
   }
 
-  private desiredDelivery(): WatchMediaDelivery {
-    if (this.documentVisibleValue && this.theaterVisibleValue) return "high";
-    return this.stream.hasAudio ? "audio" : "low";
-  }
-
   async watch(): Promise<void> {
     if (this.stateValue !== "idle") return;
     const serverId = this.deps.activeServerId();
     if (serverId === null) return;
     const attempt = ++this.watchAttempt;
     this.serverId = serverId;
-    this.deliveryValue = "high";
     this.setState("connecting");
 
     try {
@@ -220,8 +179,13 @@ export class WatchController {
           framesPerSecond: null,
         }),
     );
+    // Screen publishers have exactly one encoding, so requesting a simulcast rid would reintroduce
+    // an SFU quality decision that does not belong in this path. Webcam remains explicitly pinned to
+    // its high layer because it still uses simulcast.
     const tracks: Array<{ trackName: string; preferredRid?: ScreenRid }> = [
-      { trackName: this.stream.trackName, preferredRid: "h" },
+      this.stream.kind === "webcam"
+        ? { trackName: this.stream.trackName, preferredRid: "h" }
+        : { trackName: this.stream.trackName },
     ];
     if (this.stream.hasAudio) tracks.push({ trackName: this.audioTrackName() });
     try {
@@ -230,7 +194,6 @@ export class WatchController {
       if (this.pull !== pull || this.stateValue !== "connecting") return;
       this.startQualityMonitor(pull);
       this.setState("watching");
-      this.requestDeliveryReconcile();
     } catch (err) {
       if (this.pull !== pull || this.stateValue !== "connecting") return;
       this.failGrant(err instanceof ApiError ? err.code : "pull_denied");
@@ -269,96 +232,6 @@ export class WatchController {
     if (level !== undefined) sink.setStreamVolume(key, level);
   }
 
-  private requestDeliveryReconcile(): void {
-    if (this.stateValue !== "watching") return;
-    const revision = ++this.deliveryRevision;
-    if (!this.deliveryTransitioningValue) {
-      this.deliveryTransitioningValue = true;
-      this.notify();
-    }
-    const operation = this.deliveryQueue.then(() => this.reconcileDelivery());
-    this.deliveryQueue = operation.then(
-      () => undefined,
-      () => undefined,
-    );
-    void operation.then(
-      () => {
-        if (revision !== this.deliveryRevision) return;
-        this.deliveryTransitioningValue = false;
-        this.notify();
-      },
-      (err: unknown) => {
-        if (revision !== this.deliveryRevision || this.stateValue === "idle") return;
-        console.error("Watch delivery transition failed", err);
-        this.deliveryTransitioningValue = false;
-        this.notify();
-        toast.error(m.streams_delivery_failed());
-      },
-    );
-  }
-
-  private isCurrent(pull: PullLike, serverId: string): boolean {
-    return this.pull === pull && this.serverId === serverId && this.stateValue === "watching";
-  }
-
-  private async reconcileDelivery(): Promise<void> {
-    const pull = this.pull;
-    const serverId = this.serverId;
-    if (pull === null || serverId === null || this.stateValue !== "watching") return;
-    const desired = this.desiredDelivery();
-    const current = this.deliveryValue;
-    if (desired === current) return;
-
-    if (desired === "audio") {
-      await pull.removeRemoteTracks([this.stream.trackName]);
-      if (!this.isCurrent(pull, serverId)) return;
-      try {
-        await this.deps.setDelivery(serverId, this.stream.trackName, "audio");
-      } catch (err) {
-        // The server still considers this a video watch. Restore the exact prior video layer so local
-        // media and durable accounting remain aligned before surfacing the failure.
-        await pull.addRemoteTracks([
-          { trackName: this.stream.trackName, preferredRid: current === "low" ? "l" : "h" },
-        ]);
-        throw err;
-      }
-      if (!this.isCurrent(pull, serverId)) return;
-      this.stopVideoQualityMonitor();
-      this.mediaStreamValue = null;
-      this.deliveryValue = "audio";
-      this.notify();
-      return;
-    }
-
-    if (current === "audio") {
-      await this.deps.setDelivery(serverId, this.stream.trackName, "video");
-      if (!this.isCurrent(pull, serverId)) return;
-      try {
-        await pull.addRemoteTracks([
-          { trackName: this.stream.trackName, preferredRid: desired === "low" ? "l" : "h" },
-        ]);
-      } catch (err) {
-        try {
-          await this.deps.setDelivery(serverId, this.stream.trackName, "audio");
-        } catch (rollbackErr) {
-          console.error("Video restore failed before delivery rollback also failed", err);
-          throw new Error("Video restore and delivery rollback failed", { cause: rollbackErr });
-        }
-        throw err;
-      }
-      if (!this.isCurrent(pull, serverId)) return;
-      this.deliveryValue = desired;
-      this.startQualityMonitor(pull);
-      this.notify();
-      return;
-    }
-
-    await pull.setLayer(this.stream.trackName, desired === "low" ? "l" : "h");
-    if (!this.isCurrent(pull, serverId)) return;
-    this.deliveryValue = desired;
-    this.notify();
-  }
-
   private failGrant(code: ErrorCode): void {
     toast.error(code === "cost_cap" ? m.cost_cap_toast() : errorMessage(code));
     this.finish();
@@ -372,19 +245,8 @@ export class WatchController {
     if (this.stateValue !== "idle") this.finish();
   }
 
-  setLayer(rid: ScreenRid): void {
-    const operation = this.pull?.setLayer(this.stream.trackName, rid);
-    if (operation !== undefined) {
-      void operation.catch((err: unknown) => {
-        console.error("Manual watch layer switch failed", err);
-        toast.error(m.streams_delivery_failed());
-      });
-    }
-  }
-
   private finish(): void {
     this.watchAttempt += 1;
-    this.deliveryRevision += 1;
     const serverId = this.serverId;
     this.unsubTrack?.();
     this.unsubRemoved?.();
@@ -404,8 +266,6 @@ export class WatchController {
     this.pull = null;
     this.mediaStreamValue = null;
     this.serverId = null;
-    this.deliveryValue = "high";
-    this.deliveryTransitioningValue = false;
     if (serverId !== null && this.watchStarted) {
       try {
         this.deps.wsFor(serverId).send({ t: "watch.stop", trackName: this.stream.trackName });
@@ -427,12 +287,6 @@ function defaultWatchDeps(): WatchDeps {
     sink: () => getVoiceController().streamAudioSink(),
     activeServerId: () => useServersStore.getState().activeServerId,
     joinVoice: (serverId) => getVoiceController().join(serverId),
-    setDelivery: async (serverId, trackName, delivery) => {
-      await apiClient.put(`/api/rtc/${serverId}/watch/delivery`, RtcWatchDeliveryResponse, {
-        trackName,
-        delivery,
-      });
-    },
   };
 }
 
@@ -443,15 +297,9 @@ interface WatchEntry {
 }
 
 const watchRegistry = new Map<string, WatchEntry>();
-const theaterTrackByServer = new Map<string, string>();
 
 function watchKey(serverId: string, trackName: string): string {
   return `${serverId}\u0000${trackName}`;
-}
-
-function theaterVisibleFor(serverId: string, trackName: string): boolean {
-  const theaterTrack = theaterTrackByServer.get(serverId);
-  return theaterTrack === undefined || theaterTrack === trackName;
 }
 
 function entryFor(serverId: string, stream: StreamInfo): WatchEntry {
@@ -462,21 +310,10 @@ function entryFor(serverId: string, stream: StreamInfo): WatchEntry {
     return existing;
   }
   const controller = new WatchController(stream, defaultWatchDeps());
-  controller.setDocumentVisible(focusStore.getState().visible);
-  controller.setTheaterVisible(theaterVisibleFor(serverId, stream.trackName));
   const created = { serverId, trackName: stream.trackName, controller };
   watchRegistry.set(key, created);
   return created;
 }
-
-// Page visibility is reliable and preserves the two-monitor case: losing keyboard focus while Tavern
-// remains visible does not change delivery. Hidden/minimized pages enter saver mode without polling.
-focusStore.subscribe((state, previous) => {
-  if (state.visible === previous.visible) return;
-  for (const entry of watchRegistry.values()) {
-    entry.controller.setDocumentVisible(state.visible);
-  }
-});
 
 // Switching rooms/logging out is a real lifecycle boundary. Stop those sessions explicitly; tile
 // reparenting and stream-tab layout changes never touch this path.
@@ -487,16 +324,6 @@ useServersStore.subscribe((state, previous) => {
   }
 });
 
-export function setWatchTheaterFullscreen(serverId: string, trackName: string | null): void {
-  if (trackName === null) theaterTrackByServer.delete(serverId);
-  else theaterTrackByServer.set(serverId, trackName);
-  for (const entry of watchRegistry.values()) {
-    if (entry.serverId === serverId) {
-      entry.controller.setTheaterVisible(trackName === null || entry.trackName === trackName);
-    }
-  }
-}
-
 export function isWatchingTrack(trackName: string): boolean {
   const serverId = useServersStore.getState().activeServerId;
   if (serverId === null) return false;
@@ -506,17 +333,13 @@ export function isWatchingTrack(trackName: string): boolean {
 export function resetWatchRegistry(): void {
   for (const entry of watchRegistry.values()) entry.controller.unwatch();
   watchRegistry.clear();
-  theaterTrackByServer.clear();
 }
 
 export function useWatch(stream: StreamInfo): {
   state: WatchState;
   mediaStream: MediaStream | null;
-  delivery: WatchMediaDelivery;
-  deliveryTransitioning: boolean;
   watch(): void;
   unwatch(): void;
-  setLayer(rid: ScreenRid): void;
 } {
   const serverId = useServersStore((state) => state.activeServerId) ?? "";
   const entry = useMemo(() => entryFor(serverId, stream), [serverId, stream]);
@@ -526,15 +349,9 @@ export function useWatch(stream: StreamInfo): {
   const subscribe = useCallback((cb: () => void) => controller.subscribe(cb), [controller]);
   const state = useSyncExternalStore(subscribe, () => controller.state);
   const mediaStream = useSyncExternalStore(subscribe, () => controller.mediaStream);
-  const delivery = useSyncExternalStore(subscribe, () => controller.delivery);
-  const deliveryTransitioning = useSyncExternalStore(
-    subscribe,
-    () => controller.deliveryTransitioning,
-  );
 
   const watch = useCallback(() => void controller.watch(), [controller]);
   const unwatch = useCallback(() => controller.unwatch(), [controller]);
-  const setLayer = useCallback((rid: ScreenRid) => controller.setLayer(rid), [controller]);
 
-  return { state, mediaStream, delivery, deliveryTransitioning, watch, unwatch, setLayer };
+  return { state, mediaStream, watch, unwatch };
 }

@@ -15,11 +15,8 @@ import { resetQualityMonitoringForTests, useQualityStore } from "@/media/quality
 const watchMock = vi.hoisted(() => ({
   state: "watching" as "idle" | "connecting" | "watching",
   mediaStream: null as MediaStream | null,
-  delivery: "high" as "high" | "low" | "audio",
-  deliveryTransitioning: false,
   watch: vi.fn(),
   unwatch: vi.fn(),
-  setLayer: vi.fn(),
 }));
 vi.mock("@/features/streams/useWatch", () => ({ useWatch: () => watchMock }));
 
@@ -64,6 +61,22 @@ function makeStream(over: Partial<StreamInfo> = {}): StreamInfo {
   };
 }
 
+function seedStreamStats(trackName: string): void {
+  useQualityStore.getState().setSnapshot(trackName, {
+    role: "viewer",
+    health: "network_limited",
+    limitation: "bandwidth",
+    contentMode: "motion",
+    width: 1920,
+    height: 1080,
+    fps: 46.4,
+    targetFps: 60,
+    bitrateKbps: 4200,
+    rid: null,
+    codec: "VP8",
+  });
+}
+
 // FR-31 keeps the tile scroll gesture alongside the restored slider. Middle-click = reset to 0.
 function middleClick(el: Element): void {
   act(() => {
@@ -84,8 +97,6 @@ function setSlider(streamKey: string, percent: number): void {
 beforeEach(() => {
   watchMock.state = "watching";
   watchMock.mediaStream = null;
-  watchMock.delivery = "high";
-  watchMock.deliveryTransitioning = false;
   previewMock.url = null;
   vi.clearAllMocks();
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
@@ -208,7 +219,7 @@ describe("compact focus-strip controls", () => {
 
     expect(screen.getByTestId(`stream-watch-${stream.trackName}`).textContent).toBe("Watch");
     expect(screen.queryByTestId(`stream-fullscreen-${stream.trackName}`)).toBeNull();
-    expect(screen.queryByTestId(`stream-quality-${stream.trackName}`)).toBeNull();
+    expect(screen.queryByTestId(`stream-stats-${stream.trackName}`)).toBeNull();
   });
 
   it("shows a direct Stop watching action for a compact live tile", () => {
@@ -223,30 +234,35 @@ describe("compact focus-strip controls", () => {
   });
 });
 
-describe("stream QoE badge", () => {
-  it("shows measured delivered resolution/fps and the health state", () => {
+describe("focused/fullscreen stream statistics", () => {
+  it("does not cover a normal grid tile or compact thumbnail", () => {
     const stream = makeStream();
-    useQualityStore.getState().setSnapshot(stream.trackName, {
-      role: "viewer",
-      health: "network_limited",
-      limitation: "bandwidth",
-      contentMode: "motion",
-      width: 1920,
-      height: 1080,
-      fps: 46.4,
-      targetFps: 60,
-      bitrateKbps: 4200,
-      rid: "h",
-      codec: "VP9",
-    });
+    seedStreamStats(stream.trackName);
 
     render(<StreamTile stream={stream} onToggleFocus={vi.fn()} onToggleFullscreen={vi.fn()} />);
+    expect(screen.queryByTestId(`stream-stats-${stream.trackName}`)).toBeNull();
+  });
 
-    const badge = screen.getByTestId(`stream-quality-${stream.trackName}`);
-    expect(badge.textContent).toContain("1080p");
-    expect(badge.textContent).toContain("46 fps");
-    expect(badge.textContent).toContain("Network limited");
-    expect(badge.getAttribute("data-health")).toBe("network_limited");
+  it("shows actual codec, resolution and FPS in the top-right focused overlay and expands bitrate", () => {
+    const stream = makeStream();
+    seedStreamStats(stream.trackName);
+
+    render(
+      <StreamTile stream={stream} showStats onToggleFocus={vi.fn()} onToggleFullscreen={vi.fn()} />,
+    );
+
+    const overlay = screen.getByTestId(`stream-stats-${stream.trackName}`);
+    expect(overlay.className).toContain("top-2");
+    expect(overlay.className).toContain("right-2");
+    expect(overlay.textContent).toContain("VP8");
+    expect(overlay.textContent).toContain("1920×1080");
+    expect(overlay.textContent).toContain("46 fps");
+    expect(overlay.textContent).not.toContain("4.2 Mbps");
+    expect(overlay.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(overlay);
+    expect(overlay.getAttribute("aria-expanded")).toBe("true");
+    expect(overlay.textContent).toContain("4.2 Mbps");
   });
 });
 
@@ -348,7 +364,7 @@ describe("FR-27 preset dropdown removed from tiles (tuning lives in the Controls
 });
 
 describe("FR-33 focus toggle", () => {
-  it("click watched tile toggles focus (layout only) — never a simulcast layer switch", () => {
+  it("click watched tile toggles focus as a layout-only action", () => {
     const stream = makeStream();
     const onToggle = vi.fn();
     render(<FocusHarness stream={stream} onToggle={onToggle} />);
@@ -358,7 +374,6 @@ describe("FR-33 focus toggle", () => {
     fireEvent.click(tile); // leave focus
 
     expect(onToggle).toHaveBeenCalledTimes(2);
-    expect(watchMock.setLayer).not.toHaveBeenCalled();
     expect(tile.getAttribute("data-watching")).toBe("true");
   });
 });

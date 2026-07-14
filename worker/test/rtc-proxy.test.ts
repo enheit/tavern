@@ -389,9 +389,10 @@ describe("FR-30 pull grants", () => {
     expect(remote.payload).toMatchObject({
       tracks: [{ trackName: screenTrack, sessionId: pubSession }],
     });
+    expect(JSON.stringify(remote.payload)).not.toContain("simulcast");
   });
 
-  it("v2 h/i/l publishers use adaptive ordered fallback while legacy tracks stay pinned", async () => {
+  it("pins explicit simulcast requests for both legacy and v2 publishers", async () => {
     const owner = await register("rtc_pull_adapt");
     const viewerId = await meUserId(owner);
     const publisherId = crypto.randomUUID();
@@ -426,17 +427,17 @@ describe("FR-30 pull grants", () => {
     await seedRegistry(serverId, reg);
     resetSfuMock();
     expect((await pull(owner, serverId, screenTrack, "h")).status).toBe(200);
-    const adaptive = must(
+    const v2 = must(
       sfuMockCalls.find((call) => call.op === "newRemoteTracks"),
-      "adaptive pull",
+      "v2 pull",
     );
-    expect(adaptive.payload).toMatchObject({
+    expect(v2.payload).toMatchObject({
       tracks: [
         {
           simulcast: {
             preferredRid: "h",
-            priorityOrdering: "asciibetical",
-            ridNotAvailable: "asciibetical",
+            priorityOrdering: "none",
+            ridNotAvailable: "none",
           },
         },
       ],

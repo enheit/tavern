@@ -29,6 +29,10 @@ declare global {
           framesPerSecond: number | null;
           targetBitrate: number | null;
           qualityLimitationReason: string | null;
+          codec: string | null;
+          encoderImplementation: string | null;
+          powerEfficientEncoder: boolean | null;
+          scalabilityMode: string | null;
         }>
       >;
       layerCalls: Array<{ trackName: string; rid: "h" | "l" }>;

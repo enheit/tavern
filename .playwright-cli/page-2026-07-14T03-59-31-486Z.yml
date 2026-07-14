@@ -1,0 +1,111 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e25]:
+      - banner [ref=e26]:
+        - button [ref=e209]:
+          - generic [ref=e29]: layout-server-535
+          - img
+        - button [ref=e210]: Set a status…
+        - button [ref=e211]:
+          - img
+      - generic [ref=e35]:
+        - navigation [ref=e36]:
+          - heading [level=2] [ref=e213]: Channels
+          - button [ref=e214]:
+            - img [ref=e40]
+            - generic [ref=e44]: Voice
+        - generic [ref=e46]:
+          - button [ref=e215]:
+            - generic [ref=e49]: l
+            - generic [ref=e51]:
+              - generic [ref=e54]: layout_535
+              - generic [ref=e55]: Online
+          - button [ref=e216]:
+            - img
+          - button [ref=e217]:
+            - img
+          - button [ref=e218]:
+            - img
+      - generic [ref=e60]:
+        - tablist [ref=e219]:
+          - tab [ref=e220]: Dashboard
+          - tab [ref=e221]: Recordings
+          - tab [ref=e222]: Screenshots
+          - tab [selected] [ref=e223]: Soundboard
+          - tab [ref=e224]: Polls
+          - tab [ref=e225]: Market
+        - tabpanel [ref=e226]:
+          - generic [ref=e194]:
+            - generic [ref=e195]: Soundboard
+            - generic [ref=e196]:
+              - button [ref=e227]:
+                - img
+              - group [ref=e228]:
+                - slider [ref=e204]: "100"
+              - button [ref=e229]:
+                - img
+      - generic [ref=e167]:
+        - generic [ref=e170]:
+          - textbox [ref=e230]:
+            - /placeholder: "Message #general"
+          - button [ref=e231]:
+            - img [ref=e173]
+        - generic [ref=e176]:
+          - generic [ref=e177]:
+            - button [ref=e232]: GIF
+            - button [ref=e233]:
+              - img [ref=e180]
+              - generic [ref=e185]: "0"
+            - button [ref=e234]:
+              - img [ref=e187]
+              - text: Polls
+          - generic [ref=e189]:
+            - button [disabled]: Send
+    - region "Notifications alt+T"
+  - dialog "Upload sound" [ref=e238]:
+    - heading "Upload sound" [level=2] [ref=e240]
+    - generic [ref=e241]:
+      - generic [ref=e242]:
+        - generic [ref=e243]: MP3 file
+        - generic [ref=e244]:
+          - img [ref=e288]
+          - generic [ref=e249]:
+            - paragraph [ref=e250]: preview-stop-check.mp3
+            - paragraph [ref=e251]: MP3 · up to 10 MB and 5 minutes
+          - button "Browse" [active] [ref=e252]
+      - generic [ref=e253]:
+        - generic [ref=e254]:
+          - generic [ref=e255]: Name
+          - textbox "Name" [ref=e256]: preview-stop-check
+        - generic [ref=e257]:
+          - generic [ref=e258]: Related emoji
+          - button "◌ Choose" [ref=e259]:
+            - generic [ref=e260]: ◌
+            - generic [ref=e261]: Choose
+      - generic [ref=e264]:
+        - generic [ref=e265]:
+          - generic [ref=e266]: 0.00s
+          - generic [ref=e267]: 8.00s
+          - generic [ref=e268]: 8.00s
+        - generic [ref=e269]:
+          - button "Zoom out waveform" [disabled]:
+            - img
+          - generic [ref=e270]: 1×
+          - button "Zoom in waveform" [ref=e271]:
+            - img
+      - generic [ref=e272]:
+        - generic [ref=e273]:
+          - generic [ref=e274]: Sound volume
+          - generic [ref=e275]: 100%
+        - group [ref=e276]:
+          - slider [ref=e281]: "100"
+      - paragraph [ref=e282]: Choose an emoji for this sound
+    - generic [ref=e283]:
+      - button "Cancel" [ref=e284]
+      - button "Preview" [ref=e298]:
+        - img
+        - text: Preview
+      - button "Upload" [disabled]
+    - button "Close" [ref=e285]:
+      - img
+      - generic [ref=e286]: Close

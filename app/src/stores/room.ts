@@ -197,11 +197,9 @@ function reduce(state: RoomState, msg: ServerMessage): Partial<RoomState> {
         lastReadMessageId: msg.lastReadMessageId,
         firstUnreadMessageId: msg.firstUnreadMessageId,
         unreadCount: msg.unreadCount,
-        scrollToMessageId: msg.firstUnreadMessageId,
-        scrollToMessageToken:
-          msg.firstUnreadMessageId === null
-            ? state.scrollToMessageToken
-            : state.scrollToMessageToken + 1,
+        // Initial positioning belongs to MessageList's history lifecycle. Keep this command channel
+        // for explicit reply/unread jumps so an old target cannot replay when the panel remounts.
+        scrollToMessageId: null,
         replyingTo: null,
         editingMessageId: null,
         pendingNonces: new Set<string>(),

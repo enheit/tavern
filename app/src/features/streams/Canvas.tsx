@@ -10,7 +10,7 @@ import { useMediaStore } from "@/stores/media";
 import { roomStore } from "@/stores/room";
 import { useSessionStore } from "@/stores/session";
 import { StreamTile } from "./StreamTile";
-import { isWatchingTrack, setWatchTheaterFullscreen } from "./useWatch";
+import { isWatchingTrack } from "./useWatch";
 import { useWebcamStore } from "./useWebcam";
 import { VoiceAvatarTile } from "./VoiceAvatarTile";
 
@@ -89,19 +89,6 @@ export function Canvas({ serverId, active }: { serverId: string; active: boolean
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-
-  // Theater mode changes delivery policy, not watch ownership: the selected stream stays high while
-  // the other explicitly watched streams enter saver delivery. Leaving theater restores them on the
-  // same PullSessions. The validity check prevents a removed stream name from hiding every survivor.
-  const theaterTrackName =
-    fullscreenTrackName !== null &&
-    streams.some((stream) => stream.trackName === fullscreenTrackName)
-      ? fullscreenTrackName
-      : null;
-  useEffect(() => {
-    setWatchTheaterFullscreen(serverId, theaterTrackName);
-    return () => setWatchTheaterFullscreen(serverId, null);
-  }, [serverId, theaterTrackName]);
 
   // Keyboard: Esc + `f`.
   // - Esc exits, fullscreen first (theater) then focus (FR-33) — a single Esc collapses the top layer
@@ -222,7 +209,9 @@ export function Canvas({ serverId, active }: { serverId: string; active: boolean
       ? undefined
       : voiceMembers.find((member) => member.profile.userId === focusedVoiceUserId);
   const fullscreenStream =
-    theaterTrackName === null ? undefined : sorted.find((s) => s.trackName === theaterTrackName);
+    fullscreenTrackName === null
+      ? undefined
+      : sorted.find((stream) => stream.trackName === fullscreenTrackName);
   const fullscreenVoiceMember =
     fullscreenVoiceUserId === null
       ? undefined
@@ -356,6 +345,7 @@ export function Canvas({ serverId, active }: { serverId: string; active: boolean
               selfStream={selfStreamFor(stream.trackName)}
               fullscreen={isFullscreen}
               compact={focused && !focusedTile}
+              showStats={focusedTile || isFullscreen}
               onToggleFocus={() => {
                 if (isFullscreen) {
                   setFocused(stream.trackName);

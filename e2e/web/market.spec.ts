@@ -88,8 +88,16 @@ test.describe("one-of-one icon market", () => {
       await expect(buyerPage.getByTestId("points-balance")).toHaveText("60");
       await expect(buyerPage.getByTestId("sidebar-profile-name").locator("img")).toHaveAttribute(
         "src",
-        new RegExp(`/market-icons/${server.id}/${created.id}\\.webp$`),
+        /^blob:/,
       );
+      await expect
+        .poll(() =>
+          buyerPage
+            .getByTestId("sidebar-profile-name")
+            .locator("img")
+            .evaluate((image: HTMLImageElement) => image.naturalWidth),
+        )
+        .toBeGreaterThan(0);
 
       await adminPage.getByTestId("market-subtab-shop").click();
       const soldListing = adminPage.getByTestId(`market-item-${created.id}`);
@@ -100,6 +108,9 @@ test.describe("one-of-one icon market", () => {
       await buyerPage.getByTestId(`home-member-name-${buyer.userId}`).click();
       const receiptIcon = buyerPage.getByTestId("user-profile-market-icon");
       await expect(receiptIcon).toBeVisible();
+      await expect
+        .poll(() => receiptIcon.evaluate((image: HTMLImageElement) => image.naturalWidth))
+        .toBeGreaterThan(0);
       await expect(receiptIcon.locator("xpath=..")).toHaveAttribute(
         "aria-label",
         /Purchased .* for 40 points/,

@@ -12,15 +12,24 @@ vi.mock("@/features/streams/SharePickerDialog", () => ({
   SharePickerDialog: (props: {
     open: boolean;
     initialPreset?: string;
-    onStart(sel: { sourceId: null; preset: "1080p30" | "1080p60"; withAudio: true }): void;
+    initialCodec?: "vp8" | "h264" | "vp9" | "av1";
+    codecLocked?: boolean;
+    onStart(sel: {
+      sourceId: null;
+      preset: "1080p30" | "1080p60";
+      codec: "vp8" | "h264" | "vp9" | "av1";
+      withAudio: true;
+    }): void;
   }) =>
     props.open ? (
       <button
         data-testid="share-picker-confirm"
+        data-codec-locked={props.codecLocked ?? false}
         onClick={() =>
           props.onStart({
             sourceId: null,
             preset: props.initialPreset === "1080p60" ? "1080p60" : "1080p30",
+            codec: props.initialCodec ?? "vp8",
             withAudio: true,
           })
         }
@@ -64,6 +73,7 @@ function mockMedia(
     sharing: over.sharing ?? false,
     preset: null,
     trackName: null,
+    codec: over.sharing ? "vp8" : null,
     start: startShare,
     stop: stopShare,
     setPreset,
@@ -166,6 +176,7 @@ describe("ControlsBar", () => {
     expect(startShare).toHaveBeenCalledWith({
       sourceId: null,
       preset: "1080p30",
+      codec: "vp8",
       withAudio: true,
     });
     expect(stopShare).not.toHaveBeenCalled();
@@ -179,11 +190,15 @@ describe("ControlsBar", () => {
     fireEvent.click(screen.getByTestId("share-fps-60"));
     expect(setPreset).not.toHaveBeenCalled();
     expect(screen.getByTestId("share-picker-confirm")).toBeTruthy();
+    expect(screen.getByTestId("share-picker-confirm").getAttribute("data-codec-locked")).toBe(
+      "true",
+    );
 
     fireEvent.click(screen.getByTestId("share-picker-confirm"));
     expect(replaceCapture).toHaveBeenCalledWith({
       sourceId: null,
       preset: "1080p60",
+      codec: "vp8",
       withAudio: true,
     });
   });

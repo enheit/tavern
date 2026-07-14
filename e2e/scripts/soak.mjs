@@ -10,9 +10,11 @@
 //
 //   node e2e/scripts/soak.mjs --clients 10 --minutes 10 [--base http://localhost:8787] [--realtime]
 //
-// Unless --base is already reachable (GET /api/health → 200), the script spawns the worker itself:
-// mock variant `wrangler dev --env e2e` on 8787 (TAVERN_SFU_MOCK=1 + TAVERN_TEST=1 via .dev.vars.e2e);
-// --realtime spawns the DEFAULT env on 8788 (real .dev.vars → real Cloudflare Realtime SFU + TURN —
+// Unless --base is already reachable (GET /api/health → 200), the script spawns the worker itself.
+// `--local` keeps every binding local even if production development opts a binding into remote mode;
+// it does not block the Worker's normal outbound requests to the real Realtime SFU or TURN service.
+// The mock variant adds `--env e2e` on 8787 (TAVERN_SFU_MOCK=1 + TAVERN_TEST=1 via .dev.vars.e2e);
+// --realtime uses the DEFAULT env on 8788 (real .dev.vars → real Cloudflare Realtime SFU + TURN —
 // the nightly soak job writes those from repo secrets). Pages load the worker-served app directly.
 // Lives under e2e/ because @playwright/test (which re-exports the library API) is this workspace
 // package's dependency (§3 lists no root playwright).
@@ -62,7 +64,7 @@ async function ensureWorker() {
     return;
   }
   const port = new URL(base).port || "8787";
-  const args = ["-F", "@tavern/worker", "exec", "wrangler", "dev"];
+  const args = ["-F", "@tavern/worker", "exec", "wrangler", "dev", "--local"];
   if (!realtime) args.push("--env", "e2e");
   args.push("--port", port);
   log(`spawning: pnpm ${args.join(" ")}`);

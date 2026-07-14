@@ -1,0 +1,41 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e7]: Join a server
+        - generic [ref=e9]:
+          - generic [ref=e10]:
+            - generic [ref=e11]: Server nickname
+            - textbox [ref=e21]
+          - generic [ref=e13]:
+            - generic [ref=e14]: Password (if required)
+            - group [ref=e15]:
+              - textbox [ref=e22]
+              - group [ref=e17]:
+                - button [ref=e23]:
+                  - img
+          - button [ref=e24]: Join
+      - button [ref=e25]: Create my own server
+    - region "Notifications alt+T"
+  - dialog "Create a server" [ref=e29]:
+    - generic [ref=e30]:
+      - heading "Create a server" [level=2] [ref=e31]
+      - paragraph [ref=e32]: You'll need a one-time creation code from the operator.
+    - generic [ref=e33]:
+      - generic [ref=e34]:
+        - generic [ref=e35]: Server nickname
+        - textbox "Server nickname" [active] [ref=e36]
+      - generic [ref=e37]:
+        - generic [ref=e38]: Password
+        - group [ref=e39]:
+          - textbox "Password" [ref=e40]
+          - group [ref=e41]:
+            - button "Show password" [ref=e42]:
+              - img
+      - generic [ref=e43]:
+        - generic [ref=e44]: Creation code
+        - textbox "Creation code" [ref=e45]
+      - button "Create" [ref=e46]
+    - button "Close" [ref=e47]:
+      - img
+      - generic [ref=e48]: Close

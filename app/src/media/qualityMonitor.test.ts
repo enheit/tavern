@@ -33,6 +33,9 @@ function outbound(
     qualityLimitationReason,
     totalEncodeTime: 1,
     codec: "VP8",
+    encoderImplementation: null,
+    powerEfficientEncoder: null,
+    scalabilityMode: null,
     roundTripTime: 0.05,
   };
 }

@@ -105,12 +105,12 @@ export interface ScreenLayerSpec {
   maxKbps: number;
 }
 
-// Base caps re-anchored 2026-07-11 (quality-probe finding): the old 30/60fps caps (e.g. 1080p60 =
-// 3000) starved dynamic content — streams are usually motion (video/games), and a realtime encoder
-// at ~0.02 bits/pixel turns motion into unreadable blur. New anchors follow the industry envelope
-// for realtime screen motion (≈0.05 bpp at 30fps, ×~1.6 for 60fps — Discord streams 1080p60 at
-// ~6–8 Mbps). 15fps rows are unchanged (mostly-static document sharing). Data tiers give the
-// cost-conscious knob back; the meter reprices automatically via kbpsFor.
+// Base caps are deliberately ceilings, not targets: WebRTC still sends less for compressible frames.
+// The real-SFU motion probe showed that 6 Mbps forced Chromium's low-latency software VP8 encoder to
+// shrink a selected 1080p60 stream as far as 540p while reporting a bandwidth quality limitation.
+// The 100% 1080p60 tier therefore allows 12 Mbps; explicit data tiers retain the lower 9/6/4.2 Mbps
+// budgets. 15fps rows remain tuned for mostly-static documents. The meter follows maxKbps via
+// kbpsFor, so this quality choice is also reflected in Tavern's cost estimate.
 export const SCREEN_PRESETS: Record<PresetId, Preset> = {
   "480p15": { id: "480p15", width: 854, height: 480, fps: 15, maxKbps: 400 },
   "480p15-75": { id: "480p15-75", width: 854, height: 480, fps: 15, maxKbps: 300 },
@@ -144,10 +144,10 @@ export const SCREEN_PRESETS: Record<PresetId, Preset> = {
   "1080p30-75": { id: "1080p30-75", width: 1920, height: 1080, fps: 30, maxKbps: 2625 },
   "1080p30-50": { id: "1080p30-50", width: 1920, height: 1080, fps: 30, maxKbps: 1750 },
   "1080p30-35": { id: "1080p30-35", width: 1920, height: 1080, fps: 30, maxKbps: 1225 },
-  "1080p60": { id: "1080p60", width: 1920, height: 1080, fps: 60, maxKbps: 6000 },
-  "1080p60-75": { id: "1080p60-75", width: 1920, height: 1080, fps: 60, maxKbps: 4500 },
-  "1080p60-50": { id: "1080p60-50", width: 1920, height: 1080, fps: 60, maxKbps: 3000 },
-  "1080p60-35": { id: "1080p60-35", width: 1920, height: 1080, fps: 60, maxKbps: 2100 },
+  "1080p60": { id: "1080p60", width: 1920, height: 1080, fps: 60, maxKbps: 12000 },
+  "1080p60-75": { id: "1080p60-75", width: 1920, height: 1080, fps: 60, maxKbps: 9000 },
+  "1080p60-50": { id: "1080p60-50", width: 1920, height: 1080, fps: 60, maxKbps: 6000 },
+  "1080p60-35": { id: "1080p60-35", width: 1920, height: 1080, fps: 60, maxKbps: 4200 },
   "1440p15": { id: "1440p15", width: 2560, height: 1440, fps: 15, maxKbps: 1800 },
   "1440p15-75": { id: "1440p15-75", width: 2560, height: 1440, fps: 15, maxKbps: 1350 },
   "1440p15-50": { id: "1440p15-50", width: 2560, height: 1440, fps: 15, maxKbps: 900 },
@@ -232,11 +232,13 @@ export function contentHintForPreset(preset: PresetId): VideoContentHint {
   return contentModeForPreset(preset) === "detail" ? "detail" : "motion";
 }
 
-export function degradationPreferenceForPreset(preset: PresetId): VideoDegradationPreference {
-  const mode = contentModeForPreset(preset);
-  if (mode === "motion") return "maintain-framerate";
-  if (mode === "detail") return "maintain-resolution";
-  return "balanced";
+// A preset is an explicit resolution choice. WebRTC's maintain-framerate mode is allowed to shrink
+// the encoded geometry when its quality scaler is stressed; that turned a selected 1080p60 stream
+// into 540p without user consent in the real-SFU probe. Preserve the selected geometry for every
+// screen preset instead. The browser may still reduce cadence or increase compression when a device
+// or connection is genuinely constrained, but it must not be invited to substitute a lower size.
+export function degradationPreferenceForPreset(_preset: PresetId): VideoDegradationPreference {
+  return "maintain-resolution";
 }
 
 // Encoder-only switches are truthful only while the requested geometry/cadence is inside the

@@ -1,0 +1,71 @@
+[    1119ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/node_modules/.vite/deps/react-dom_client.js?v=7b2d00e4:20102
+[    1834ms] [WARNING] The AudioContext was not allowed to start. It must be resumed (or created) after a user gesture on the page. https://developer.chrome.com/blog/autoplay/#web_audio @ http://localhost:5173/src/lib/uiSounds.ts:37
+[    1836ms] [WARNING] The AudioContext was not allowed to start. It must be resumed (or created) after a user gesture on the page. https://developer.chrome.com/blog/autoplay/#web_audio @ http://localhost:5173/src/lib/uiSounds.ts:37
+[    1862ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://localhost:5173/api/me:0
+[   97799ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97806ms] [ERROR] [vite] Failed to reload /src/components/ui/sonner.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97811ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97811ms] [ERROR] [vite] Failed to reload /src/main.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97813ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97813ms] [ERROR] [vite] Failed to reload /src/features/boot/BootError.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97813ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97813ms] [ERROR] [vite] Failed to reload /src/features/boot/BootGate.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97813ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97813ms] [ERROR] [vite] Failed to reload /src/router.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97814ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97814ms] [ERROR] [vite] Failed to reload /src/features/auth/LoginPage.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97814ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97814ms] [ERROR] [vite] Failed to reload /src/features/boot/GuestOnlyGate.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97852ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97852ms] [ERROR] [vite] Failed to reload /src/main.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97855ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97855ms] [ERROR] [vite] Failed to reload /src/components/ui/sonner.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97859ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97860ms] [ERROR] [vite] Failed to reload /src/features/boot/GuestOnlyGate.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97866ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97866ms] [ERROR] [vite] Failed to reload /src/features/boot/BootGate.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97875ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97875ms] [ERROR] [vite] Failed to reload /src/features/boot/BootError.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97883ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97883ms] [ERROR] [vite] Failed to reload /src/features/auth/LoginPage.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97896ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97896ms] [ERROR] [vite] Failed to reload /src/router.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97903ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97903ms] [ERROR] [vite] Failed to reload /src/components/ui/sonner.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97903ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97903ms] [ERROR] [vite] Failed to reload /src/features/boot/GuestOnlyGate.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97903ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97904ms] [ERROR] [vite] Failed to reload /src/features/boot/BootGate.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97904ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97904ms] [ERROR] [vite] Failed to reload /src/features/boot/BootError.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97906ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97907ms] [ERROR] [vite] Failed to reload /src/router.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97922ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97922ms] [ERROR] [vite] Failed to reload /src/main.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   97926ms] [ERROR] [vite] ReferenceError: ReactionEmoji is not defined
+    at http://localhost:5173/@fs/Users/roman/Developer/Personal/tavern/shared/src/api.ts?t=1783996978488:73:10 @ http://localhost:5173/@vite/client:808
+[   97926ms] [ERROR] [vite] Failed to reload /src/features/auth/LoginPage.tsx. This could be due to syntax errors or importing non-existent modules. (see errors above) @ http://localhost:5173/@vite/client:808
+[   99814ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:5173/@vite/client:864
+[  126159ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/node_modules/.vite/deps/react-dom_client.js?v=7b2d00e4:20102
+[  126429ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://localhost:5173/api/me:0
+[  145305ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:5173/@vite/client:864

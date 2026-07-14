@@ -18,26 +18,32 @@ vi.mock("@tavern/shared", async (importActual) => {
 // trackName so the FR-29 routing test can assert it.
 const selfStreams = vi.hoisted(() => new Map<string, MediaStream | null>());
 const mountCounts = vi.hoisted(() => new Map<string, number>());
-const theaterMock = vi.hoisted(() => vi.fn());
 vi.mock("@/features/streams/useWatch", () => ({
   isWatchingTrack: () => false,
-  setWatchTheaterFullscreen: theaterMock,
 }));
 vi.mock("@/features/streams/StreamTile", () => ({
   StreamTile: ({
     stream: tile,
     selfStream,
     compact,
+    showStats,
   }: {
     stream: StreamInfo;
     selfStream?: MediaStream | null;
     compact?: boolean;
+    showStats?: boolean;
   }) => {
     selfStreams.set(tile.trackName, selfStream ?? null);
     useEffect(() => {
       mountCounts.set(tile.trackName, (mountCounts.get(tile.trackName) ?? 0) + 1);
     }, [tile.trackName]);
-    return <div data-testid={`stream-tile-${tile.trackName}`} data-compact={compact ?? false} />;
+    return (
+      <div
+        data-testid={`stream-tile-${tile.trackName}`}
+        data-compact={compact ?? false}
+        data-show-stats={showStats ?? false}
+      />
+    );
   },
 }));
 vi.mock("@/features/streams/VoiceAvatarTile", () => ({
@@ -128,7 +134,6 @@ beforeEach(() => {
   selfStreams.clear();
   mountCounts.clear();
   vi.mocked(computeLayout).mockClear();
-  theaterMock.mockClear();
 });
 
 afterEach(() => {
@@ -193,6 +198,8 @@ describe("FR-33 focus mode layout", () => {
     expect(screen.getByTestId("stream-tile-s2").getAttribute("data-compact")).toBe("false");
     expect(screen.getByTestId("stream-tile-s1").getAttribute("data-compact")).toBe("true");
     expect(screen.getByTestId("stream-tile-s3").getAttribute("data-compact")).toBe("true");
+    expect(screen.getByTestId("stream-tile-s2").getAttribute("data-show-stats")).toBe("true");
+    expect(screen.getByTestId("stream-tile-s1").getAttribute("data-show-stats")).toBe("false");
   });
 
   it("keeps each tile mounted while moving between grid, focus, and fullscreen", () => {
@@ -204,22 +211,13 @@ describe("FR-33 focus mode layout", () => {
     expect(screen.getByTestId("stream-tile-s1")).toBe(original);
     act(() => roomStore(SRV).getState().setFullscreenTrackName("s1"));
     expect(screen.getByTestId("stream-tile-s1")).toBe(original);
+    expect(screen.getByTestId("stream-tile-s1").getAttribute("data-show-stats")).toBe("true");
+    expect(screen.getByTestId("stream-tile-s2").getAttribute("data-show-stats")).toBe("false");
     expect(screen.getByTestId("stream-slot-s2").style.display).toBe("none");
     act(() => roomStore(SRV).getState().setFullscreenTrackName(null));
     expect(screen.getByTestId("stream-tile-s1")).toBe(original);
     expect(mountCounts.get("s1")).toBe(1);
     expect(mountCounts.get("s2")).toBe(1);
-  });
-
-  it("marks only the fullscreen track as theater-visible and clears policy on exit", () => {
-    seed([stream("s1"), stream("s2")]);
-    render(<Canvas serverId={SRV} active />);
-
-    act(() => roomStore(SRV).setState({ fullscreenTrackName: "s2" }));
-    expect(theaterMock).toHaveBeenLastCalledWith(SRV, "s2");
-
-    act(() => roomStore(SRV).setState({ fullscreenTrackName: null }));
-    expect(theaterMock).toHaveBeenLastCalledWith(SRV, null);
   });
 
   it("places voice avatars beside streams and promotes a clicked avatar to the main stage", () => {

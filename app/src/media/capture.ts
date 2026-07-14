@@ -1,6 +1,7 @@
 import { SCREEN_PRESETS, WEBCAM_PRESET, contentHintForPreset } from "@tavern/shared";
-import type { ShareSelection } from "@/features/streams/types";
-// captureScreen takes only a ShareSelection (S8.1), so it reads the platform singleton directly.
+import type { ScreenCaptureSelection } from "@/features/streams/types";
+// captureScreen takes only capture-relevant selection fields (S8.1), so it reads the platform
+// singleton directly. Codec negotiation happens later on the publish transceiver.
 import { platform as platformBridge } from "@/platform/types";
 import type { NoiseSuppressionMode } from "@/stores/settings";
 import { DEEPFILTER_ATTEN_DEFAULT, useSettingsStore } from "@/stores/settings";
@@ -192,7 +193,7 @@ function isTabSurface(video: MediaStreamTrack): boolean {
 // native picker chooses the source). Only ideal/max constraint keys — min/exact throw on display
 // capture (PLAN §7.2). `withAudio` requests system/loopback (desktop) or tab (web) audio; where
 // the display request can't deliver it (Linux, Firefox), the system-audio fallback above kicks in.
-export async function captureScreen(sel: ShareSelection): Promise<ScreenCapture> {
+export async function captureScreen(sel: ScreenCaptureSelection): Promise<ScreenCapture> {
   const spec = SCREEN_PRESETS[sel.preset];
   if (platformBridge.kind === "desktop") await platformBridge.capture.selectSource(sel.sourceId);
   const pref = useSettingsStore.getState().deviceSettings.streamAudio ?? SYSTEM_AUDIO_AUTO;

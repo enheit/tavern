@@ -39,7 +39,6 @@
   // via .dev.vars (8787), the nightly realtime worker via its generated .dev.vars (8788).
   "vars": {
     "BETTER_AUTH_URL": "https://tavern.roman-mahotskyi.workers.dev",
-    "SFU_ADAPTATION_MODE": "adaptive",
     "CLOUDFLARE_ACCOUNT_ID": "fd8a5f7a38f28a2cd11e79e85985c7d4"
   },
   // NEVER DEPLOY these env vars (dev/test flags only — .dev.vars / .dev.vars.e2e / CI step env):
@@ -85,7 +84,6 @@
       },
       "vars": {
         "BETTER_AUTH_URL": "http://localhost:8787",
-        "SFU_ADAPTATION_MODE": "adaptive",
         "CLOUDFLARE_ACCOUNT_ID": "fd8a5f7a38f28a2cd11e79e85985c7d4"
       },
       "d1_databases": [

@@ -66,6 +66,37 @@ async function sendPaced(page: Page, text: string): Promise<void> {
 }
 
 test.describe("FR-14 FR-15 FR-17 chat", () => {
+  test("a newly joined member sees messages sent before joining", async ({
+    browser,
+    baseURL,
+    api,
+  }) => {
+    const password = `pw-${hex(4)}`;
+    const a = await api.createUser("history_a");
+    const server = await api.createServer(a, { password });
+    const openedA = await pageFor(browser, baseURL, a);
+    const b = await api.createUser("history_b");
+    const openedB = await pageFor(browser, baseURL, b);
+    const priorMessage = `before-join-${hex(4)}`;
+
+    try {
+      await bootOnto(openedA, server.id);
+      await sendMessage(openedA.page, priorMessage);
+      await expect(openedA.page.getByText(priorMessage, { exact: true })).toBeVisible();
+
+      await openedB.page.goto("/join");
+      await openedB.page.getByTestId("join-nickname").fill(server.nickname);
+      await openedB.page.getByTestId("join-password").fill(password);
+      await openedB.page.getByTestId("join-submit").click();
+
+      await expect(openedB.page).toHaveURL(new RegExp(`/s/${server.id}$`));
+      await expect(openedB.page.getByText(priorMessage, { exact: true })).toBeVisible();
+    } finally {
+      await openedA.context.close();
+      await openedB.context.close();
+    }
+  });
+
   test("B sees A's message within 1s", async ({ browser, baseURL, api }) => {
     const { openedA, openedB } = await bootPair(browser, baseURL, api);
     try {
@@ -195,7 +226,7 @@ test.describe("FR-14 FR-15 FR-17 chat", () => {
     browser,
     baseURL,
     api,
-  }) => {
+  }, testInfo) => {
     test.setTimeout(60000);
     const { server, openedA, openedB } = await bootPair(browser, baseURL, api);
     try {
@@ -207,6 +238,22 @@ test.describe("FR-14 FR-15 FR-17 chat", () => {
         chain = chain.then(() => sendPaced(openedA.page, text));
       }
       await chain;
+
+      // A authored every message, so this reload has no unread cursor. Initial history must open at
+      // the latest message instead of replaying an old centered scroll target.
+      await openedA.page.goto("/");
+      await expect(openedA.page).toHaveURL(new RegExp(`/s/${server.id}$`));
+      await expect(openedA.page.getByText("chat-54", { exact: true })).toBeVisible();
+      await expect
+        .poll(() =>
+          openedA.page
+            .getByTestId("message-scroll")
+            .evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight),
+        )
+        .toBeLessThan(40);
+      await openedA.page
+        .getByTestId("slot-chat")
+        .screenshot({ path: testInfo.outputPath("no-unread-chat-latest.png") });
 
       // History persists server-side (FR-17): B restarts (fresh boot via "/", which re-runs the boot
       // gate and lands the single-server member back on /s/:id — a deep-link refresh gate is S11.1)

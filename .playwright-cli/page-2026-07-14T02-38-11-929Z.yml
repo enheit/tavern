@@ -1,0 +1,116 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - banner [ref=e4]:
+        - button [ref=e101]:
+          - generic [ref=e7]: Visual Tavern
+          - img
+        - button [ref=e102]: Set a status…
+      - generic [ref=e12]:
+        - navigation [ref=e13]:
+          - heading [level=2] [ref=e104]: Channels
+          - button [ref=e105]:
+            - img [ref=e17]
+            - generic [ref=e21]: Voice
+        - button [ref=e106]:
+          - img
+          - text: Good bye
+        - generic [ref=e23]:
+          - button [ref=e107]:
+            - generic [ref=e25]: V
+          - generic [ref=e27]:
+            - generic [ref=e28]: Visual Test
+            - generic [ref=e29]: Offline
+          - button [ref=e108]:
+            - img
+          - button [ref=e109]:
+            - img
+          - button [ref=e110]:
+            - img
+      - generic [ref=e34]:
+        - tablist [ref=e111]:
+          - tab [selected] [ref=e112]: Dashboard
+          - tab [ref=e113]: Recordings
+          - tab [ref=e114]: Screenshots
+          - tab [ref=e115]: Soundboard
+          - tab [ref=e116]: Polls
+        - tabpanel [ref=e117]:
+          - main [ref=e43]:
+            - generic [ref=e44]:
+              - generic [ref=e45]:
+                - heading [level=1] [ref=e118]: Tavern home
+                - paragraph [ref=e47]: Recent moments from your people
+              - generic [ref=e48]:
+                - img [ref=e50]
+                - generic [ref=e56]:
+                  - heading [level=2] [ref=e119]: Live now
+                  - paragraph [ref=e58]: The voice room is quiet
+              - generic [ref=e59]: The Tavern home could not be loaded.
+      - generic [ref=e95]:
+        - button [ref=e120]:
+          - img
+        - button [ref=e121]:
+          - img
+        - button [ref=e122]:
+          - img
+        - button [ref=e123]:
+          - img
+        - button [ref=e124]:
+          - img
+      - generic [ref=e69]:
+        - generic [ref=e72]:
+          - textbox [ref=e125]:
+            - /placeholder: "Message #general"
+          - button [ref=e126]:
+            - img [ref=e75]
+        - generic [ref=e78]:
+          - generic [ref=e79]:
+            - button [ref=e127]: GIF
+            - button [ref=e128]:
+              - img [ref=e82]
+              - generic [ref=e87]: "0"
+            - button [ref=e129]:
+              - img [ref=e89]
+              - text: Polls
+          - generic [ref=e91]:
+            - button [disabled]: Send
+    - region "Notifications alt+T"
+  - dialog "Settings" [ref=e133]:
+    - heading "Settings" [level=2] [ref=e135]
+    - generic [ref=e136]:
+      - complementary [ref=e137]:
+        - tablist [ref=e139]:
+          - tab "App" [active] [selected] [ref=e140]
+          - tab "Notifications" [ref=e141]
+          - tab "Voice" [ref=e142]
+          - tab "Tavern usage" [ref=e143]
+        - button "Log out" [ref=e145]:
+          - img
+          - text: Log out
+      - tabpanel "App" [ref=e148]:
+        - heading "App" [level=2] [ref=e149]
+        - generic [ref=e150]:
+          - generic [ref=e151]:
+            - generic [ref=e152]: Theme
+            - radiogroup [ref=e153]:
+              - generic [ref=e154]:
+                - radio "Light" [ref=e155]
+                - radio [ref=e156]
+                - generic [ref=e157]: Light
+              - generic [ref=e158]:
+                - radio "Dark" [ref=e159]
+                - radio [ref=e160]
+                - generic [ref=e161]: Dark
+              - generic [ref=e162]:
+                - radio "System" [checked] [ref=e163]
+                - radio [checked] [ref=e166]
+                - generic [ref=e167]: System
+          - generic [ref=e168]:
+            - generic [ref=e169]: Language
+            - combobox [ref=e170]:
+              - generic [ref=e171]: English
+              - img: ▼
+            - textbox [ref=e172]: en
+    - button "Close" [ref=e173]:
+      - img
+      - generic [ref=e174]: Close

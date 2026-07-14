@@ -58,14 +58,27 @@ export class FakeRtcTransceiver {
   mid: string;
   readonly init: RTCRtpTransceiverInit;
   readonly sender: FakeRtcSender;
+  codecPreferences: RTCRtpCodec[] = [];
   stopped = false;
+  private readonly note: (op: string) => void;
 
-  constructor(mid: string, track: MediaStreamTrack | null, init: RTCRtpTransceiverInit) {
+  constructor(
+    mid: string,
+    track: MediaStreamTrack | null,
+    init: RTCRtpTransceiverInit,
+    note: (op: string) => void,
+  ) {
     this.mid = mid;
     this.init = init;
+    this.note = note;
     // No sendEncodings (audio) still yields ONE parameter encoding — mirrors Chromium, where an
     // audio sender's getParameters().encodings has a single entry (the mic bitrate cap rides it).
     this.sender = new FakeRtcSender(track, init.sendEncodings ?? [{}]);
+  }
+
+  setCodecPreferences(codecs: RTCRtpCodec[]): void {
+    this.note("setCodecPreferences");
+    this.codecPreferences = codecs;
   }
 
   stop(): void {
@@ -97,7 +110,9 @@ export class FakeRtcPeerConnection {
 
   addTransceiver(track: MediaStreamTrack | null, init: RTCRtpTransceiverInit): FakeRtcTransceiver {
     this.note("addTransceiver");
-    const transceiver = new FakeRtcTransceiver(String(this.midCounter++), track, init);
+    const transceiver = new FakeRtcTransceiver(String(this.midCounter++), track, init, (op) =>
+      this.note(op),
+    );
     this.transceivers.push(transceiver);
     return transceiver;
   }
@@ -166,6 +181,27 @@ export class FakeRtcPeerConnection {
 export class FakeRtcPort {
   readonly pcs: FakeRtcPeerConnection[] = [];
   readonly log: EventLog;
+  videoCapabilities: RTCRtpCapabilities | null = {
+    codecs: [
+      { mimeType: "video/VP8", clockRate: 90_000 },
+      {
+        mimeType: "video/H264",
+        clockRate: 90_000,
+        sdpFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+      },
+      {
+        mimeType: "video/H264",
+        clockRate: 90_000,
+        sdpFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d001f",
+      },
+      { mimeType: "video/AV1", clockRate: 90_000 },
+      { mimeType: "video/VP9", clockRate: 90_000 },
+      { mimeType: "video/rtx", clockRate: 90_000 },
+      { mimeType: "video/red", clockRate: 90_000 },
+      { mimeType: "video/ulpfec", clockRate: 90_000 },
+    ],
+    headerExtensions: [],
+  };
 
   constructor(log?: EventLog) {
     this.log = log ?? new EventLog();
@@ -175,6 +211,14 @@ export class FakeRtcPort {
     const pc = new FakeRtcPeerConnection(config, this.log);
     this.pcs.push(pc);
     return pc as unknown as RTCPeerConnection;
+  }
+
+  senderCapabilities(kind: "audio" | "video"): RTCRtpCapabilities | null {
+    if (kind === "video") return this.videoCapabilities;
+    return {
+      codecs: [{ mimeType: "audio/opus", clockRate: 48_000, channels: 2 }],
+      headerExtensions: [],
+    };
   }
 
   last(): FakeRtcPeerConnection {

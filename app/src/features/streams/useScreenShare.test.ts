@@ -15,7 +15,7 @@ const USER = "u1";
 
 // A capture track double exposing its stop mock + `end()` to fire the "ended" event the controller
 // listens for (OS/browser stop button). §9.1 allows casts for test doubles. `height` (when given)
-// backs getSettings() — the acquisition height PublishSession snapshots for the per-rid scales;
+// backs getSettings() — the acquisition height PublishSession snapshots for the encoder scale;
 // omitted, the track has no getSettings and the session falls back to the preset height.
 function captureTrack(
   kind: "audio" | "video",
@@ -100,7 +100,12 @@ function makeDeps(
   return { deps, sent, notice };
 }
 
-const SEL: ShareSelection = { sourceId: "screen:0", preset: "1080p30", withAudio: false };
+const SEL: ShareSelection = {
+  sourceId: "screen:0",
+  preset: "1080p30",
+  codec: "vp8",
+  withAudio: false,
+};
 
 beforeEach(() => {
   useMediaStore.setState({ sharing: false, sharePreset: null, shareTrackName: null });
@@ -129,27 +134,31 @@ describe("FR-27 screen share publish", () => {
     const controller = new ScreenShareController(deps);
 
     await controller.start(SEL);
+    expect(controller.codec).toBe("vp8");
     expect(preview).toHaveBeenCalledWith("srv", previewId, first.track);
     await controller.replaceCapture({ ...SEL, preset: "1440p60" });
     expect(publication.replaceTrack).toHaveBeenCalledWith(second.track);
     await controller.stop();
+    expect(controller.codec).toBeNull();
     expect(publication.stop).toHaveBeenCalledTimes(1);
   });
 
-  it("start publishes h+i+l encodings from the preset table", async () => {
+  it("start publishes only the selected encoding from the preset table", async () => {
     const { session, port } = await makePublisher();
     const { deps } = makeDeps(session, {
       capture: async () => screenCapture(captureTrack("video").track, null),
     });
     const controller = new ScreenShareController(deps);
 
-    await controller.start({ sourceId: "screen:0", preset: "720p60", withAudio: false });
+    await controller.start({
+      sourceId: "screen:0",
+      preset: "720p60",
+      codec: "vp8",
+      withAudio: false,
+    });
 
-    // 720p60 keeps a 60 fps intermediate rung and a bounded 30 fps low rung.
     expect(port.last().transceivers[0]?.init.sendEncodings).toEqual([
-      { rid: "h", maxBitrate: 3_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
-      { rid: "i", maxBitrate: 1_050_000, maxFramerate: 60, scaleResolutionDownBy: 2 },
-      { rid: "l", maxBitrate: 300_000, maxFramerate: 30, scaleResolutionDownBy: 4 },
+      { maxBitrate: 3_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
     ]);
     expect(useMediaStore.getState().sharing).toBe(true);
     expect(useMediaStore.getState().sharePreset).toBe("720p60");
@@ -269,40 +278,30 @@ describe("FR-27 screen share publish", () => {
 });
 
 describe("FR-27 on-the-fly preset switch", () => {
-  it("setPreset avoids capture constraints and re-scales all encodings from acquisition height", async () => {
+  it("setPreset avoids capture constraints and re-scales the encoding from acquisition height", async () => {
     const { session, port } = await makePublisher();
     const video = captureTrack("video");
     const { deps } = makeDeps(session, {
       capture: async () => screenCapture(video.track, null),
     });
     const controller = new ScreenShareController(deps);
-    await controller.start({ sourceId: "screen:0", preset: "1080p30", withAudio: false });
+    await controller.start({ ...SEL, sourceId: "screen:0", preset: "1080p30" });
 
     await controller.setPreset("480p15");
 
     expect(video.track.applyConstraints).not.toHaveBeenCalled();
     const sender = port.last().transceivers[0]?.sender;
     expect(sender?.encodings[0]).toMatchObject({
-      rid: "h",
       maxBitrate: 400_000,
       maxFramerate: 15,
       scaleResolutionDownBy: 1080 / 480,
     });
-    expect(sender?.encodings[1]).toMatchObject({
-      rid: "i",
-      maxBitrate: 150_000,
-      scaleResolutionDownBy: 1080 / 240,
-    });
-    expect(sender?.encodings[2]).toMatchObject({
-      rid: "l",
-      maxBitrate: 100_000,
-      scaleResolutionDownBy: 1080 / 180,
-    });
+    expect(sender?.encodings).toHaveLength(1);
     expect(useMediaStore.getState().sharePreset).toBe("480p15");
   });
 
   it("scales derive from the REAL acquisition height when the capture is smaller than the preset (S12.4 CI finding)", async () => {
-    // A 720-high capture published as 1080p30 (small screen): h cannot upscale (scale 1). Dropping
+    // A 720-high capture published as 1080p30 (small screen) cannot upscale (scale 1). Dropping
     // to 480p30 then re-encodes from 720 — the capturer is never asked to
     // resize, so the drop reaches viewers even where display-capture applyConstraints no-ops.
     const { session, port } = await makePublisher();
@@ -311,28 +310,19 @@ describe("FR-27 on-the-fly preset switch", () => {
       capture: async () => screenCapture(video.track, null),
     });
     const controller = new ScreenShareController(deps);
-    await controller.start({ sourceId: "screen:0", preset: "1080p30", withAudio: false });
+    await controller.start({ ...SEL, sourceId: "screen:0", preset: "1080p30" });
 
     expect(port.last().transceivers[0]?.init.sendEncodings).toEqual([
-      { rid: "h", maxBitrate: 3_500_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
-      {
-        rid: "i",
-        maxBitrate: 1_225_000,
-        maxFramerate: 30,
-        scaleResolutionDownBy: 720 / 540,
-      },
-      { rid: "l", maxBitrate: 350_000, maxFramerate: 30, scaleResolutionDownBy: 720 / 270 },
+      { maxBitrate: 3_500_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
     ]);
 
     await controller.setPreset("480p30");
 
     const sender = port.last().transceivers[0]?.sender;
     expect(sender?.encodings[0]).toMatchObject({
-      rid: "h",
       scaleResolutionDownBy: 720 / 480,
     });
-    expect(sender?.encodings[1]).toMatchObject({ scaleResolutionDownBy: 720 / 240 });
-    expect(sender?.encodings[2]).toMatchObject({ scaleResolutionDownBy: 720 / 180 });
+    expect(sender?.encodings).toHaveLength(1);
   });
 
   it("no renegotiation occurs (fake signal layer records zero new offers)", async () => {
@@ -377,9 +367,14 @@ describe("FR-27 on-the-fly preset switch", () => {
       .mockResolvedValueOnce(screenCapture(nextVideo.track, null));
     const { deps, sent } = makeDeps(session, { capture });
     const controller = new ScreenShareController(deps);
-    await controller.start({ sourceId: "screen:0", preset: "1080p30", withAudio: true });
+    await controller.start({ ...SEL, sourceId: "screen:0", preset: "1080p30", withAudio: true });
 
-    await controller.replaceCapture({ sourceId: "screen:0", preset: "1440p60", withAudio: true });
+    await controller.replaceCapture({
+      ...SEL,
+      sourceId: "screen:0",
+      preset: "1440p60",
+      withAudio: true,
+    });
 
     expect(sent).toContainEqual({
       t: "stream.preset",

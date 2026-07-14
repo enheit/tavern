@@ -133,11 +133,8 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
       await joinVoice(b);
       const track = await startScreenShare(a, "720p30");
       await b.page.getByTestId(`stream-tile-${track}`).getByTestId(`stream-watch-${track}`).click();
-      // A grid tile pulls the HIGH layer from the start (always-h policy) — the h-preset change is
-      // observable without focusing. 40s: the SFU only forwards h once the viewer's bandwidth
-      // estimate clears the h bitrate (1800 kbps here), and that ramp regularly needs >20s on
-      // constrained CI runners (S12.4 docker probe) — the upswitch itself is SFU/BWE-governed, not
-      // product logic.
+      // The watcher receives the only selected encoding without focusing. Allow the real SFU and
+      // browser bandwidth estimate to warm up before changing the preset.
       await expect
         .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 40_000 })
         .toBeGreaterThan(480);
@@ -155,8 +152,8 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
           timeout: 2_000,
         });
       }).toPass({ timeout: 30_000 });
-      // Fault-domain split (S12.4 nightly finding): FIRST assert A's own encoder re-encodes the h
-      // layer at ≤480 (outbound-rtp via the §10 hook — publisher-local, no SFU involved). A red HERE
+      // Fault-domain split: FIRST assert A's own encoder re-encodes the single
+      // output at ≤480 (outbound-rtp via the §10 hook — publisher-local, no SFU involved). A red HERE
       // means applyConstraints/setParameters did not reach the encoder; a red on the viewer poll
       // BELOW then isolates the SFU→watcher path. `Infinity` when the h layer has no frameHeight yet
       // so a missing stat can never pass the ≤ check.
@@ -167,13 +164,13 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
               (tn) => window.__tavernTestRtc?.outboundVideoStats(tn),
               track,
             );
-            const h = (layers ?? []).find((layer) => layer.rid === "h");
-            return h?.frameHeight ?? Number.POSITIVE_INFINITY;
+            const encoding = (layers ?? [])[0];
+            return encoding?.frameHeight ?? Number.POSITIVE_INFINITY;
           },
           { timeout: 20_000 },
         )
         .toBeLessThanOrEqual(480);
-      // B's inbound high layer shrinks to ≤ 480 (eventual over the real SFU: encoder reconfig +
+      // B's inbound encoding shrinks to ≤ 480 (eventual over the real SFU: encoder reconfig +
       // keyframe + forwarding; FR-27's AC pins the outcome, not a latency).
       await expect
         .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 30_000 })
@@ -183,7 +180,7 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
     }
   });
 
-  test("FR-33 grid tile receives the high layer without focus", async ({
+  test("FR-33 grid tile receives the selected encoding without focus", async ({
     browser,
     baseURL,
     api,
@@ -202,10 +199,9 @@ test.describe("FR-27/30/32/33 streams @realtime", () => {
         .poll(async () => (await videoStats(b.page, track)).framesDecoded, { timeout: 20_000 })
         .toBeGreaterThan(0);
 
-      // Always-h policy: an UNFOCUSED grid tile's inbound frameHeight climbs above the low layer
-      // (>270 for a 1080p source) with no click and no publisher involvement. 40s: the SFU forwards
-      // h only after the viewer's bandwidth estimate clears the h bitrate — the same BWE ramp window
-      // as FR-27's precondition poll (S12.4).
+      // An UNFOCUSED grid tile receives the publisher's only screen encoding. The source may be
+      // smaller than the requested preset in headless CI, so this checks that it is not a 270p
+      // fallback rather than assuming the fake display's physical size.
       await expect
         .poll(async () => (await videoStats(b.page, track)).frameHeight ?? 0, { timeout: 40_000 })
         .toBeGreaterThan(270);

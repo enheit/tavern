@@ -17,6 +17,7 @@ import type { SpeakingOpts } from "@/media/levelMeter";
 import { browserAudioPort, browserRtcPort } from "@/media/ports";
 import { PublishSession } from "@/media/rtc/publishSession";
 import type { OutboundVideoLayerStats, PublishState } from "@/media/rtc/publishSession";
+import type { ScreenCodec } from "@/media/rtc/codecs";
 import { PullSession } from "@/media/rtc/pullSession";
 import type { PullState } from "@/media/rtc/pullSession";
 import { createSfuSignal } from "@/media/sfuSignal";
@@ -60,6 +61,7 @@ interface PublishLike {
     video: MediaStreamTrack,
     audio: MediaStreamTrack | null,
     preset: PresetId,
+    codec: ScreenCodec,
   ): Promise<{ videoTrackName: string; audioTrackName?: string }>;
   // FR-29: the webcam publishes on the SAME publishPC (§7.1 one-publisher rule); useWebcam publishes
   // through this session (exposed via `webcamPublisher()`), which owns the `cam:{userId}` name + the

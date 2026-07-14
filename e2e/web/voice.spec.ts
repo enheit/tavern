@@ -38,8 +38,8 @@ declare global {
       stats(session: "voice"): Promise<{ bytesReceived: number; audioLevel: number | null }>;
       // Per-trackName inbound audio bytes (mic:{uid} → bytesReceived) — @realtime pairwise probe.
       statsByTrack(session: "voice"): Promise<Record<string, number>>;
-      // Publisher-side per-rid outbound video summary (FR-27 fault-domain split — streams-realtime
-      // asserts the h layer re-encodes a dropped preset before polling the viewer; quality-probe
+      // Publisher-side outbound video summary (FR-27 fault-domain split — streams-realtime
+      // asserts the encoding reconfigures before polling the viewer; quality-probe
       // reads the bitrate/limitation fields).
       outboundVideoStats(trackName: string): Promise<
         Array<{
@@ -50,6 +50,10 @@ declare global {
           framesPerSecond: number | null;
           targetBitrate: number | null;
           qualityLimitationReason: string | null;
+          codec: string | null;
+          encoderImplementation: string | null;
+          powerEfficientEncoder: boolean | null;
+          scalabilityMode: string | null;
         }>
       >;
       // Extends the S7.4 hook (S8.4 populates it; S8.5's streams specs assert it). Declared here so the

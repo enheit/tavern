@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage, ClientMessage, Member, ServerMessage } from "@tavern/shared";
+import { LIMITS } from "@tavern/shared";
 
 vi.mock("@/lib/wsClient", () => ({ connectRoom: vi.fn(), closeAllRooms: vi.fn() }));
 
@@ -8,6 +9,7 @@ import { connectRoom } from "@/lib/wsClient";
 import type { WsConnection } from "@/lib/wsClient";
 import { MessageList } from "@/features/chat/MessageList";
 import { resetRoomStores, roomStore } from "@/stores/room";
+import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
 
 const SID = "s-msglist";
@@ -147,6 +149,8 @@ beforeEach(() => {
   Reflect.set(Element.prototype, "scrollIntoView", () => undefined);
   vi.mocked(connectRoom).mockReturnValue(fakeConn);
   resetRoomStores();
+  fakeConn.status = "open";
+  useServersStore.setState({ servers: [], activeServerId: SID, connState: { [SID]: "open" } });
   useSessionStore.getState().setAuthed({
     userId: SELF,
     username: "alice_u",
@@ -161,6 +165,102 @@ afterEach(() => {
 });
 
 describe("FR-15 FR-17 message list", () => {
+  it("loads history after a newly joined server connection becomes ready", () => {
+    fakeConn.status = "connecting";
+    useServersStore.getState().setConnState(SID, "connecting");
+    render(<MessageList serverId={SID} />);
+
+    expect(sent.filter((frame) => frame.t === "chat.history")).toHaveLength(0);
+
+    act(() => {
+      fakeConn.status = "open";
+      useServersStore.getState().setConnState(SID, "open");
+    });
+
+    expect(sent.filter((frame) => frame.t === "chat.history")).toEqual([
+      {
+        t: "chat.history",
+        requestId: expect.any(String),
+        mode: "initial",
+        limit: LIMITS.historyPageSize,
+      },
+    ]);
+  });
+
+  it("opens initial history at the latest message when there are no unread messages", () => {
+    const scrollIntoView = vi.fn();
+    Reflect.set(Element.prototype, "scrollIntoView", scrollIntoView);
+    seedHello([member(SELF)], 30);
+    roomStore(SID).setState({
+      historyInitialized: true,
+      messages: [chatMessage({ id: 15 }), chatMessage({ id: 30 })],
+      // A reply jump handled by a previous MessageList lifetime must not replay on remount.
+      scrollToMessageId: 15,
+      scrollToMessageToken: 2,
+    });
+
+    let scrollTop = 0;
+    const scrollHeight = Object.getOwnPropertyDescriptor(HTMLDivElement.prototype, "scrollHeight");
+    const clientHeight = Object.getOwnPropertyDescriptor(HTMLDivElement.prototype, "clientHeight");
+    const originalScrollTop = Object.getOwnPropertyDescriptor(
+      HTMLDivElement.prototype,
+      "scrollTop",
+    );
+    Object.defineProperties(HTMLDivElement.prototype, {
+      scrollHeight: {
+        configurable: true,
+        get() {
+          return this.dataset["testid"] === "message-scroll" ? 600 : 0;
+        },
+      },
+      clientHeight: {
+        configurable: true,
+        get() {
+          return this.dataset["testid"] === "message-scroll" ? 100 : 0;
+        },
+      },
+      scrollTop: {
+        configurable: true,
+        get() {
+          return this.dataset["testid"] === "message-scroll" ? scrollTop : 0;
+        },
+        set(value: number) {
+          if (this.dataset["testid"] === "message-scroll") scrollTop = Math.min(value, 500);
+        },
+      },
+    });
+
+    try {
+      render(<MessageList serverId={SID} />);
+      expect(scrollTop).toBe(500);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      for (const [property, descriptor] of [
+        ["scrollHeight", scrollHeight],
+        ["clientHeight", clientHeight],
+        ["scrollTop", originalScrollTop],
+      ] as const) {
+        if (descriptor === undefined) Reflect.deleteProperty(HTMLDivElement.prototype, property);
+        else Object.defineProperty(HTMLDivElement.prototype, property, descriptor);
+      }
+    }
+  });
+
+  it("opens initial history at the first unread message when unread messages exist", () => {
+    const scrollIntoView = vi.fn();
+    Reflect.set(Element.prototype, "scrollIntoView", scrollIntoView);
+    seedHello([member(SELF), member(BOB)], 30, { first: 20, count: 11, lastRead: 19 });
+    roomStore(SID).setState({
+      historyInitialized: true,
+      messages: [chatMessage({ id: 19 }), chatMessage({ id: 20, userId: BOB })],
+    });
+
+    render(<MessageList serverId={SID} />);
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+  });
+
   it("self-mention gets highlight background; other mentions accent only", () => {
     seedHello([member(SELF, { username: "alice_u" }), member(BOB, { username: "bob_u" })], 0);
     act(() => {

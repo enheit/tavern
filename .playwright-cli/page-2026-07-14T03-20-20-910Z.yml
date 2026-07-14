@@ -1,0 +1,112 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e6]:
+      - banner [ref=e7]:
+        - button [ref=e357]:
+          - generic [ref=e10]: visual-47690a
+          - img
+        - button [ref=e358]: Set a status…
+        - button [ref=e359]:
+          - img
+      - generic [ref=e16]:
+        - navigation [ref=e17]:
+          - heading [level=2] [ref=e361]: Channels
+          - button [ref=e362]:
+            - img [ref=e21]
+            - generic [ref=e25]: Voice
+        - generic [ref=e27]:
+          - button [ref=e363]:
+            - generic [ref=e30]: v
+            - generic [ref=e32]:
+              - generic [ref=e33]: visual_47690a
+              - generic [ref=e34]: Online
+          - button [ref=e364]:
+            - img
+          - button [ref=e365]:
+            - img
+          - button [ref=e366]:
+            - img
+      - generic [ref=e39]:
+        - tablist [ref=e367]:
+          - tab [ref=e368]: Dashboard
+          - tab [ref=e369]: Recordings
+          - tab [ref=e370]: Screenshots
+          - tab [selected] [ref=e371]: Soundboard
+          - tab [ref=e372]: Polls
+        - tabpanel [ref=e373]:
+          - generic [ref=e98]:
+            - generic [ref=e99]:
+              - generic [ref=e100]: Soundboard
+              - generic [ref=e101]:
+                - button [ref=e374]:
+                  - img
+                - group [ref=e375]:
+                  - slider [ref=e109]: "100"
+                - button [ref=e376]:
+                  - img
+            - generic [ref=e339]:
+              - button [ref=e377]:
+                - generic [ref=e341]: 🥳
+                - generic [ref=e342]:
+                  - generic [ref=e343]: beep
+                  - generic [ref=e344]: "0"
+              - button [ref=e378]:
+                - img [ref=e346]
+      - generic [ref=e74]:
+        - generic [ref=e77]:
+          - textbox [ref=e379]:
+            - /placeholder: "Message #general"
+          - button [ref=e380]:
+            - img [ref=e80]
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - button [ref=e381]: GIF
+            - button [ref=e382]:
+              - img [ref=e87]
+              - generic [ref=e92]: "0"
+            - button [ref=e383]:
+              - img [ref=e94]
+              - text: Polls
+          - generic [ref=e96]:
+            - button [disabled]: Send
+    - region "Notifications alt+T"
+  - dialog "Upload sound" [ref=e387]:
+    - heading "Upload sound" [level=2] [ref=e389]
+    - generic [ref=e390]:
+      - generic [ref=e391]:
+        - generic [ref=e392]: MP3 file
+        - generic [ref=e393]:
+          - img [ref=e433]
+          - generic [ref=e398]:
+            - paragraph [ref=e399]: tavern-tone-10s.mp3
+            - paragraph [ref=e400]: MP3 · up to 10 MB and 5 minutes
+          - button "Browse" [active] [ref=e401]
+      - generic [ref=e402]:
+        - generic [ref=e403]:
+          - generic [ref=e404]: Name
+          - textbox "Name" [ref=e405]: tavern-tone-10s
+        - generic [ref=e406]:
+          - generic [ref=e407]: Related emoji
+          - button "◌ Choose" [ref=e408]:
+            - generic [ref=e409]: ◌
+            - generic [ref=e410]: Choose
+      - generic [ref=e413]:
+        - generic [ref=e414]: 0.00s
+        - generic [ref=e415]: 10.00s
+        - generic [ref=e416]: 10.00s
+      - generic [ref=e417]:
+        - generic [ref=e418]:
+          - generic [ref=e419]: Sound volume
+          - generic [ref=e420]: 100%
+        - group [ref=e421]:
+          - slider [ref=e426]: "100"
+      - paragraph [ref=e427]: Choose an emoji for this sound
+    - generic [ref=e428]:
+      - button "Cancel" [ref=e429]
+      - button "Preview" [ref=e443]:
+        - img
+        - text: Preview
+      - button "Upload" [disabled]
+    - button "Close" [ref=e430]:
+      - img
+      - generic [ref=e431]: Close

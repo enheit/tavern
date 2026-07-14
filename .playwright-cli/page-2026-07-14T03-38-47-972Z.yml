@@ -1,0 +1,115 @@
+- generic [ref=e2]:
+  - generic [ref=e50]:
+    - banner [ref=e51]:
+      - button "layout-server-535" [ref=e53]:
+        - generic [ref=e54]: layout-server-535
+        - img
+      - button "Edit server status" [ref=e56]: Set a status…
+      - generic [ref=e57]:
+        - button "Server settings" [ref=e58]:
+          - img
+        - generic "Connected" [ref=e59]
+    - generic [ref=e60]:
+      - navigation [ref=e61]:
+        - heading "Channels" [level=2] [ref=e62]
+        - button "Voice" [ref=e64]:
+          - img [ref=e65]
+          - generic [ref=e69]: Voice
+      - generic [ref=e71]:
+        - button "Account" [ref=e72]:
+          - generic [ref=e74]: l
+          - generic [ref=e76]:
+            - generic [ref=e77]: layout_535
+            - generic [ref=e78]: Online
+        - button "Mute" [ref=e79]:
+          - img
+        - button "Deafen" [ref=e80]:
+          - img
+        - button "Settings" [ref=e81]:
+          - img
+    - generic:
+      - generic:
+        - tablist "Workspace" [ref=e82]:
+          - tab "Dashboard" [selected] [ref=e83]
+          - tab "Recordings" [ref=e84]
+          - tab "Screenshots" [ref=e85]
+          - tab "Soundboard" [ref=e86]
+          - tab "Polls" [ref=e87]
+        - tabpanel "Dashboard":
+          - main:
+            - generic [ref=e88]:
+              - generic:
+                - heading "Tavern home" [level=1]
+                - paragraph: Recent moments from your people
+              - generic [ref=e89]:
+                - img [ref=e91]
+                - generic [ref=e97]:
+                  - heading "Live now" [level=2] [ref=e98]
+                  - paragraph [ref=e99]: The voice room is quiet
+              - generic:
+                - generic:
+                  - generic [ref=e100]:
+                    - heading "Recent hangouts" [level=2] [ref=e101]:
+                      - img [ref=e103]
+                      - text: Recent hangouts
+                    - paragraph [ref=e108]: Hangouts with at least one minute together will appear here.
+                  - generic [ref=e109]:
+                    - heading "Members" [level=2] [ref=e110]:
+                      - img [ref=e112]
+                      - text: Members
+                    - generic [ref=e117]:
+                      - generic [ref=e118]:
+                        - heading "Online · 1" [level=3] [ref=e119]
+                        - list [ref=e120]:
+                          - listitem [ref=e121]:
+                            - generic "layout_535" [ref=e123]: L
+                            - button "layout_535" [ref=e125]
+                      - generic [ref=e126]:
+                        - heading "Offline · 0" [level=3] [ref=e127]
+                        - paragraph [ref=e128]: No members
+                  - generic [ref=e129]:
+                    - heading "Points leaderboard" [level=2] [ref=e130]:
+                      - img [ref=e132]
+                      - text: Points leaderboard
+                    - list:
+                      - listitem [ref=e138]:
+                        - img [ref=e140]
+                        - generic "layout_535" [ref=e142]: L
+                        - generic: layout_535
+                        - generic [ref=e143]: 0 points
+                - complementary:
+                  - generic [ref=e144]:
+                    - heading "Latest screenshot" [level=2] [ref=e145]:
+                      - img [ref=e147]
+                      - text: Latest screenshot
+                    - paragraph [ref=e151]: No screenshots yet.
+                  - generic [ref=e152]:
+                    - heading "Latest recording" [level=2] [ref=e153]:
+                      - img [ref=e155]
+                      - text: Latest recording
+                    - paragraph [ref=e159]: No recordings yet.
+                  - generic [ref=e160]:
+                    - heading "Newest sound" [level=2] [ref=e161]:
+                      - img [ref=e163]
+                      - text: Newest sound
+                    - paragraph [ref=e164]: No sounds yet.
+    - generic [ref=e168]:
+      - generic [ref=e170]:
+        - list
+      - generic [ref=e174]:
+        - generic [ref=e177]:
+          - 'textbox "Message #general" [ref=e178]'
+          - button "Emoji" [ref=e179]:
+            - img [ref=e180]
+        - generic [ref=e183]:
+          - generic [ref=e184]:
+            - button "GIF" [ref=e185]
+            - button "Open point details" [ref=e186]:
+              - img [ref=e187]
+              - generic [ref=e192]: "0"
+            - button "Create poll" [ref=e193]:
+              - img [ref=e194]
+              - text: Polls
+          - generic [ref=e196]:
+            - button "Send" [disabled]
+  - region "Notifications alt+T"

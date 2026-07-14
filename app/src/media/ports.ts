@@ -4,6 +4,7 @@
 
 export interface RtcPort {
   createPeerConnection(config: RTCConfiguration): RTCPeerConnection;
+  senderCapabilities(kind: "audio" | "video"): RTCRtpCapabilities | null;
 }
 
 export interface AudioPort {
@@ -13,6 +14,8 @@ export interface AudioPort {
 
 export const browserRtcPort: RtcPort = {
   createPeerConnection: (config) => new RTCPeerConnection(config),
+  senderCapabilities: (kind) =>
+    typeof RTCRtpSender === "undefined" ? null : RTCRtpSender.getCapabilities(kind),
 };
 
 export const browserAudioPort: AudioPort = {

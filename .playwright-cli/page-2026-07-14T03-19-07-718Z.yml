@@ -1,0 +1,75 @@
+- generic [ref=e2]:
+  - generic [ref=e6]:
+    - banner [ref=e7]:
+      - button "visual-47690a" [ref=e319]:
+        - generic [ref=e10]: visual-47690a
+        - img
+      - button "Edit server status" [ref=e320]: Set a status…
+      - generic [ref=e13]:
+        - button "Server settings" [ref=e321]:
+          - img
+        - generic "Connected" [ref=e322]
+    - generic [ref=e16]:
+      - navigation [ref=e17]:
+        - heading "Channels" [level=2] [ref=e323]
+        - button "Voice" [ref=e324]:
+          - img [ref=e21]
+          - generic [ref=e25]: Voice
+      - generic [ref=e27]:
+        - button "Account" [ref=e325]:
+          - generic [ref=e30]: v
+          - generic [ref=e32]:
+            - generic [ref=e33]: visual_47690a
+            - generic [ref=e34]: Online
+        - button "Mute" [ref=e326]:
+          - img
+        - button "Deafen" [ref=e327]:
+          - img
+        - button "Settings" [ref=e328]:
+          - img
+    - generic [ref=e39]:
+      - tablist "Workspace" [ref=e329]:
+        - tab "Dashboard" [ref=e330]
+        - tab "Recordings" [ref=e331]
+        - tab "Screenshots" [ref=e332]
+        - tab "Soundboard" [selected] [ref=e333]
+        - tab "Polls" [ref=e334]
+      - tabpanel "Soundboard" [ref=e335]:
+        - generic [ref=e98]:
+          - generic [ref=e99]:
+            - generic [ref=e100]: Soundboard
+            - generic [ref=e101]:
+              - button "Mute soundboard" [ref=e336]:
+                - img
+              - group "Soundboard volume" [ref=e337]:
+                - slider [ref=e109]: "100"
+              - button "Upload sound" [active] [ref=e338]:
+                - img
+          - generic [ref=e339]:
+            - button "beep 0" [ref=e340]:
+              - generic [ref=e341]: 🥳
+              - generic [ref=e342]:
+                - generic [ref=e343]: beep
+                - generic [ref=e344]: "0"
+            - button "More actions for beep" [ref=e345]:
+              - img [ref=e346]
+    - generic [ref=e68]:
+      - generic [ref=e70]:
+        - list
+      - generic [ref=e74]:
+        - generic [ref=e77]:
+          - 'textbox "Message #general" [ref=e350]'
+          - button "Emoji" [ref=e351]:
+            - img [ref=e80]
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - button "GIF" [ref=e352]
+            - button "Open point details" [ref=e353]:
+              - img [ref=e87]
+              - generic [ref=e92]: "0"
+            - button "Create poll" [ref=e354]:
+              - img [ref=e94]
+              - text: Polls
+          - generic [ref=e96]:
+            - button "Send" [disabled]
+  - region "Notifications alt+T"

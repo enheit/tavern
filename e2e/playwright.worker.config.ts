@@ -9,10 +9,11 @@ import { TONE_WAV, WORKER_URL } from "./playwright.config";
 // suite as the `web` project, but the browser talks to wrangler on 8787 directly: the worker serves
 // the BUILT app (assets binding, SPA fallback) and /api same-origin — no Vite in the loop.
 //
-// The worker runs `--env e2e` (mock SFU + fast alarms via .dev.vars.e2e) exactly like the e2e worker
-// in playwright.config.ts, so the suite stays hermetic. `pnpm e2e:worker-target` builds the app
-// BEFORE this config starts wrangler (PLAN §14: wrangler must never have the assets dir rebuilt
-// under it — the ordering avoids that by construction).
+// The worker runs `--local --env e2e` (mock SFU + fast alarms via .dev.vars.e2e) exactly like the e2e
+// worker in playwright.config.ts, so the suite stays hermetic even if a production binding opts into
+// remote development. `pnpm e2e:worker-target` builds the app BEFORE this config starts wrangler
+// (PLAN §14: wrangler must never have the assets dir rebuilt under it — the ordering avoids that by
+// construction).
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const workerPort = new URL(WORKER_URL).port;
@@ -44,7 +45,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `pnpm -F @tavern/worker exec wrangler dev --env e2e --port ${workerPort}`,
+    command: `pnpm -F @tavern/worker exec wrangler dev --local --env e2e --port ${workerPort}`,
     url: `${WORKER_URL}/api/health`,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

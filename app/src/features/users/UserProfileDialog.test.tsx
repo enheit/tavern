@@ -3,9 +3,15 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getMock } = vi.hoisted(() => ({ getMock: vi.fn() }));
+const { fetchMarketIconMock, getMock } = vi.hoisted(() => ({
+  fetchMarketIconMock: vi.fn(),
+  getMock: vi.fn(),
+}));
 vi.mock("@/lib/apiClient", () => ({
   apiClient: { get: (path: string, schema: unknown) => getMock(path, schema) },
+}));
+vi.mock("@/features/market/marketApi", () => ({
+  fetchMarketIcon: (...args: unknown[]) => fetchMarketIconMock(...args),
 }));
 
 import { UserProfileName } from "@/features/users/UserProfileName";
@@ -26,6 +32,16 @@ const member: Member = {
 
 beforeEach(() => {
   getMock.mockReset();
+  fetchMarketIconMock.mockReset();
+  fetchMarketIconMock.mockResolvedValue(new Blob(["webp"], { type: "image/webp" }));
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: vi.fn(() => "blob:market-icon"),
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: vi.fn(),
+  });
   useSessionStore.setState({
     status: "authed",
     profile: { userId: SELF_ID, username: "self", displayName: "Self", color: "#ffffff" },
@@ -87,7 +103,12 @@ describe("user profile dialog", () => {
     fireEvent.click(screen.getByTestId(`user-profile-trigger-${MEMBER_ID}`));
 
     const icon = await screen.findByTestId("user-profile-market-icon");
-    expect(icon.getAttribute("src")).toContain("/api/media/market-icons/");
+    expect(icon.getAttribute("src")).toBe("blob:market-icon");
+    expect(fetchMarketIconMock).toHaveBeenCalledWith(
+      SERVER_ID,
+      "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      expect.any(AbortSignal),
+    );
     expect(icon.closest("button")?.getAttribute("aria-label")).toContain("40 points");
   });
 });

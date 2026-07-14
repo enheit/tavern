@@ -35,7 +35,7 @@ export interface SoundboardPlayForTest {
   gain: number;
 }
 
-// Per-rid outbound-rtp video summary of ONE published track (§10 @realtime, FR-27): lets the nightly
+// Outbound-rtp video summary of ONE published track (§10 @realtime, FR-27): lets the nightly
 // spec separate "publisher encodes the new preset" from "the SFU delivers it to the watcher".
 export interface OutboundVideoLayer {
   rid: string | null;
@@ -45,6 +45,10 @@ export interface OutboundVideoLayer {
   framesPerSecond: number | null;
   targetBitrate: number | null;
   qualityLimitationReason: string | null;
+  codec: string | null;
+  encoderImplementation: string | null;
+  powerEfficientEncoder: boolean | null;
+  scalabilityMode: string | null;
 }
 
 export interface TavernTestRtc {
@@ -56,8 +60,7 @@ export interface TavernTestRtc {
   statsByTrack(session: "voice"): Promise<Record<string, number>>;
   outboundVideoStats(trackName: string): Promise<OutboundVideoLayer[]>; // publisher-side (FR-27)
   layerCalls: Array<{ trackName: string; rid: ScreenRid }>; // FR-33 setLayer switches (S8.4/S8.5)
-  // Initial pull requests (pullTracks) with the simulcast rid each carried (null = no rid, e.g.
-  // audio) — lets the mock-SFU streams spec assert a watch pulled the HIGH layer from the start.
+  // Initial pull requests with each simulcast rid (null for the single-encoding screen/audio path).
   pullCalls: Array<{ trackName: string; rid: ScreenRid | null }>;
 }
 
@@ -132,7 +135,7 @@ export function clearWatchVideoStats(trackName: string): void {
 const layerCalls: Array<{ trackName: string; rid: ScreenRid }> = [];
 
 // Initial pull requests — pullSession.addRemoteTracks records {trackName, rid} per pulled track so the
-// streams spec can assert the always-high-layer policy (rid "h" on the first pull, no downswitch).
+// streams spec can assert screen video has no layer selector while webcam remains pinned high.
 const pullCalls: Array<{ trackName: string; rid: ScreenRid | null }> = [];
 
 // FR-20: the effective per-user gain the graph applies — the stored slider value, or 0 when the user

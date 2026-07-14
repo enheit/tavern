@@ -33,9 +33,12 @@ const fakeMediaArgs = [
   `--use-file-for-fake-audio-capture=${TONE_WAV}`,
 ];
 
-// webServer entries. The app dev server + the e2e worker (mock SFU, --env e2e picks .dev.vars.e2e)
-// always run; the real-SFU worker (8788, default env → real .dev.vars, no TAVERN_SFU_MOCK) is
-// appended ONLY when REALTIME_APP_ID is present (Playwright has no per-project webServer).
+// webServer entries. Every test-owned Worker is forced local so a production binding marked
+// `remote: true` cannot make CI depend on Wrangler authentication. The app dev server + the e2e
+// worker (mock SFU, --env e2e picks .dev.vars.e2e) always run; the real-SFU worker (8788, default
+// env → real .dev.vars, no TAVERN_SFU_MOCK) is appended ONLY when REALTIME_APP_ID is present
+// (Playwright has no per-project webServer). `--local` only localizes bindings; the real-SFU Worker
+// still reaches Cloudflare Realtime and TURN through its normal outbound HTTP requests.
 const appServer = {
   command: "pnpm -F @tavern/app dev",
   url: WEB_URL,
@@ -43,13 +46,13 @@ const appServer = {
   timeout: 120_000,
 };
 const e2eWorker = {
-  command: "pnpm -F @tavern/worker exec wrangler dev --env e2e --port 8787",
+  command: "pnpm -F @tavern/worker exec wrangler dev --local --env e2e --port 8787",
   url: `${WORKER_URL}/api/health`,
   reuseExistingServer: !process.env.CI,
   timeout: 120_000,
 };
 const realtimeWorker = {
-  command: "pnpm -F @tavern/worker exec wrangler dev --port 8788",
+  command: "pnpm -F @tavern/worker exec wrangler dev --local --port 8788",
   url: `${REALTIME_URL}/api/health`,
   reuseExistingServer: !process.env.CI,
   timeout: 120_000,

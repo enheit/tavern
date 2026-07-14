@@ -36,6 +36,15 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 import { m } from "@/paraglide/messages.js";
 import { platform } from "@/platform/types";
+import { browserRtcPort } from "@/media/ports";
+import {
+  DEFAULT_SCREEN_CODEC,
+  SCREEN_CODECS,
+  SCREEN_CODEC_LABELS,
+  isScreenCodec,
+  supportedScreenCodecs,
+} from "@/media/rtc/codecs";
+import type { ScreenCodec } from "@/media/rtc/codecs";
 import type { ShareSelection } from "./types";
 
 // Preset option labels (technical resolution×fps identifiers, kept as data — like the AppSection
@@ -70,6 +79,8 @@ interface SharePickerDialogProps {
   onOpenChange(open: boolean): void;
   onStart(sel: ShareSelection): void;
   initialPreset?: PresetId;
+  initialCodec?: ScreenCodec;
+  codecLocked?: boolean;
 }
 
 // FR-28 source/quality picker. Every share requests audio: desktop uses OS loopback or the Linux
@@ -81,18 +92,26 @@ export function SharePickerDialog({
   onOpenChange,
   onStart,
   initialPreset = DEFAULT_SCREEN_PRESET,
+  initialCodec = DEFAULT_SCREEN_CODEC,
+  codecLocked = false,
 }: SharePickerDialogProps) {
   const isDesktop = platform.kind === "desktop";
   const portalPicker = isDesktop && platform.capture.sourceMode === "portal";
   const [sources, setSources] = useState<ScreenSource[]>([]);
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [preset, setPreset] = useState<PresetId>(DEFAULT_SCREEN_PRESET);
+  const [codec, setCodec] = useState<ScreenCodec>(DEFAULT_SCREEN_CODEC);
   // Defaults to "granted" so the permission hint never flashes while the real status loads.
   const [accessStatus, setAccessStatus] = useState<ScreenAccessStatus>("granted");
+  const supportedCodecs = supportedScreenCodecs(browserRtcPort.senderCapabilities("video"));
+  const selectedCodecSupported = supportedCodecs.includes(codec);
 
   useEffect(() => {
-    if (open) setPreset(initialPreset);
-  }, [initialPreset, open]);
+    if (open) {
+      setPreset(initialPreset);
+      setCodec(initialCodec);
+    }
+  }, [initialCodec, initialPreset, open]);
 
   useEffect(() => {
     if (!open || !isDesktop) return;
@@ -131,7 +150,8 @@ export function SharePickerDialog({
 
   const start = (): void => {
     if (isDesktop && sourceId === null) return;
-    onStart({ sourceId, preset, withAudio: true });
+    if (!supportedCodecs.includes(codec)) return;
+    onStart({ sourceId, preset, codec, withAudio: true });
   };
 
   const screens = sources.filter((s) => s.id.startsWith("screen:"));
@@ -231,9 +251,46 @@ export function SharePickerDialog({
               </SelectContent>
             </Select>
           </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium">{m.streams_share_codec()}</span>
+            <Select
+              value={codec}
+              items={SCREEN_CODEC_LABELS}
+              disabled={codecLocked}
+              onValueChange={(value) => {
+                if (isScreenCodec(value)) setCodec(value);
+              }}
+            >
+              <SelectTrigger data-testid="share-codec" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SCREEN_CODECS.map((value) => {
+                  const supported = supportedCodecs.includes(value);
+                  return (
+                    <SelectItem
+                      key={value}
+                      value={value}
+                      disabled={!supported}
+                      data-testid={`codec-option-${value}`}
+                    >
+                      {supported
+                        ? SCREEN_CODEC_LABELS[value]
+                        : `${SCREEN_CODEC_LABELS[value]} (${m.streams_share_codec_unavailable()})`}
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+            {!selectedCodecSupported && (
+              <p data-testid="share-codec-unavailable" className="text-xs text-destructive">
+                {m.streams_share_codec_not_supported()}
+              </p>
+            )}
+          </div>
           <Button
             data-testid="share-start"
-            disabled={isDesktop && sourceId === null}
+            disabled={(isDesktop && sourceId === null) || !selectedCodecSupported}
             onClick={start}
           >
             {m.streams_share_start()}

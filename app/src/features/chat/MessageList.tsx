@@ -4,6 +4,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { focusStore } from "@/lib/focusState";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
+import { useServersStore } from "@/stores/servers";
 import { useSessionStore } from "@/stores/session";
 import { MessageRow } from "./MessageRow";
 
@@ -33,6 +34,7 @@ export function MessageList({ serverId, active = true }: { serverId: string; act
   const deleteMessage = useStore(store, (s) => s.deleteMessage);
   const setReaction = useStore(store, (s) => s.setReaction);
   const focused = useStore(focusStore, (s) => s.focused);
+  const connectionStatus = useServersStore((s) => s.connState[serverId] ?? "connecting");
   const self = useSessionStore((s) => s.profile);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -44,8 +46,11 @@ export function MessageList({ serverId, active = true }: { serverId: string; act
   const loadingNewerRef = useRef(false);
   const prependHeightRef = useRef<number | null>(null);
   const seenUnreadRef = useRef(new Set<number>());
-  const handledTargetTokenRef = useRef(0);
-  const handledBottomTokenRef = useRef(0);
+  // Commands already present when this component mounts belong to its previous lifetime. Initial
+  // history positioning below independently chooses first-unread or latest.
+  const handledTargetTokenRef = useRef(scrollTargetToken);
+  const handledBottomTokenRef = useRef(scrollToBottomToken);
+  const initialPositionedRef = useRef(false);
   const initialRequestedRef = useRef(false);
   const [atBottom, setAtBottom] = useState(true);
 
@@ -62,13 +67,20 @@ export function MessageList({ serverId, active = true }: { serverId: string; act
     [messages, self?.userId],
   );
 
+  // A newly joined server renders this panel while its socket is still connecting. Wait for the
+  // hello handshake before requesting history, and clear the request latch on disconnect so a
+  // reconnect retries any request that did not receive a page.
   useEffect(() => {
+    if (connectionStatus !== "open") {
+      initialRequestedRef.current = false;
+      return;
+    }
     if (!initialized && !initialRequestedRef.current) {
       initialRequestedRef.current = true;
       loadInitial();
     }
     if (initialized) initialRequestedRef.current = false;
-  }, [initialized, loadInitial]);
+  }, [connectionStatus, initialized, loadInitial]);
 
   const updateReadState = useCallback(() => {
     const container = scrollRef.current;
@@ -152,6 +164,10 @@ export function MessageList({ serverId, active = true }: { serverId: string; act
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
+    if (!initialized) {
+      initialPositionedRef.current = false;
+      return;
+    }
     const previousHeight = prependHeightRef.current;
     if (previousHeight !== null) {
       element.scrollTop += element.scrollHeight - previousHeight;
@@ -160,10 +176,31 @@ export function MessageList({ serverId, active = true }: { serverId: string; act
     }
     loadingNewerRef.current = false;
 
-    if (active && scrollTarget !== null && handledTargetTokenRef.current !== scrollTargetToken) {
+    if (active && !initialPositionedRef.current) {
+      if (firstUnreadId === null) {
+        element.scrollTop = element.scrollHeight;
+        atBottomRef.current = true;
+        setAtBottom(true);
+        initialPositionedRef.current = true;
+      } else {
+        const target = element.querySelector<HTMLElement>(`[data-message-id="${firstUnreadId}"]`);
+        if (target !== null) {
+          target.scrollIntoView({ block: "center" });
+          atBottomRef.current = false;
+          setAtBottom(false);
+          initialPositionedRef.current = true;
+        }
+      }
+    } else if (
+      active &&
+      scrollTarget !== null &&
+      handledTargetTokenRef.current !== scrollTargetToken
+    ) {
       const target = element.querySelector<HTMLElement>(`[data-message-id="${scrollTarget}"]`);
       if (target !== null) {
         target.scrollIntoView({ block: "center" });
+        atBottomRef.current = false;
+        setAtBottom(false);
         target.dataset.highlighted = "true";
         target.addEventListener(
           "animationend",
@@ -183,7 +220,16 @@ export function MessageList({ serverId, active = true }: { serverId: string; act
       element.scrollTop = element.scrollHeight;
     }
     updateReadState();
-  }, [active, messages, scrollTarget, scrollTargetToken, scrollToBottomToken, updateReadState]);
+  }, [
+    active,
+    firstUnreadId,
+    initialized,
+    messages,
+    scrollTarget,
+    scrollTargetToken,
+    scrollToBottomToken,
+    updateReadState,
+  ]);
 
   return (
     <div data-testid="message-list" className="relative flex min-h-0 flex-1 flex-col">

@@ -20,7 +20,7 @@ describe("App-D presets", () => {
   it("has 12 base ids × 4 data tiers with correct h-layer bitrates", () => {
     expect(BASE_PRESET_IDS.length).toBe(12);
     expect(PRESET_IDS.length).toBe(BASE_PRESET_IDS.length * DATA_TIERS.length);
-    expect(presetKbps("1080p60")).toBe(6000);
+    expect(presetKbps("1080p60")).toBe(12000);
     expect(presetKbps("480p15")).toBe(400);
     expect(kbpsFor("1080p30", "h")).toBe(3500);
     expect(kbpsFor("1080p30", "i")).toBe(1225);
@@ -66,12 +66,12 @@ describe("App-D presets", () => {
     }
   });
 
-  it("maps cadence to content/degradation policy and detects capture upgrades", () => {
+  it("maps cadence to content while preserving explicit screen geometry", () => {
     expect(contentHintForPreset("1080p60")).toBe("motion");
-    expect(degradationPreferenceForPreset("1080p60")).toBe("maintain-framerate");
+    expect(degradationPreferenceForPreset("1080p60")).toBe("maintain-resolution");
     expect(contentHintForPreset("1080p15")).toBe("detail");
     expect(degradationPreferenceForPreset("1080p15")).toBe("maintain-resolution");
-    expect(degradationPreferenceForPreset("1080p30")).toBe("balanced");
+    expect(degradationPreferenceForPreset("1080p30")).toBe("maintain-resolution");
     expect(presetFitsCaptureCeiling("720p60", "1080p60")).toBe(true);
     expect(presetFitsCaptureCeiling("1080p60", "1080p30")).toBe(false);
     expect(presetFitsCaptureCeiling("1440p30", "1080p60")).toBe(false);

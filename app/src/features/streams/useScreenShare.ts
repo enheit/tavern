@@ -8,6 +8,7 @@ import { captureScreen, SYSTEM_AUDIO_OFF } from "@/media/capture";
 import type { ScreenCapture } from "@/media/capture";
 import { startPublisherQualityMonitor } from "@/media/qualityMonitor";
 import type { OutboundVideoLayerStats } from "@/media/rtc/publishSession";
+import type { ScreenCodec } from "@/media/rtc/codecs";
 import { m } from "@/paraglide/messages.js";
 import { platform } from "@/platform/types";
 import { getVoiceController } from "@/features/voice/voiceController";
@@ -18,14 +19,15 @@ import { startStreamPreview, type StreamPreviewPublication } from "./streamPrevi
 
 // The shared publishPC surface screen share needs (§7.1: mic + screen + cam share ONE publish
 // session, owned by the voiceController). PublishSession OWNS track naming + the per-share `n`
-// counter and the h/i/l encodings — useScreenShare passes NO names/kind and computes none.
+// counter and the selected single encoding — useScreenShare passes NO names/kind and computes none.
 export interface ScreenPublisher {
   publishStream(
     video: MediaStreamTrack,
     audio: MediaStreamTrack | null,
     preset: PresetId,
+    codec: ScreenCodec,
   ): Promise<{ videoTrackName: string; audioTrackName?: string; previewId?: string }>;
-  // In-ceiling switch: setParameters re-scales all encodings from the acquisition height without
+  // In-ceiling switch: setParameters re-scales the encoding from the acquisition height without
   // capture constraint churn. useScreenShare broadcasts stream.preset only after it succeeds.
   setPreset(trackName: string, preset: PresetId): Promise<void>;
   replaceScreenTrack(
@@ -117,6 +119,10 @@ export class ScreenShareController {
     return this.selection?.preset ?? null;
   }
 
+  get codec(): ScreenCodec | null {
+    return this.selection?.codec ?? null;
+  }
+
   private monitorQuality(
     publisher: ScreenPublisher,
     trackName: string,
@@ -155,7 +161,7 @@ export class ScreenShareController {
     if (capture.audioSource !== "monitor") platform.capture.releaseStreamAudio();
     let names: { videoTrackName: string; audioTrackName?: string; previewId?: string };
     try {
-      names = await publisher.publishStream(video, audio, sel.preset);
+      names = await publisher.publishStream(video, audio, sel.preset, sel.codec);
     } catch (err) {
       // Publish failed — stop the captured tracks and leave the share state idle. A typed publish
       // rejection (G4 share_cap, G5 cost_cap, …) surfaces as an i18n toast (§9.5); a capture-cancel or
@@ -274,7 +280,8 @@ export class ScreenShareController {
     }
     if (
       sel.withAudio !== currentSelection.withAudio ||
-      sel.sourceId !== currentSelection.sourceId
+      sel.sourceId !== currentSelection.sourceId ||
+      sel.codec !== currentSelection.codec
     ) {
       await this.stop();
       await this.start(sel);
@@ -341,6 +348,7 @@ export function useScreenShare(): {
   sharing: boolean;
   preset: PresetId | null;
   trackName: string | null;
+  codec: ScreenCodec | null;
   start(sel: ShareSelection): Promise<void>;
   stop(): Promise<void>;
   setPreset(preset: PresetId): Promise<void>;
@@ -354,6 +362,7 @@ export function useScreenShare(): {
     sharing,
     preset,
     trackName,
+    codec: getScreenShareController().codec,
     captureCeiling: getScreenShareController().captureCeiling,
     start: (sel) => getScreenShareController().start(sel),
     stop: () => getScreenShareController().stop(),

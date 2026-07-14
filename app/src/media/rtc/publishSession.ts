@@ -1,19 +1,19 @@
-import type { PresetId, ScreenRid } from "@tavern/shared";
+import type { PresetId } from "@tavern/shared";
 import { platform } from "@/platform/types";
 import { watchConnectionRecovery } from "./connectionRecovery";
 import {
   SCREEN_PRESETS,
-  SCREEN_SIMULCAST_PROFILE,
   WEBCAM_INTERMEDIATE,
   WEBCAM_LOW,
   WEBCAM_PRESET,
   contentHintForPreset,
   degradationPreferenceForPreset,
-  screenLayerSpecs,
 } from "@tavern/shared";
 import type { RtcPort } from "../ports";
 import type { SfuSignal } from "../sfuSignal";
 import { camTrackName, micTrackName, screenAudioTrackName, screenTrackName } from "../trackName";
+import { screenCodecPreferences } from "./codecs";
+import type { ScreenCodec } from "./codecs";
 
 export type PublishState =
   | "idle"
@@ -37,6 +37,9 @@ export interface OutboundVideoLayerStats {
   qualityLimitationReason: string | null;
   totalEncodeTime: number | null;
   codec: string | null;
+  encoderImplementation: string | null;
+  powerEfficientEncoder: boolean | null;
+  scalabilityMode: string | null;
   roundTripTime: number | null;
 }
 
@@ -83,7 +86,7 @@ interface PublishSpec {
   // carries maxaveragebitrate=<bps> (the mic path — content/screen audio keeps browser defaults).
   opusMaxAverageBitrate?: number;
   preset?: PresetId;
-  simulcastProfile?: typeof SCREEN_SIMULCAST_PROFILE;
+  codec?: ScreenCodec;
 }
 
 // Rewrites ONE audio m-line's Opus fmtp in an SDP: the section owning `a=mid:<mid>` gets
@@ -135,7 +138,7 @@ export function withOpusMaxAverageBitrate(sdp: string, mid: string, bps: number)
 
 // The height the capture track actually delivers, read ONCE at acquisition (getSettings() is
 // truthful before any constraint churn; test doubles may omit it → preset fallback). Stored per
-// track: every later per-rid scale derives from it, never from live getSettings() — after an
+// track: every later encoder scale derives from it, never from live getSettings() — after an
 // applyConstraints the settings can transiently report the constrained size while the frames keep
 // the acquisition size (S12.4 nightly probe).
 function trackHeightOf(track: MediaStreamTrack, fallback: number): number {
@@ -143,16 +146,19 @@ function trackHeightOf(track: MediaStreamTrack, fallback: number): number {
   return typeof height === "number" && height > 0 ? height : fallback;
 }
 
-// Three bounded simulcast layers. Resolution is owned by the encoder after acquisition; every scale
-// derives from the actual capture height and is clamped to 1 so a browser never upscales a smaller
-// source. The i layer retains the selected cadence, giving Cloudflare a useful fallback before l.
+// Screen share intentionally has one encoding: the exact preset selected by the user. Publishing
+// h/i/l simultaneously made the browser encode three copies and allowed the SFU to replace a 2K/60
+// selection with a much smaller layer. The encoder scale derives from the acquired track and is
+// clamped to 1 so a browser never upscales a source that is smaller than the selected preset.
 function screenEncodings(preset: PresetId, captureHeight: number): RTCRtpEncodingParameters[] {
-  return screenLayerSpecs(preset).map((layer) => ({
-    rid: layer.rid,
-    maxBitrate: layer.maxKbps * KBPS,
-    maxFramerate: layer.fps,
-    scaleResolutionDownBy: Math.max(1, captureHeight / layer.heightTarget),
-  }));
+  const selected = SCREEN_PRESETS[preset];
+  return [
+    {
+      maxBitrate: selected.maxKbps * KBPS,
+      maxFramerate: selected.fps,
+      scaleResolutionDownBy: Math.max(1, captureHeight / selected.height),
+    },
+  ];
 }
 
 function camEncodings(): RTCRtpEncodingParameters[] {
@@ -282,11 +288,24 @@ export class PublishSession {
       const sessionId = this.requireSession();
       this.setState("renegotiating");
       try {
-        const added = specs.map((spec) => {
+        // Resolve every explicit preference before mutating the PeerConnection. A missing selected
+        // codec is a hard error: Tavern never falls back to another encoder behind the user's back.
+        const prepared = specs.map((spec) => ({
+          spec,
+          codecPreferences:
+            spec.codec === undefined
+              ? null
+              : screenCodecPreferences(this.rtc.senderCapabilities("video"), spec.codec),
+        }));
+        const added = prepared.map(({ spec, codecPreferences }) => {
           const init: RTCRtpTransceiverInit = spec.encodings
             ? { direction: "sendonly", sendEncodings: spec.encodings }
             : { direction: "sendonly" };
-          return { spec, transceiver: pc.addTransceiver(spec.track, init) };
+          const transceiver = pc.addTransceiver(spec.track, init);
+          // This standards-based preference is applied before createOffer. It changes codec order
+          // without rewriting SDP and leaves resolution/FPS/bitrate policy entirely untouched.
+          if (codecPreferences !== null) transceiver.setCodecPreferences(codecPreferences);
+          return { spec, transceiver };
         });
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -294,9 +313,6 @@ export class PublishSession {
           mid: midOf(transceiver),
           trackName: spec.trackName,
           ...(spec.preset === undefined ? {} : { preset: spec.preset }),
-          ...(spec.simulcastProfile === undefined
-            ? {}
-            : { simulcastProfile: spec.simulcastProfile }),
         }));
         for (const { spec, transceiver } of added) {
           this.senders.set(spec.trackName, transceiver.sender);
@@ -326,8 +342,21 @@ export class PublishSession {
           }
           await pc.setRemoteDescription(desc);
         }
+        const configureScreenSenders = async (): Promise<void> => {
+          // `sendEncodings` owns initial geometry/cadence/bitrate. degradationPreference belongs to
+          // RTCRtpSendParameters and must be applied to the live sender before publication readiness.
+          await Promise.all(
+            added.flatMap(({ spec, transceiver }) => {
+              if (spec.preset === undefined) return [];
+              const params = transceiver.sender.getParameters();
+              params.degradationPreference = degradationPreferenceForPreset(spec.preset);
+              return [transceiver.sender.setParameters(params)];
+            }),
+          );
+        };
         if (answer.publicationId !== undefined) {
           try {
+            await configureScreenSenders();
             // The hermetic E2E SFU intentionally has no media plane or ICE candidates; its
             // structurally-valid SDP handshake is the readiness proof. Production must still prove
             // a connected PeerConnection before making the reserved publication pullable.
@@ -349,6 +378,8 @@ export class PublishSession {
             }
             throw err;
           }
+        } else {
+          await configureScreenSenders();
         }
         this.setState("connected");
         return answer.publicationId;
@@ -379,6 +410,7 @@ export class PublishSession {
     video: MediaStreamTrack,
     audio: MediaStreamTrack | null,
     preset: PresetId,
+    codec: ScreenCodec,
   ): Promise<{ videoTrackName: string; audioTrackName?: string; previewId?: string }> {
     const n = ++this.shareCounter;
     const videoTrackName = screenTrackName(this.userId, n);
@@ -390,7 +422,7 @@ export class PublishSession {
         trackName: videoTrackName,
         encodings: screenEncodings(preset, captureHeight),
         preset,
-        simulcastProfile: SCREEN_SIMULCAST_PROFILE,
+        codec,
       },
     ];
     let audioTrackName: string | undefined;
@@ -419,18 +451,19 @@ export class PublishSession {
     preset: PresetId,
     captureHeight: number,
   ): Promise<void> {
-    const layers = new Map<ScreenRid, ReturnType<typeof screenLayerSpecs>[number]>();
-    for (const layer of screenLayerSpecs(preset)) layers.set(layer.rid, layer);
+    const selected = SCREEN_PRESETS[preset];
     const params = sender.getParameters();
-    params.degradationPreference = degradationPreferenceForPreset(preset);
-    for (const enc of params.encodings) {
-      const layer =
-        enc.rid === "h" || enc.rid === "i" || enc.rid === "l" ? layers.get(enc.rid) : undefined;
-      if (layer === undefined) continue;
-      enc.maxBitrate = layer.maxKbps * KBPS;
-      enc.maxFramerate = layer.fps;
-      enc.scaleResolutionDownBy = Math.max(1, captureHeight / layer.heightTarget);
+    if (params.encodings.length !== 1) {
+      throw new Error(
+        `screen sender must expose exactly one encoding, got ${params.encodings.length}`,
+      );
     }
+    params.degradationPreference = degradationPreferenceForPreset(preset);
+    const encoding = params.encodings[0];
+    if (encoding === undefined) throw new Error("screen sender encoding disappeared");
+    encoding.maxBitrate = selected.maxKbps * KBPS;
+    encoding.maxFramerate = selected.fps;
+    encoding.scaleResolutionDownBy = Math.max(1, captureHeight / selected.height);
     await sender.setParameters(params);
   }
 
@@ -482,7 +515,7 @@ export class PublishSession {
     });
   }
 
-  // Read-only outbound-rtp VIDEO summary for ONE published track, per simulcast rid — the §10
+  // Read-only outbound-rtp VIDEO summary for ONE published track — the §10
   // @realtime hook's publisher-side counterpart of the watch pull's inboundVideoStats. It splits an
   // FR-27 preset-drop red into fault domains: is the local encoder producing the new height (h-layer
   // frameHeight here) or is the SFU→viewer path stale (inbound stats on the watcher)? Sender-scoped
@@ -554,6 +587,20 @@ export class PublishSession {
         codec:
           "codecId" in stat && typeof stat.codecId === "string"
             ? (codecs.get(stat.codecId) ?? null)
+            : null,
+        // These standard fields are deliberately diagnostic rather than a codec-selection oracle:
+        // browsers may omit them for privacy, and codec availability alone does not prove hardware.
+        encoderImplementation:
+          "encoderImplementation" in stat && typeof stat.encoderImplementation === "string"
+            ? stat.encoderImplementation
+            : null,
+        powerEfficientEncoder:
+          "powerEfficientEncoder" in stat && typeof stat.powerEfficientEncoder === "boolean"
+            ? stat.powerEfficientEncoder
+            : null,
+        scalabilityMode:
+          "scalabilityMode" in stat && typeof stat.scalabilityMode === "string"
+            ? stat.scalabilityMode
             : null,
         roundTripTime,
       });

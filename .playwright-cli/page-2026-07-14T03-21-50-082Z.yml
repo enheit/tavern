@@ -1,0 +1,120 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e6]:
+      - banner [ref=e7]:
+        - button [ref=e615]:
+          - generic [ref=e10]: visual-47690a
+          - img
+        - button [ref=e616]: Set a status…
+        - button [ref=e617]:
+          - img
+      - generic [ref=e16]:
+        - navigation [ref=e17]:
+          - heading [level=2] [ref=e619]: Channels
+          - button [ref=e620]:
+            - img [ref=e21]
+            - generic [ref=e25]: Voice
+        - generic [ref=e27]:
+          - button [ref=e621]:
+            - generic [ref=e30]: v
+            - generic [ref=e32]:
+              - generic [ref=e33]: visual_47690a
+              - generic [ref=e34]: Online
+          - button [ref=e622]:
+            - img
+          - button [ref=e623]:
+            - img
+          - button [ref=e624]:
+            - img
+      - generic [ref=e39]:
+        - tablist [ref=e625]:
+          - tab [ref=e626]: Dashboard
+          - tab [ref=e627]: Recordings
+          - tab [ref=e628]: Screenshots
+          - tab [selected] [ref=e629]: Soundboard
+          - tab [ref=e630]: Polls
+        - tabpanel [ref=e631]:
+          - generic [ref=e98]:
+            - generic [ref=e99]:
+              - generic [ref=e100]: Soundboard
+              - generic [ref=e101]:
+                - button [pressed] [ref=e632]:
+                  - img
+                - group [ref=e633]:
+                  - slider [ref=e109]: "100"
+                - button [ref=e634]:
+                  - img
+            - generic [ref=e112]:
+              - generic [ref=e584]:
+                - button [ref=e635]:
+                  - generic [ref=e586]: 🤠
+                  - generic [ref=e587]:
+                    - generic [ref=e588]: tavern-tone-10s
+                    - generic [ref=e589]: "0"
+                - button [ref=e636]:
+                  - img [ref=e591]
+              - generic [ref=e339]:
+                - button [ref=e637]:
+                  - generic [ref=e341]: 🥳
+                  - generic [ref=e342]:
+                    - generic [ref=e343]: beep
+                    - generic [ref=e344]: "0"
+                - button [ref=e638]:
+                  - img [ref=e346]
+      - generic [ref=e74]:
+        - generic [ref=e77]:
+          - textbox [ref=e639]:
+            - /placeholder: "Message #general"
+          - button [ref=e640]:
+            - img [ref=e80]
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - button [ref=e641]: GIF
+            - button [ref=e642]:
+              - img [ref=e87]
+              - generic [ref=e92]: "0"
+            - button [ref=e643]:
+              - img [ref=e94]
+              - text: Polls
+          - generic [ref=e96]:
+            - button [disabled]: Send
+    - region "Notifications alt+T"
+  - dialog "Edit sound" [ref=e647]:
+    - heading "Edit sound" [level=2] [ref=e649]
+    - generic [ref=e650]:
+      - generic [ref=e651]:
+        - generic [ref=e652]: MP3 file
+        - generic [ref=e653]:
+          - img [ref=e655]
+          - generic [ref=e659]:
+            - paragraph [ref=e660]: tavern-tone-10s.mp3
+            - paragraph [ref=e661]: MP3 · up to 10 MB and 5 minutes
+          - button "Browse" [ref=e662]
+      - generic [ref=e663]:
+        - generic [ref=e664]:
+          - generic [ref=e665]: Name
+          - textbox "Name" [active] [ref=e666]: tavern-tone-10s
+        - generic [ref=e667]:
+          - generic [ref=e668]: Related emoji
+          - button "🤠 Change" [ref=e669]:
+            - generic [ref=e670]: 🤠
+            - generic [ref=e671]: Change
+      - generic [ref=e680]:
+        - generic [ref=e681]: 0.00s
+        - generic [ref=e682]: 10.03s
+        - generic [ref=e683]: 10.03s
+      - generic [ref=e684]:
+        - generic [ref=e685]:
+          - generic [ref=e686]: Sound volume
+          - generic [ref=e687]: 100%
+        - group [ref=e688]:
+          - slider [ref=e693]: "100"
+    - generic [ref=e694]:
+      - button "Cancel" [ref=e695]
+      - button "Preview" [ref=e696]:
+        - img
+        - text: Preview
+      - button "Save" [ref=e697]
+    - button "Close" [ref=e698]:
+      - img
+      - generic [ref=e699]: Close

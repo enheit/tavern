@@ -95,55 +95,80 @@ describe("FR-19 publish flow", () => {
   });
 });
 
-describe("FR-27 simulcast encodings", () => {
+describe("FR-27 screen encoding", () => {
   // fakeTrack has no getSettings → acquisition height falls back to the preset height.
   const cases: { preset: PresetId; encodings: RTCRtpEncodingParameters[] }[] = [
     {
       preset: "1080p30",
-      encodings: [
-        { rid: "h", maxBitrate: 3_500_000, maxFramerate: 30, scaleResolutionDownBy: 1 },
-        { rid: "i", maxBitrate: 1_225_000, maxFramerate: 30, scaleResolutionDownBy: 2 },
-        { rid: "l", maxBitrate: 350_000, maxFramerate: 30, scaleResolutionDownBy: 4 },
-      ],
+      encodings: [{ maxBitrate: 3_500_000, maxFramerate: 30, scaleResolutionDownBy: 1 }],
     },
     {
       preset: "480p15",
-      encodings: [
-        { rid: "h", maxBitrate: 400_000, maxFramerate: 15, scaleResolutionDownBy: 1 },
-        { rid: "i", maxBitrate: 150_000, maxFramerate: 15, scaleResolutionDownBy: 2 },
-        { rid: "l", maxBitrate: 100_000, maxFramerate: 15, scaleResolutionDownBy: 480 / 180 },
-      ],
+      encodings: [{ maxBitrate: 400_000, maxFramerate: 15, scaleResolutionDownBy: 1 }],
     },
     {
       preset: "1440p60",
-      encodings: [
-        { rid: "h", maxBitrate: 9_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 },
-        { rid: "i", maxBitrate: 3_150_000, maxFramerate: 60, scaleResolutionDownBy: 2 },
-        { rid: "l", maxBitrate: 900_000, maxFramerate: 30, scaleResolutionDownBy: 4 },
-      ],
+      encodings: [{ maxBitrate: 9_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 }],
     },
   ];
 
   for (const c of cases) {
-    it(`${c.preset} → exact h/i/l encodings`, async () => {
+    it(`${c.preset} → one exact selected encoding`, async () => {
       await connect();
       const track = fakeTrack("video");
-      const result = await session.publishStream(track, null, c.preset);
+      const result = await session.publishStream(track, null, c.preset, "vp8");
       expect(port.last().transceivers[0]?.init.sendEncodings).toEqual(c.encodings);
       expect(signal.published[0]?.tracks).toEqual([
         {
           mid: "0",
           trackName: result.videoTrackName,
           preset: c.preset,
-          simulcastProfile: "h_i_l_v2",
         },
       ]);
     });
   }
 
+  it("applies only the selected codec before createOffer without SDP rewriting", async () => {
+    await connect();
+    await session.publishStream(fakeTrack("video"), null, "1080p60", "av1");
+
+    const transceiver = port.last().transceivers[0];
+    expect(transceiver?.codecPreferences.map((codec) => codec.mimeType)).toEqual([
+      "video/AV1",
+      "video/rtx",
+      "video/red",
+      "video/ulpfec",
+    ]);
+    expect(log.entries.slice(0, 3)).toEqual([
+      "addTransceiver",
+      "setCodecPreferences",
+      "createOffer",
+    ]);
+    expect(signal.published[0]?.offer).toEqual({ type: "offer", sdp: "fake-offer" });
+  });
+
+  it("rejects an unsupported codec before adding a transceiver or creating an offer", async () => {
+    await connect();
+    port.videoCapabilities = {
+      codecs: [{ mimeType: "video/VP8", clockRate: 90_000 }],
+      headerExtensions: [],
+    };
+
+    await expect(session.publishStream(fakeTrack("video"), null, "1080p60", "av1")).rejects.toThrow(
+      "AV1 is not supported by this video sender",
+    );
+    expect(port.last().transceivers).toHaveLength(0);
+    expect(log.entries).not.toContain("createOffer");
+  });
+
   it("publishStream with audio adds a screenAudio track with no encodings", async () => {
     await connect();
-    const result = await session.publishStream(fakeTrack("video"), fakeTrack("audio"), "1080p30");
+    const result = await session.publishStream(
+      fakeTrack("video"),
+      fakeTrack("audio"),
+      "1080p30",
+      "vp8",
+    );
     expect(result).toEqual({
       videoTrackName: `screen:${USER}:1`,
       audioTrackName: `screenAudio:${USER}:1`,
@@ -165,6 +190,50 @@ describe("FR-27 simulcast encodings", () => {
     ]);
   });
 
+  it("reports the negotiated codec and hardware-encoder fields without guessing", async () => {
+    await connect();
+    const { videoTrackName } = await session.publishStream(
+      fakeTrack("video"),
+      null,
+      "1080p60",
+      "vp8",
+    );
+    const sender = port.last().transceivers[0]?.sender;
+    if (sender === undefined) throw new Error("screen sender missing");
+    sender.statsReport = [
+      { type: "codec", id: "codec-1", mimeType: "video/AV1" },
+      { type: "media-source", kind: "video", framesPerSecond: 60 },
+      {
+        type: "outbound-rtp",
+        kind: "video",
+        codecId: "codec-1",
+        frameWidth: 1920,
+        frameHeight: 1080,
+        framesEncoded: 120,
+        framesSent: 120,
+        packetsSent: 160,
+        bytesSent: 800_000,
+        framesPerSecond: 60,
+        targetBitrate: 6_000_000,
+        qualityLimitationReason: "none",
+        totalEncodeTime: 1.2,
+        encoderImplementation: "ExternalEncoder",
+        powerEfficientEncoder: true,
+        scalabilityMode: "L1T1",
+      },
+    ];
+
+    await expect(session.outboundVideoStats(videoTrackName)).resolves.toEqual([
+      expect.objectContaining({
+        rid: null,
+        codec: "AV1",
+        encoderImplementation: "ExternalEncoder",
+        powerEfficientEncoder: true,
+        scalabilityMode: "L1T1",
+      }),
+    ]);
+  });
+
   it("returns the confirmed RTC publication id to video preview owners", async () => {
     await connect();
     const publicationId = "00000000-0000-4000-8000-000000000001";
@@ -182,33 +251,22 @@ describe("FR-27 setPreset", () => {
   it("changes encoder policy without capture constraint churn or renegotiation", async () => {
     await connect();
     const video = fakeTrack("video");
-    const { videoTrackName } = await session.publishStream(video, null, "1080p30");
+    const { videoTrackName } = await session.publishStream(video, null, "1080p30", "vp8");
+    const sender = port.last().transceivers[0]?.sender;
+    const initialSetParametersCount = sender?.setParametersCount ?? 0;
     log.clear();
 
     await session.setPreset(videoTrackName, "480p15");
 
     expect(video.applyConstraints).not.toHaveBeenCalled();
-    const sender = port.last().transceivers[0]?.sender;
-    expect(sender?.setParametersCount).toBe(1);
-    // All three layers are re-derived from the immutable 1080 acquisition geometry.
+    expect(sender?.setParametersCount).toBe(initialSetParametersCount + 1);
+    // The one encoding is re-derived from the immutable 1080 acquisition geometry.
     expect(sender?.encodings[0]).toMatchObject({
-      rid: "h",
       maxBitrate: 400_000,
       maxFramerate: 15,
       scaleResolutionDownBy: 1080 / 480,
     });
-    expect(sender?.encodings[1]).toMatchObject({
-      rid: "i",
-      maxBitrate: 150_000,
-      maxFramerate: 15,
-      scaleResolutionDownBy: 1080 / 240,
-    });
-    expect(sender?.encodings[2]).toMatchObject({
-      rid: "l",
-      maxBitrate: 100_000,
-      maxFramerate: 15,
-      scaleResolutionDownBy: 1080 / 180,
-    });
+    expect(sender?.encodings).toHaveLength(1);
     expect(sender?.degradationPreference).toBe("maintain-resolution");
     expect(video.contentHint).toBe("detail");
     expect(log.entries).not.toContain("createOffer");
@@ -218,7 +276,7 @@ describe("FR-27 setPreset", () => {
   it("replaces an upward capture on the existing sender and rolls back on parameter failure", async () => {
     await connect();
     const oldTrack = fakeTrack("video");
-    const { videoTrackName } = await session.publishStream(oldTrack, null, "1080p30");
+    const { videoTrackName } = await session.publishStream(oldTrack, null, "1080p30", "vp8");
     const sender = port.last().transceivers[0]?.sender;
     if (!sender) throw new Error("video sender missing");
     const nextTrack = fakeTrack("video");

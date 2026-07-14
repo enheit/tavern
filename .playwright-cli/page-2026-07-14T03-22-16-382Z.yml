@@ -1,0 +1,88 @@
+- generic [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e6]:
+      - banner [ref=e7]:
+        - button [ref=e739]:
+          - generic [ref=e10]: visual-47690a
+          - img
+        - button [ref=e740]: Set a status…
+        - button [ref=e741]:
+          - img
+      - generic [ref=e16]:
+        - navigation [ref=e17]:
+          - heading [level=2] [ref=e743]: Channels
+          - button [ref=e744]:
+            - img [ref=e21]
+            - generic [ref=e25]: Voice
+        - generic [ref=e27]:
+          - button [ref=e745]:
+            - generic [ref=e30]: v
+            - generic [ref=e32]:
+              - generic [ref=e33]: visual_47690a
+              - generic [ref=e34]: Online
+          - button [ref=e746]:
+            - img
+          - button [ref=e747]:
+            - img
+          - button [ref=e748]:
+            - img
+      - generic [ref=e39]:
+        - tablist [ref=e749]:
+          - tab [ref=e750]: Dashboard
+          - tab [ref=e751]: Recordings
+          - tab [ref=e752]: Screenshots
+          - tab [selected] [ref=e753]: Soundboard
+          - tab [ref=e754]: Polls
+        - tabpanel [ref=e755]:
+          - generic [ref=e98]:
+            - generic [ref=e99]:
+              - generic [ref=e100]: Soundboard
+              - generic [ref=e101]:
+                - button [pressed] [ref=e756]:
+                  - img
+                - group [ref=e757]:
+                  - slider [ref=e109]: "100"
+                - button [ref=e758]:
+                  - img
+            - generic [ref=e112]:
+              - generic [ref=e584]:
+                - button [ref=e759]:
+                  - generic [ref=e586]: 🤠
+                  - generic [ref=e587]:
+                    - generic [ref=e588]: tavern-tone-10s
+                    - generic [ref=e589]: "0"
+                - button [ref=e760]:
+                  - img [ref=e591]
+              - generic [ref=e339]:
+                - button [ref=e761]:
+                  - generic [ref=e341]: 🥳
+                  - generic [ref=e342]:
+                    - generic [ref=e343]: beep
+                    - generic [ref=e344]: "0"
+                - button [ref=e762]:
+                  - img [ref=e346]
+      - generic [ref=e74]:
+        - generic [ref=e77]:
+          - textbox [ref=e763]:
+            - /placeholder: "Message #general"
+          - button [ref=e764]:
+            - img [ref=e80]
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - button [ref=e765]: GIF
+            - button [ref=e766]:
+              - img [ref=e87]
+              - generic [ref=e92]: "0"
+            - button [ref=e767]:
+              - img [ref=e94]
+              - text: Polls
+          - generic [ref=e96]:
+            - button [disabled]: Send
+    - region "Notifications alt+T"
+  - alertdialog "Delete sound?" [ref=e771]:
+    - generic [ref=e772]:
+      - heading "Delete sound?" [level=2] [ref=e773]
+      - paragraph [ref=e774]: tavern-tone-10s will be permanently removed from this soundboard.
+    - generic [ref=e775]:
+      - button "Cancel" [active] [ref=e776]
+      - button "Delete sound" [ref=e777]

@@ -439,7 +439,7 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
     }
   });
 
-  test("FR-33 watcher pulls the high layer from the start; focus never switches layers", async ({
+  test("FR-33 watcher pulls the single screen encoding; focus never switches layers", async ({
     browser,
     baseURL,
     api,
@@ -459,13 +459,12 @@ test.describe("FR-30/31/32/33 G4 streams (mock SFU)", () => {
         })
         .toBe("connected");
 
-      // The initial pull itself carries preferredRid "h" — best quality in the grid, before any
-      // focus/fullscreen interaction.
+      // A screen pull carries no simulcast rid: there is only the user-selected encoding.
       const pullRid = await b.page.evaluate(
         (tn) => (window.__tavernTestRtc?.pullCalls ?? []).find((c) => c.trackName === tn)?.rid,
         track,
       );
-      expect(pullRid).toBe("h");
+      expect(pullRid).toBeNull();
 
       // Focus + unfocus are layout-only: no tracks/update layer switch is ever issued.
       await b.page.getByTestId(`stream-tile-${track}`).click();

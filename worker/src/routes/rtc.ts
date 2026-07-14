@@ -13,10 +13,9 @@ import {
   RtcWatchDeliveryRequest,
   RtcWatchDeliveryResponse,
   SCREEN_RIDS,
-  SCREEN_SIMULCAST_PROFILE,
   errorCodeSchema,
 } from "@tavern/shared";
-import type { ErrorCode, ScreenRid, ScreenSimulcastProfile } from "@tavern/shared";
+import type { ErrorCode, ScreenRid } from "@tavern/shared";
 import type { AuthVars } from "../middleware";
 import { requiredEnv } from "../env";
 import { RealtimeError, createRealtimeClient } from "../rtc/realtime";
@@ -59,7 +58,6 @@ const rtcAuthorizeResSchema = z.union([
   z.object({
     ok: z.literal(true),
     publisherSessions: z.record(z.string(), z.string()).optional(),
-    simulcastProfiles: z.record(z.string(), z.literal(SCREEN_SIMULCAST_PROFILE)).optional(),
     publicationId: z.uuid().optional(),
   }),
   z.object({ ok: z.literal(false), error: errorCodeSchema }),
@@ -98,26 +96,10 @@ function isShareCounter(v: string | undefined): boolean {
   return v !== undefined && /^[1-9][0-9]*$/.test(v);
 }
 
-// Legacy two-layer publishers remain pinned: their only fallback is the visibly poor old low layer.
-// A profile-aware v2 publisher has a cadence-preserving middle rung, so pullSimulcast can safely let
-// Cloudflare fall back h → i → l as bandwidth changes instead of freezing or jumping straight to l.
+// A simulcast request is always pinned to the explicitly requested layer. Screen shares no longer
+// send a simulcast request at all; this remains for webcam and rolling compatibility with old clients.
 function pinnedSimulcast(preferredRid: ScreenRid): SimulcastPrefs {
   return { preferredRid, priorityOrdering: "none", ridNotAvailable: "none" };
-}
-
-function pullSimulcast(
-  preferredRid: ScreenRid,
-  profile: ScreenSimulcastProfile | undefined,
-  env: Env,
-): SimulcastPrefs {
-  if (profile === SCREEN_SIMULCAST_PROFILE && env.SFU_ADAPTATION_MODE === "adaptive") {
-    return {
-      preferredRid,
-      priorityOrdering: "asciibetical",
-      ridNotAvailable: "asciibetical",
-    };
-  }
-  return pinnedSimulcast(preferredRid);
 }
 
 // Track-name grammar (§7.1) → kind, AND ownership check (a client may only publish tracks named for
@@ -422,7 +404,6 @@ rtcRoute.post("/:serverId/tracks", rtcMember, async (c) => {
     });
     if (!auth.ok) return c.json({ error: auth.error }, statusFor(auth.error));
     const publisherSessions = auth.publisherSessions ?? {};
-    const simulcastProfiles = auth.simulcastProfiles ?? {};
     const remoteReqs: RemoteTrackReq[] = pull.data.tracks.map((t) => ({
       location: "remote",
       sessionId: invariant(
@@ -432,13 +413,7 @@ rtcRoute.post("/:serverId/tracks", rtcMember, async (c) => {
       trackName: t.trackName,
       ...(t.simulcast === undefined
         ? {}
-        : {
-            simulcast: pullSimulcast(
-              t.simulcast.preferredRid,
-              simulcastProfiles[t.trackName],
-              c.env,
-            ),
-          }),
+        : { simulcast: pinnedSimulcast(t.simulcast.preferredRid) }),
     }));
     const sfu = await client.newRemoteTracks(sessionId, remoteReqs);
     return c.json(toClientResponse(sfu));

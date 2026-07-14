@@ -1,0 +1,91 @@
+- generic [ref=e2]:
+  - generic [ref=e6]:
+    - banner [ref=e7]:
+      - button "visual-47690a" [ref=e701]:
+        - generic [ref=e10]: visual-47690a
+        - img
+      - button "Edit server status" [ref=e702]: Set a status…
+      - generic [ref=e13]:
+        - button "Server settings" [ref=e703]:
+          - img
+        - generic "Connected" [ref=e704]
+    - generic [ref=e16]:
+      - navigation [ref=e17]:
+        - heading "Channels" [level=2] [ref=e705]
+        - button "Voice" [ref=e706]:
+          - img [ref=e21]
+          - generic [ref=e25]: Voice
+      - generic [ref=e27]:
+        - button "Account" [ref=e707]:
+          - generic [ref=e30]: v
+          - generic [ref=e32]:
+            - generic [ref=e33]: visual_47690a
+            - generic [ref=e34]: Online
+        - button "Mute" [ref=e708]:
+          - img
+        - button "Deafen" [ref=e709]:
+          - img
+        - button "Settings" [ref=e710]:
+          - img
+    - generic [ref=e39]:
+      - tablist "Workspace" [ref=e711]:
+        - tab "Dashboard" [ref=e712]
+        - tab "Recordings" [ref=e713]
+        - tab "Screenshots" [ref=e714]
+        - tab "Soundboard" [selected] [ref=e715]
+        - tab "Polls" [ref=e716]
+      - tabpanel "Soundboard" [ref=e717]:
+        - generic [ref=e98]:
+          - generic [ref=e99]:
+            - generic [ref=e100]: Soundboard
+            - generic [ref=e101]:
+              - button "Unmute soundboard" [pressed] [ref=e718]:
+                - img
+              - group "Soundboard volume" [ref=e719]:
+                - slider [ref=e109]: "100"
+              - button "Upload sound" [ref=e720]:
+                - img
+          - generic [ref=e112]:
+            - generic [ref=e584]:
+              - button "tavern-tone-10s 0" [ref=e721]:
+                - generic [ref=e586]: 🤠
+                - generic [ref=e587]:
+                  - generic [ref=e588]: tavern-tone-10s
+                  - generic [ref=e589]: "0"
+              - button "More actions for tavern-tone-10s" [expanded] [ref=e722]:
+                - img [ref=e591]
+              - menu "More actions for tavern-tone-10s" [active] [ref=e734]:
+                - menuitem "Edit" [ref=e735]:
+                  - img
+                  - text: Edit
+                - menuitem "Delete" [ref=e736]:
+                  - img
+                  - text: Delete
+            - generic [ref=e339]:
+              - button "beep 0" [ref=e723]:
+                - generic [ref=e341]: 🥳
+                - generic [ref=e342]:
+                  - generic [ref=e343]: beep
+                  - generic [ref=e344]: "0"
+              - button "More actions for beep" [ref=e724]:
+                - img [ref=e346]
+    - generic [ref=e68]:
+      - generic [ref=e70]:
+        - list
+      - generic [ref=e74]:
+        - generic [ref=e77]:
+          - 'textbox "Message #general" [ref=e725]'
+          - button "Emoji" [ref=e726]:
+            - img [ref=e80]
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - button "GIF" [ref=e727]
+            - button "Open point details" [ref=e728]:
+              - img [ref=e87]
+              - generic [ref=e92]: "0"
+            - button "Create poll" [ref=e729]:
+              - img [ref=e94]
+              - text: Polls
+          - generic [ref=e96]:
+            - button "Send" [disabled]
+  - region "Notifications alt+T"

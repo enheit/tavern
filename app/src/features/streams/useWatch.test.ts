@@ -1,15 +1,8 @@
-import type {
-  ClientMessage,
-  ScreenRid,
-  ServerMessage,
-  StreamInfo,
-  WatchDelivery,
-} from "@tavern/shared";
+import type { ClientMessage, ScreenRid, ServerMessage, StreamInfo } from "@tavern/shared";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { ApiError } from "@/lib/apiClient";
-import { focusStore } from "@/lib/focusState";
 import { m as messages } from "@/paraglide/messages.js";
 import { resetWatchRegistry, useWatch, WatchController } from "@/features/streams/useWatch";
 import type { WatchDeps } from "@/features/streams/useWatch";
@@ -25,8 +18,6 @@ const registryDepsMock = vi.hoisted(() => ({
   connect: vi.fn(async () => undefined),
   onTrack: vi.fn(() => () => undefined),
   addRemoteTracks: vi.fn(async () => undefined),
-  removeRemoteTracks: vi.fn(async () => undefined),
-  setLayer: vi.fn(async () => undefined),
   close: vi.fn(async () => undefined),
 }));
 
@@ -52,12 +43,6 @@ vi.mock("@/media/rtc/pullSession", () => ({
     }
     addRemoteTracks(): Promise<void> {
       return registryDepsMock.addRemoteTracks();
-    }
-    removeRemoteTracks(): Promise<void> {
-      return registryDepsMock.removeRemoteTracks();
-    }
-    setLayer(): Promise<void> {
-      return registryDepsMock.setLayer();
     }
     close(): Promise<void> {
       return registryDepsMock.close();
@@ -95,8 +80,6 @@ class FakePull {
   closed = false;
   rejectWith: Error | null = null;
   readonly added: Array<Array<{ trackName: string; preferredRid?: ScreenRid }>> = [];
-  readonly removed: string[][] = [];
-  readonly layers: Array<{ trackName: string; rid: ScreenRid }> = [];
   private trackCb: ((tn: string, track: MediaStreamTrack, stream: MediaStream) => void) | null =
     null;
   connect(): Promise<void> {
@@ -112,14 +95,6 @@ class FakePull {
   addRemoteTracks(tracks: Array<{ trackName: string; preferredRid?: ScreenRid }>): Promise<void> {
     this.added.push(tracks);
     return this.rejectWith ? Promise.reject(this.rejectWith) : Promise.resolve();
-  }
-  removeRemoteTracks(trackNames: string[]): Promise<void> {
-    this.removed.push(trackNames);
-    return Promise.resolve();
-  }
-  setLayer(trackName: string, rid: ScreenRid): Promise<void> {
-    this.layers.push({ trackName, rid });
-    return Promise.resolve();
   }
   close(): Promise<void> {
     this.closed = true;
@@ -209,7 +184,6 @@ function harness(over: Partial<WatchDeps> = {}): {
   sink: ReturnType<typeof makeSink>;
   createPull: ReturnType<typeof vi.fn>;
   joinVoice: ReturnType<typeof vi.fn>;
-  setDelivery: ReturnType<typeof vi.fn>;
   deps: WatchDeps;
 } {
   const pull = new FakePull();
@@ -217,19 +191,15 @@ function harness(over: Partial<WatchDeps> = {}): {
   const sink = makeSink();
   const createPull = vi.fn(() => pull);
   const joinVoice = vi.fn(async () => undefined);
-  const setDelivery = vi.fn(
-    async (_serverId: string, _trackName: string, _delivery: WatchDelivery) => undefined,
-  );
   const deps: WatchDeps = {
     createPull,
     wsFor: () => ws,
     sink: () => sink,
     activeServerId: () => "srv",
     joinVoice,
-    setDelivery,
     ...over,
   };
-  return { pull, ws, sink, createPull, joinVoice, setDelivery, deps };
+  return { pull, ws, sink, createPull, joinVoice, deps };
 }
 
 async function flush(): Promise<void> {
@@ -245,7 +215,6 @@ beforeEach(() => {
   resetWatchRegistry();
   vi.clearAllMocks();
   registryDepsMock.createdPulls = 0;
-  focusStore.setState({ focused: true, visible: true });
   // Reset persisted volumes so the FR-31 hydration tests don't bleed a stream gain into other cases.
   useSettingsStore.setState({
     volumes: { v: 1, users: {}, streams: {}, soundboard: 1, mutedUsers: [] },
@@ -261,7 +230,7 @@ describe("FR-30 opt-in watching", () => {
     expect(controller.mediaStream).toBeNull();
   });
 
-  it("watch() joins voice before sending watch.start, then creates one PullSession pulling preferredRid h", async () => {
+  it("watch() joins voice, starts one PullSession, and pulls screen video without a layer selector", async () => {
     const stream = makeStream();
     const h = harness();
     const controller = new WatchController(stream, h.deps);
@@ -272,13 +241,24 @@ describe("FR-30 opt-in watching", () => {
     expect(h.joinVoice).toHaveBeenCalledWith("srv");
     expect(h.ws.sent[0]).toEqual({ t: "watch.start", trackName: stream.trackName });
     expect(h.createPull).toHaveBeenCalledTimes(1);
-    expect(h.pull.added[0]).toEqual([{ trackName: stream.trackName, preferredRid: "h" }]);
+    expect(h.pull.added[0]).toEqual([{ trackName: stream.trackName }]);
     expect(controller.state).toBe("watching");
 
     // A video frame arriving populates mediaStream for the tile's <video>.
     const video = fakeTrack("video");
     h.pull.emit(stream.trackName, video);
     expect(controller.mediaStream).toBeInstanceOf(FakeMediaStream);
+  });
+
+  it("keeps webcam simulcast explicitly pinned to its high layer", async () => {
+    const stream = makeStream({ kind: "webcam", trackName: `cam:${UID}` });
+    const h = harness();
+    const controller = new WatchController(stream, h.deps);
+
+    await controller.watch();
+    await flush();
+
+    expect(h.pull.added[0]).toEqual([{ trackName: stream.trackName, preferredRid: "h" }]);
   });
 
   it("does not request a watch grant when joining voice fails", async () => {
@@ -302,7 +282,7 @@ describe("FR-30 opt-in watching", () => {
     await flush();
 
     expect(h.pull.added[0]).toEqual([
-      { trackName: `screen:${UID}:1`, preferredRid: "h" },
+      { trackName: `screen:${UID}:1` },
       { trackName: `screenAudio:${UID}:1` },
     ]);
 
@@ -416,90 +396,6 @@ describe("FR-30 opt-in watching", () => {
     expect(controller.state).toBe("idle");
     expect(failing.closed).toBe(true);
     expect(toast.error).toHaveBeenCalledTimes(1);
-  });
-
-  it("setLayer forwards the rid to the pull (FR-33)", async () => {
-    const stream = makeStream();
-    const h = harness();
-    const controller = new WatchController(stream, h.deps);
-    controller.watch();
-    await flush();
-
-    controller.setLayer("h");
-    expect(h.pull.layers).toEqual([{ trackName: stream.trackName, rid: "h" }]);
-  });
-
-  it("keeps an audio watch alive while hidden and restores video on the same PullSession", async () => {
-    const stream = makeStream({ hasAudio: true });
-    const h = harness();
-    const controller = new WatchController(stream, h.deps);
-    await controller.watch();
-    await flush();
-    h.pull.emit(stream.trackName, fakeTrack("video"));
-
-    controller.setDocumentVisible(false);
-    await flush();
-
-    expect(controller.state).toBe("watching");
-    expect(controller.delivery).toBe("audio");
-    expect(controller.mediaStream).toBeNull();
-    expect(h.pull.removed).toEqual([[stream.trackName]]);
-    expect(h.setDelivery).toHaveBeenLastCalledWith("srv", stream.trackName, "audio");
-    expect(h.createPull).toHaveBeenCalledTimes(1);
-    expect(h.ws.sent.filter((message) => message.t === "watch.stop")).toEqual([]);
-
-    controller.setDocumentVisible(true);
-    await flush();
-
-    expect(controller.state).toBe("watching");
-    expect(controller.delivery).toBe("high");
-    expect(h.pull.added[1]).toEqual([{ trackName: stream.trackName, preferredRid: "h" }]);
-    expect(h.setDelivery).toHaveBeenLastCalledWith("srv", stream.trackName, "video");
-    expect(h.createPull).toHaveBeenCalledTimes(1);
-    expect(h.ws.sent.filter((message) => message.t === "watch.start")).toHaveLength(1);
-  });
-
-  it("uses low video for a hidden video-only watch without ending it", async () => {
-    const stream = makeStream({ hasAudio: false });
-    const h = harness();
-    const controller = new WatchController(stream, h.deps);
-    await controller.watch();
-    await flush();
-
-    controller.setDocumentVisible(false);
-    await flush();
-    expect(controller.delivery).toBe("low");
-    expect(h.pull.layers).toEqual([{ trackName: stream.trackName, rid: "l" }]);
-    expect(h.pull.removed).toEqual([]);
-    expect(h.setDelivery).not.toHaveBeenCalled();
-
-    controller.setDocumentVisible(true);
-    await flush();
-    expect(controller.delivery).toBe("high");
-    expect(h.pull.layers).toEqual([
-      { trackName: stream.trackName, rid: "l" },
-      { trackName: stream.trackName, rid: "h" },
-    ]);
-    expect(controller.state).toBe("watching");
-    expect(h.createPull).toHaveBeenCalledTimes(1);
-  });
-
-  it("applies theater saver delivery without sending watch.stop", async () => {
-    const stream = makeStream({ hasAudio: true });
-    const h = harness();
-    const controller = new WatchController(stream, h.deps);
-    await controller.watch();
-    await flush();
-
-    controller.setTheaterVisible(false);
-    await flush();
-    expect(controller.delivery).toBe("audio");
-    expect(h.ws.sent.filter((message) => message.t === "watch.stop")).toEqual([]);
-
-    controller.setTheaterVisible(true);
-    await flush();
-    expect(controller.delivery).toBe("high");
-    expect(h.createPull).toHaveBeenCalledTimes(1);
   });
 
   // The React hook wraps the controller with the real default deps; with no active server watch()

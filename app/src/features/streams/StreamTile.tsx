@@ -9,7 +9,6 @@ import { useVolumeScroll } from "@/features/volume/useVolumeScroll";
 import { focusStore } from "@/lib/focusState";
 import { cn } from "@/lib/utils";
 import { registerQualityVideoElement, useQualityStore } from "@/media/qualityMonitor";
-import type { QualitySnapshot } from "@/media/qualityMonitor";
 import { m } from "@/paraglide/messages.js";
 import { roomStore } from "@/stores/room";
 import { useServersStore } from "@/stores/servers";
@@ -33,6 +32,7 @@ export function StreamTile({
   selfStream,
   fullscreen = false,
   compact = false,
+  showStats = false,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
@@ -40,6 +40,7 @@ export function StreamTile({
   selfStream?: MediaStream | null;
   fullscreen?: boolean;
   compact?: boolean;
+  showStats?: boolean;
   onToggleFullscreen: () => void;
 }) {
   const selfUserId = useSessionStore((state) => state.profile?.userId);
@@ -61,6 +62,7 @@ export function StreamTile({
       onToggleFocus={onToggleFocus}
       fullscreen={fullscreen}
       compact={compact}
+      showStats={showStats}
       onToggleFullscreen={onToggleFullscreen}
     />
   );
@@ -95,27 +97,38 @@ function FullscreenButton({
   );
 }
 
-function qualityHealthLabel(health: QualitySnapshot["health"]): string {
-  if (health === "healthy") return m.streams_quality_healthy();
-  if (health === "adapting") return m.streams_quality_adapting();
-  if (health === "device_limited") return m.streams_quality_device_limited();
-  if (health === "network_limited") return m.streams_quality_network_limited();
-  return m.streams_quality_poor();
+function bitrateLabel(kbps: number | null): string {
+  if (kbps === null) return "— kbps";
+  if (kbps >= 1_000) return `${(kbps / 1_000).toFixed(1)} Mbps`;
+  return `${Math.round(kbps)} kbps`;
 }
 
-function QualityBadge({ trackName }: { trackName: string }) {
+function StreamStatsOverlay({ trackName }: { trackName: string }) {
   const quality = useQualityStore((state) => state.snapshots[trackName]);
+  const [expanded, setExpanded] = useState(false);
   if (quality === undefined) return null;
-  const healthLabel = qualityHealthLabel(quality.health);
-  const resolution = quality.height === null ? "—" : `${quality.height}p`;
+  const resolution =
+    quality.width === null || quality.height === null
+      ? quality.height === null
+        ? "—"
+        : `${quality.height}p`
+      : `${quality.width}×${quality.height}`;
   const cadence = quality.fps === null ? "—" : `${Math.round(quality.fps)} fps`;
+  const codec = quality.codec ?? "—";
   return (
-    <span
-      data-testid={`stream-quality-${trackName}`}
+    <button
+      type="button"
+      data-testid={`stream-stats-${trackName}`}
       data-health={quality.health}
-      title={`${healthLabel} · ${resolution} · ${cadence}`}
+      aria-label={m.streams_stats()}
+      aria-expanded={expanded}
+      title={m.streams_stats()}
+      onClick={(event) => {
+        event.stopPropagation();
+        setExpanded((value) => !value);
+      }}
       className={cn(
-        "absolute top-2 right-2 flex items-center gap-1.5 rounded bg-black/70 px-2 py-1 text-xs font-medium text-white",
+        "absolute top-2 right-2 z-10 flex max-w-[calc(100%_-_1rem)] items-center gap-1.5 rounded-md border border-white/15 bg-black/75 px-2 py-1 text-xs font-medium whitespace-nowrap text-white shadow-lg backdrop-blur-sm",
         quality.health === "healthy" && "text-emerald-300",
         quality.health === "adapting" && "text-amber-200",
         (quality.health === "device_limited" || quality.health === "network_limited") &&
@@ -124,12 +137,18 @@ function QualityBadge({ trackName }: { trackName: string }) {
       )}
     >
       <span className="size-1.5 rounded-full bg-current" />
+      <span>{codec}</span>
+      <span>·</span>
       <span>{resolution}</span>
       <span>·</span>
       <span>{cadence}</span>
-      <span>·</span>
-      <span>{healthLabel}</span>
-    </span>
+      {expanded && (
+        <>
+          <span>·</span>
+          <span>{bitrateLabel(quality.bitrateKbps)}</span>
+        </>
+      )}
+    </button>
   );
 }
 
@@ -214,7 +233,6 @@ function SelfTile({
       >
         {m.streams_self()}
       </span>
-      {!compact && <QualityBadge trackName={stream.trackName} />}
       {!compact && (
         <TileOverlay fullscreen={fullscreen} compact={false}>
           <FullscreenButton
@@ -291,15 +309,17 @@ function RemoteTile({
   onToggleFocus,
   fullscreen,
   compact,
+  showStats,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
   onToggleFocus: () => void;
   fullscreen: boolean;
   compact: boolean;
+  showStats: boolean;
   onToggleFullscreen: () => void;
 }) {
-  const { state, mediaStream, delivery, deliveryTransitioning, watch, unwatch } = useWatch(stream);
+  const { state, mediaStream, watch, unwatch } = useWatch(stream);
   const watching = state !== "idle";
   const streamKey = `${stream.userId}:${stream.kind}`;
   const serverId = useServersStore((serversState) => serversState.activeServerId) ?? "";
@@ -324,7 +344,6 @@ function RemoteTile({
       ref={ref}
       data-testid={`stream-tile-${stream.trackName}`}
       data-watching={watching}
-      data-delivery={delivery}
       onClick={watching ? onToggleFocus : undefined}
       className={cn(
         "group relative flex h-full min-h-0 w-full items-center justify-center overflow-hidden rounded-lg bg-black/90",
@@ -337,11 +356,10 @@ function RemoteTile({
           streamKey={streamKey}
           state={state}
           mediaStream={mediaStream}
-          delivery={delivery}
-          deliveryTransitioning={deliveryTransitioning}
           onUnwatch={stopWatching}
           fullscreen={fullscreen}
           compact={compact}
+          showStats={showStats}
           onToggleFullscreen={onToggleFullscreen}
         />
       ) : (
@@ -356,22 +374,20 @@ function WatchingView({
   streamKey,
   state,
   mediaStream,
-  delivery,
-  deliveryTransitioning,
   onUnwatch,
   fullscreen,
   compact,
+  showStats,
   onToggleFullscreen,
 }: {
   stream: StreamInfo;
   streamKey: string;
   state: "connecting" | "watching";
   mediaStream: MediaStream | null;
-  delivery: "high" | "low" | "audio";
-  deliveryTransitioning: boolean;
   onUnwatch: () => void;
   fullscreen: boolean;
   compact: boolean;
+  showStats: boolean;
   onToggleFullscreen: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -385,7 +401,6 @@ function WatchingView({
     return registerQualityVideoElement(stream.trackName, element);
   }, [stream.trackName]);
 
-  const showAudioOnly = delivery === "audio";
   return (
     <>
       <video
@@ -394,23 +409,15 @@ function WatchingView({
         muted
         playsInline
         data-testid={`stream-video-${stream.trackName}`}
-        className={cn("h-full w-full object-contain", showAudioOnly && "invisible")}
+        className="h-full w-full object-contain"
       />
-      {(showAudioOnly ||
-        state === "connecting" ||
-        (deliveryTransitioning && mediaStream === null)) && (
+      {state === "connecting" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-neutral-900 px-3 text-center text-white/75">
           <MonitorIcon className={compact ? "size-5" : "size-8"} />
-          <span className={compact ? "text-[11px]" : "text-sm"}>
-            {state === "connecting"
-              ? m.streams_connecting()
-              : deliveryTransitioning
-                ? m.streams_restoring_video()
-                : m.streams_audio_only()}
-          </span>
+          <span className={compact ? "text-[11px]" : "text-sm"}>{m.streams_connecting()}</span>
         </div>
       )}
-      {!compact && !showAudioOnly && <QualityBadge trackName={stream.trackName} />}
+      {showStats && !compact && <StreamStatsOverlay trackName={stream.trackName} />}
       <TileOverlay fullscreen={fullscreen} compact={compact}>
         <Button
           size="xs"
