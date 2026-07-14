@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Pinned release script (S12.2): the semver comes from argv — no auto-bump logic. Writes `version`
 // into the root + desktop package.json (electron-builder reads desktop's), commits, tags vX.Y.Z and
-// pushes with --follow-tags; the tag push triggers .github/workflows/release.yml.
+// atomically pushes the branch and annotated tag; the tag push triggers .github/workflows/release.yml.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -13,6 +13,11 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
 
 const git = (...args) => execFileSync("git", args, { stdio: "inherit" });
 const gitOut = (...args) => execFileSync("git", args).toString().trim();
+const branch = gitOut("branch", "--show-current");
+if (branch === "") {
+  console.error("release: detached HEAD is not releasable — check out the release branch first");
+  process.exit(1);
+}
 
 // Preflight BEFORE mutating anything: a pre-existing tag (local or origin) means this version was
 // already cut — v0.1.0 exists from the pre-rewrite Tauri build, for example. Pick the next number.
@@ -37,5 +42,5 @@ if (gitOut("status", "--porcelain", "package.json", "desktop/package.json") !== 
 } else {
   console.log(`release: versions already at ${version} — skipping commit`);
 }
-git("tag", `v${version}`);
-git("push", "--follow-tags");
+git("tag", "-a", `v${version}`, "-m", `v${version}`);
+git("push", "--atomic", "origin", `HEAD:refs/heads/${branch}`, `refs/tags/v${version}`);
