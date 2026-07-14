@@ -9,6 +9,9 @@ import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-worker
 export default defineConfig({
   plugins: [
     cloudflareTest(async () => ({
+      // Keep the serial WebSocket project hermetic too; the Wrangler config's remote Images binding
+      // is unrelated to these tests and must never require Cloudflare credentials in CI.
+      remoteBindings: false,
       wrangler: { configPath: "./wrangler.jsonc" },
       // TAVERN_TEST_FAST_ALARM=1 pins the fast (5s) voice alarm for the FR-24 tests (§S3.4 task 5);
       // it belongs only in the test env, never production wrangler config.

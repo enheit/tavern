@@ -6,6 +6,10 @@ import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-worker
 export default defineConfig({
   plugins: [
     cloudflareTest(async () => ({
+      // Production/local dev opts Images into high-fidelity remote mode, but the test suite must be
+      // hermetic and credential-free. Disabling all remote bindings makes the Vitest integration use
+      // Wrangler's offline Images implementation instead of opening one remote proxy per test file.
+      remoteBindings: false,
       wrangler: { configPath: "./wrangler.jsonc" },
       // TEST_MIGRATIONS is applied by test/setup.ts's applyD1Migrations(); empty until S1.2.
       // TAVERN_SFU_MOCK=1 swaps the Realtime client for the fixture-backed mock (S7.1, §10) so the
